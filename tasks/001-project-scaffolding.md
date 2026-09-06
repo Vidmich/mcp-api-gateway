@@ -24,7 +24,7 @@ Create an installable, lintable, testable empty package that exposes the `mcp-ga
 
 ## Acceptance
 
-- [ ] `pip install -e .[dev]` succeeds on a clean venv.
-- [ ] `mcp-gateway --version` prints the version from a single source.
-- [ ] `ruff check`, `ruff format --check`, and `mypy src/` all pass.
-- [ ] `pytest` runs and reports zero tests without error.
+- [x] `pip install -e .[dev]` succeeds on a clean venv.
+- [x] `mcp-gateway --version` prints the version from a single source.
+- [x] `ruff check`, `ruff format --check`, and `mypy src/` all pass.
+- [x] `pytest` runs and reports zero tests without error.

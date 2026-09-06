@@ -1,0 +1,4 @@
+* text=auto eol=lf
+
+# The written specification and task files are authored with CRLF endings.
+*.md text eol=crlf
