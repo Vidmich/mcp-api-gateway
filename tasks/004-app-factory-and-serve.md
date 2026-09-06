@@ -23,6 +23,6 @@ Stand up the FastAPI application, its lifespan, logging, and a working `mcp-gate
 
 ## Acceptance
 
-- [ ] `mcp-gateway` starts and `GET /healthz` returns 200 with the expected fields.
-- [ ] SIGINT during an in-flight request lets it finish, then exits 0.
-- [ ] Lifespan startup and teardown both run exactly once, asserted in a test.
+- [x] `mcp-gateway` starts and `GET /healthz` returns 200 with the expected fields.
+- [x] SIGINT during an in-flight request lets it finish, then exits 0.
+- [x] Lifespan startup and teardown both run exactly once, asserted in a test.

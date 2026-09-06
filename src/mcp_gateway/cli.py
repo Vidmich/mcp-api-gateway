@@ -1,9 +1,10 @@
 """Command-line entry point for the ``mcp-gateway`` console script.
 
 Flags are the highest-precedence configuration source (spec §3.1); everything
-they collect is handed to :func:`mcp_gateway.config.load_settings`. Starting the
-server arrives with the app-factory task; for now the command resolves its
-configuration and reports it.
+they collect is handed to :func:`mcp_gateway.config.load_settings`. The command
+resolves its configuration, prepares the data directory and keys, and then hands
+both to :func:`mcp_gateway.app.serve`, which runs in the foreground until a
+signal arrives.
 """
 
 from __future__ import annotations
@@ -14,8 +15,9 @@ import sys
 from collections.abc import Sequence
 
 from mcp_gateway import __version__
-from mcp_gateway.bootstrap import Keys, bootstrap, ensure_config_file
-from mcp_gateway.config import ConfigError, Settings, load_settings, resolve_config_path
+from mcp_gateway.app import serve
+from mcp_gateway.bootstrap import bootstrap, ensure_config_file
+from mcp_gateway.config import ConfigError, load_settings, resolve_config_path
 
 PROG = "mcp-gateway"
 
@@ -83,27 +85,6 @@ def configure_logging(level: str = "info") -> None:
     )
 
 
-def _summarise(settings: Settings, keys: Keys) -> str:
-    """Describe the resolved configuration for the operator.
-
-    Stands in for actually serving until the app factory lands; deliberately
-    prints no secrets.
-    """
-    origin = settings.config_path or "none (defaults)"
-    return "\n".join(
-        [
-            f"config file:  {origin}",
-            f"listening on: http://{settings.server.host}:{settings.server.port}",
-            f"data dir:     {settings.server.data_dir}",
-            f"key file:     {keys.path or 'none (keys come from the config)'}",
-            f"mcp endpoint: {settings.mcp.path}"
-            + (" (bearer token required)" if settings.mcp.auth_required else " (open)"),
-            "admin login:  "
-            + (f"enabled as {settings.admin.username}" if settings.admin else "disabled"),
-        ]
-    )
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the CLI. Returns the process exit code."""
     parser = build_parser()
@@ -124,5 +105,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{PROG}: {exc}", file=sys.stderr)
         return 2
 
-    print(_summarise(settings, keys))
-    return 0
+    # The resolved configuration is announced by the app's startup banner, so
+    # what is logged is what is actually being served.
+    return serve(settings, keys)

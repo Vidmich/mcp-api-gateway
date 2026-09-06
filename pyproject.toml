@@ -105,4 +105,9 @@ minversion = "8.0"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-ra"
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # starlette 1.6 touches a deprecated anyio alias while importing TestClient;
+    # nothing here can fix it, and it must not mask our own warnings.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
+]

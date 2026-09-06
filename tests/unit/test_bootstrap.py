@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ServeCall
 from mcp_gateway.bootstrap import (
     KEYS_FILENAME,
     Keys,
@@ -245,14 +246,17 @@ def test_a_locked_down_gateway_warns_about_nothing(
     assert caplog.records == []
 
 
-def test_the_summary_names_the_key_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+def test_the_generated_keys_reach_the_server(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, serve_calls: list[ServeCall]
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
     assert main([]) == 0
 
-    assert str(tmp_path / "data" / KEYS_FILENAME) in capsys.readouterr().out
+    assert len(serve_calls) == 1
+    keys = serve_calls[0].keys
+    assert keys is not None
+    assert keys.path == tmp_path / "data" / KEYS_FILENAME
 
 
 def test_an_unwritable_key_file_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

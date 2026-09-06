@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from conftest import ServeCall
 from mcp_gateway.cli import main
 from mcp_gateway.config import (
     ConfigError,
@@ -287,14 +288,14 @@ def test_out_of_range_value_from_the_environment_names_its_variable(
     assert "MCP_GATEWAY_SERVER__PORT" in stderr
 
 
-def test_successful_run_reports_the_resolved_configuration(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+def test_a_successful_run_serves_the_resolved_configuration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, serve_calls: list[ServeCall]
 ) -> None:
     monkeypatch.chdir(tmp_path)
     write_config(tmp_path, "[server]\nport = 9001\n")
 
     assert main([]) == 0
 
-    stdout = capsys.readouterr().out
-    assert "http://127.0.0.1:9001" in stdout
-    assert "admin login:  disabled" in stdout
+    assert len(serve_calls) == 1
+    assert serve_calls[0].settings.server.port == 9001
+    assert serve_calls[0].settings.admin is None
