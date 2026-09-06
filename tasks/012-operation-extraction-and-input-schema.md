@@ -25,7 +25,7 @@ Turn a normalised document into the operation records the rest of the system use
 
 ## Acceptance
 
-- [ ] Table-driven tests: no `operationId`, no parameters, body-only, path-item-level parameters, and a `body` name collision.
-- [ ] A credential-supplied header is absent from the generated schema.
-- [ ] `input_schema_hash` is stable across runs and changes when any part of the schema changes.
-- [ ] Every generated schema validates as JSON Schema 2020-12.
+- [x] Table-driven tests: no `operationId`, no parameters, body-only, path-item-level parameters, and a `body` name collision.
+- [x] A credential-supplied header is absent from the generated schema.
+- [x] `input_schema_hash` is stable across runs and changes when any part of the schema changes.
+- [x] Every generated schema validates as JSON Schema 2020-12.
