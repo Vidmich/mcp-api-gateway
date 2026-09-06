@@ -21,6 +21,6 @@ Normalise 3.0 and 3.1 schema dialects into the JSON Schema 2020-12 that MCP clie
 
 ## Acceptance
 
-- [ ] Table-driven tests for each transformation.
-- [ ] Output for every fixture validates as a legal JSON Schema 2020-12 document.
-- [ ] A 3.1 fixture round-trips unchanged except for documented normalisations.
+- [x] Table-driven tests for each transformation.
+- [x] Output for every fixture validates as a legal JSON Schema 2020-12 document.
+- [x] A 3.1 fixture round-trips unchanged except for documented normalisations.

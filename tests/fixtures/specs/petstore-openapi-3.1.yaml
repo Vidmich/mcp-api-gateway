@@ -1,0 +1,178 @@
+# An OpenAPI 3.1 document, whose schemas are already JSON Schema 2020-12. It is
+# here to hold normalisation to its promise: everything below survives the trip
+# byte for byte except OpenAPI's own schema annotations — discriminator, xml and
+# externalDocs — which no validator has ever read.
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+info:
+  title: Petstore
+  summary: The same store, one minor version later.
+  version: "2.0.0"
+servers:
+  - url: https://api.example.com/v3
+
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      parameters:
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            exclusiveMinimum: 0
+            maximum: 100
+        - name: cursor
+          in: query
+          schema:
+            type: [string, "null"]
+        - name: sort
+          in: query
+          schema:
+            $ref: "#/components/schemas/Sort"
+      responses:
+        "200":
+          description: A page of pets.
+          headers:
+            X-Rate-Limit:
+              schema:
+                type: integer
+                exclusiveMinimum: 0
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Pet"
+                  nextCursor:
+                    type: [string, "null"]
+    post:
+      operationId: createPet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pet"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+
+  /pets/{petId}/photo:
+    post:
+      operationId: uploadPetPhoto
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  contentMediaType: image/png
+                  contentEncoding: base64
+                caption:
+                  type: [string, "null"]
+                  maxLength: 140
+            encoding:
+              file:
+                headers:
+                  X-Checksum:
+                    schema:
+                      type: string
+                      pattern: "^[0-9a-f]{8}$"
+      responses:
+        "204":
+          description: Stored.
+
+webhooks:
+  petArrived:
+    post:
+      operationId: petArrived
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pet"
+      responses:
+        "204":
+          description: Acknowledged.
+
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [id, name]
+      externalDocs:
+        description: The pet model.
+        url: https://example.com/docs/pet
+      xml:
+        name: pet
+      $defs:
+        Weight:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 200
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        nickname:
+          type: [string, "null"]
+          description: What the owner actually calls it.
+        weightKg:
+          $ref: "#/components/schemas/Pet/$defs/Weight"
+        kind:
+          const: pet
+        # A tuple, spelled the way 2020-12 spells one.
+        coordinates:
+          type: array
+          prefixItems:
+            - type: number
+            - type: number
+          items: false
+        tags:
+          type: array
+          items:
+            type: string
+          examples:
+            - [house-trained, loud]
+        category:
+          type: [object, "null"]
+          properties:
+            id:
+              type: integer
+            name:
+              type: string
+
+    Sort:
+      type: string
+      enum: [name, -name, added]
+      default: name
+
+    Animal:
+      oneOf:
+        - $ref: "#/components/schemas/Pet"
+        - type: object
+          properties:
+            species:
+              type: string
+      discriminator:
+        propertyName: petType

@@ -1,0 +1,277 @@
+# An OpenAPI 3.0 document that leans on everything 3.0 spells differently from
+# JSON Schema 2020-12: nullable on a typed schema and on the allOf-around-a-$ref
+# workaround, boolean exclusive bounds, and OpenAPI's own schema annotations.
+# The refs run four deep — Pet to Category to Tag to Meta — so the resolver has
+# something to chew on before this document reaches normalisation.
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: "1.4.0"
+  description: A store that sells pets and has opinions about schemas.
+servers:
+  - url: https://api.example.com/v2
+
+paths:
+  /pets:
+    parameters:
+      - name: X-Tenant
+        in: header
+        required: true
+        schema:
+          type: string
+          nullable: true
+    get:
+      operationId: listPets
+      summary: List pets
+      parameters:
+        - $ref: "#/components/parameters/PageSize"
+        - name: minWeight
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            exclusiveMinimum: true
+            maximum: 500
+            exclusiveMaximum: false
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [available, pending, sold]
+            default: available
+      responses:
+        "200":
+          description: A page of pets.
+          headers:
+            X-Rate-Limit:
+              $ref: "#/components/headers/RateLimit"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Pet"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: createPet
+      summary: Add a pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Pet"
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+      callbacks:
+        petCreated:
+          "{$request.body#/webhookUrl}":
+            post:
+              operationId: petCreatedCallback
+              requestBody:
+                content:
+                  application/json:
+                    schema:
+                      type: object
+                      properties:
+                        pet:
+                          $ref: "#/components/schemas/Pet"
+                        at:
+                          type: string
+                          format: date-time
+                          nullable: true
+              responses:
+                "204":
+                  description: Acknowledged.
+
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+            exclusiveMinimum: false
+      responses:
+        "200":
+          description: One pet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pet"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /pets/{petId}/photo:
+    post:
+      operationId: uploadPetPhoto
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                caption:
+                  type: string
+                  nullable: true
+                  maxLength: 140
+            encoding:
+              file:
+                contentType: image/png
+                headers:
+                  X-Checksum:
+                    description: CRC32 of the upload.
+                    schema:
+                      type: string
+                      pattern: "^[0-9a-f]{8}$"
+                      nullable: true
+      responses:
+        "204":
+          description: Stored.
+
+components:
+  parameters:
+    PageSize:
+      name: pageSize
+      in: query
+      description: How many to return.
+      schema:
+        type: integer
+        minimum: 0
+        exclusiveMinimum: true
+        maximum: 100
+        exclusiveMaximum: true
+
+  headers:
+    RateLimit:
+      description: Calls left in this window.
+      schema:
+        type: integer
+        minimum: 0
+        exclusiveMinimum: false
+
+  responses:
+    NotFound:
+      description: No such pet.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Pet:
+      type: object
+      required: [id, name]
+      externalDocs:
+        description: The pet model.
+        url: https://example.com/docs/pet
+      xml:
+        name: pet
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          xml:
+            attribute: true
+        nickname:
+          type: string
+          nullable: true
+          description: What the owner actually calls it.
+        weightKg:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+        # The 3.0 workaround for not being allowed siblings next to a $ref. The
+        # nullable sits on a schema that has no type of its own.
+        category:
+          allOf:
+            - $ref: "#/components/schemas/Category"
+          nullable: true
+          description: Where it is shelved.
+        photoUrls:
+          type: array
+          items:
+            type: string
+            format: uri
+      example:
+        # Data, not a schema. Nothing in here is a keyword, however much it
+        # looks like one.
+        id: 7
+        nullable: true
+        discriminator: petType
+
+    Category:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        tags:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tag"
+
+    Tag:
+      type: object
+      properties:
+        label:
+          type: string
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    Meta:
+      type: object
+      additionalProperties: false
+      properties:
+        addedBy:
+          type: string
+          nullable: true
+        source:
+          type: string
+          enum: [import, manual]
+
+    Animal:
+      oneOf:
+        - $ref: "#/components/schemas/Pet"
+        - $ref: "#/components/schemas/Category"
+      discriminator:
+        propertyName: petType
+        mapping:
+          pet: "#/components/schemas/Pet"
+
+    Error:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+          nullable: true
+        detail:
+          # Nullable with nothing to constrain: it already admits null.
+          nullable: true
+          description: Anything the upstream felt like saying.
