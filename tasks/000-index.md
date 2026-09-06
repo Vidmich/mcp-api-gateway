@@ -43,3 +43,15 @@ independent of each other, as are 020–023 once 019 is done.
 | 032 | [Documentation](032-documentation.md) | 8 · Ship |
 | 033 | [End to end test suite](033-end-to-end-test-suite.md) | 8 · Ship |
 | 034 | [Release pipeline](034-release-pipeline.md) | 8 · Ship |
+
+## Backlog
+
+Numbered from 100 so they never collide with the milestone chain above. Each one still
+names its dependencies; none of them is needed for v1 to ship.
+
+| # | Task | Milestone |
+|---|---|---|
+| 100 | [Auto-disable a failing server](100-auto-disable-failing-servers.md) | 9 · Resilience |
+| 101 | [Per-server rate limits](101-per-server-rate-limits.md) | 9 · Resilience |
+| 102 | [The built-in gateway server](102-builtin-gateway-server.md) | 10 · Self-service |
+
