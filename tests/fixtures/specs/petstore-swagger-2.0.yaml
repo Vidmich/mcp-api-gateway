@@ -1,0 +1,254 @@
+# A Swagger 2.0 document written the way real ones are: response codes left as
+# YAML integers, a shared parameter in the root map, a document-level consumes
+# that one operation overrides, a form upload, and three things that OpenAPI 3
+# has no way to say. Every one of those is here because the converter has to
+# have an answer for it.
+swagger: "2.0"
+info:
+  title: Pet Store
+  description: A small store, for testing the Swagger 2.0 converter.
+  version: "1.0.0"
+host: api.example.com
+basePath: /v2
+schemes:
+  - http
+  - https
+consumes:
+  - application/json
+produces:
+  - application/json
+
+securityDefinitions:
+  api_key:
+    type: apiKey
+    name: X-API-Key
+    in: header
+  basic_auth:
+    type: basic
+    description: Username and password.
+  petstore_auth:
+    type: oauth2
+    flow: accessCode
+    authorizationUrl: https://auth.example.com/authorize
+    tokenUrl: https://auth.example.com/token
+    scopes:
+      read:pets: Read your pets.
+      write:pets: Change your pets.
+  # Not a Swagger 2.0 security type at all, and nothing references it. Old
+  # hand-written specs carry things like this.
+  mtls:
+    type: mutualTLS
+
+security:
+  - api_key: []
+
+parameters:
+  pageSize:
+    name: pageSize
+    in: query
+    description: How many pets to return.
+    type: integer
+    format: int32
+    default: 20
+    maximum: 100
+
+responses:
+  NotFound:
+    description: No pet with that id.
+    schema:
+      $ref: "#/definitions/Error"
+
+definitions:
+  Pet:
+    type: object
+    required:
+      - name
+    properties:
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+      nickname:
+        type: string
+        x-nullable: true
+      category:
+        $ref: "#/definitions/Category"
+      tags:
+        type: array
+        items:
+          $ref: "#/definitions/Tag"
+      status:
+        type: string
+        enum:
+          - available
+          - pending
+          - sold
+    example:
+      id: 7
+      name: Rex
+      # Data, not a schema: this stays exactly as written.
+      category:
+        $ref: "#/definitions/Category"
+  Category:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      name:
+        type: string
+  Tag:
+    type: object
+    properties:
+      name:
+        type: string
+  Error:
+    type: object
+    # Draft-4 allows this and OpenAPI 3 does not.
+    required: []
+    properties:
+      message:
+        type: string
+  Animal:
+    type: object
+    # A string in Swagger 2, an object in OpenAPI 3.
+    discriminator: petType
+    required:
+      - petType
+    properties:
+      petType:
+        type: string
+      discriminator:
+        description: A property that happens to be named like a keyword.
+        type: string
+
+paths:
+  /pets:
+    parameters:
+      - name: X-Request-Id
+        in: header
+        description: Correlation id.
+        type: string
+    get:
+      operationId: listPets
+      summary: List pets.
+      description: Returns every pet the caller can see.
+      parameters:
+        - $ref: "#/parameters/pageSize"
+        - name: status
+          in: query
+          type: array
+          items:
+            type: string
+          collectionFormat: multi
+        - name: sort
+          in: query
+          type: array
+          items:
+            type: string
+          collectionFormat: pipes
+      responses:
+        200:
+          description: The pets.
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Pet"
+          headers:
+            X-Total-Count:
+              description: How many pets exist in total.
+              type: integer
+              format: int32
+        default:
+          $ref: "#/responses/NotFound"
+    post:
+      operationId: createPet
+      summary: Add a pet.
+      # Overrides the document-level consumes.
+      consumes:
+        - application/json
+        - application/xml
+      parameters:
+        - name: body
+          in: body
+          description: The pet to add.
+          required: true
+          schema:
+            $ref: "#/definitions/Pet"
+      responses:
+        201:
+          description: Created.
+          schema:
+            $ref: "#/definitions/Pet"
+
+  /pets/{petId}:
+    get:
+      operationId: getPet
+      summary: Fetch one pet.
+      produces:
+        - application/json
+        - text/plain
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          type: integer
+          format: int64
+        # OpenAPI 3 forbids naming this as a parameter.
+        - name: Authorization
+          in: header
+          type: string
+      responses:
+        200:
+          description: The pet.
+          schema:
+            $ref: "#/definitions/Pet"
+        404:
+          $ref: "#/responses/NotFound"
+
+  /pets/{petId}/photo:
+    post:
+      operationId: uploadPetPhoto
+      summary: Attach a photo.
+      consumes:
+        - multipart/form-data
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          type: integer
+          format: int64
+        - name: caption
+          in: formData
+          description: Shown under the photo.
+          type: string
+          required: true
+        - name: file
+          in: formData
+          description: The image itself.
+          type: file
+          required: true
+      responses:
+        200:
+          description: Stored.
+
+  /pets/legacy:
+    get:
+      operationId: listLegacyPets
+      summary: A corner nobody should have written.
+      parameters:
+        - name: ids
+          in: query
+          type: array
+          items:
+            type: string
+          # OpenAPI 3 has no tab-separated serialisation.
+          collectionFormat: tsv
+      responses:
+        200:
+          description: The pets.
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Pet"

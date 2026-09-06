@@ -85,9 +85,31 @@ class UnresolvedRefError(SpecError):
         )
 
 
+class UnsupportedSpecVersionError(SpecError):
+    """The document is not a spec version the gateway knows how to read.
+
+    Swagger 2.0, OpenAPI 3.0 and OpenAPI 3.1 are the three the gateway speaks.
+    Anything else — Swagger 1.x, a version that does not exist yet, a JSON file
+    that is not a spec at all — stops here rather than being guessed at, because
+    every stage downstream is written against a shape this one has confirmed.
+    """
+
+    def __init__(self, found: str | None) -> None:
+        self.found = found
+        what = (
+            f"declares itself as {found!r}"
+            if found
+            else "has no 'openapi' or 'swagger' version key"
+        )
+        super().__init__(
+            f"This document {what}. The gateway reads Swagger 2.0, OpenAPI 3.0 and OpenAPI 3.1."
+        )
+
+
 __all__ = [
     "Diagnostics",
     "SpecError",
     "SpecWarning",
     "UnresolvedRefError",
+    "UnsupportedSpecVersionError",
 ]

@@ -25,7 +25,7 @@ Convert Swagger 2.0 documents to OpenAPI 3.0 in-house, since no maintained Pytho
 
 ## Acceptance
 
-- [ ] The checked-in Swagger 2.0 fixture converts and then parses as valid OpenAPI 3.0.
-- [ ] A `formData` operation produces a form-encoded request body with the right properties.
-- [ ] Every `#/definitions/` ref in the fixture is rewritten; none survive.
-- [ ] An operation-level `consumes` overrides the document-level one.
+- [x] The checked-in Swagger 2.0 fixture converts and then parses as valid OpenAPI 3.0.
+- [x] A `formData` operation produces a form-encoded request body with the right properties.
+- [x] Every `#/definitions/` ref in the fixture is rewritten; none survive.
+- [x] An operation-level `consumes` overrides the document-level one.

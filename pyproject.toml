@@ -46,6 +46,9 @@ dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
     "respx>=0.21",
+    # Checks the Swagger 2 converter's output against the official OpenAPI 3.0
+    # meta-schema, so "it converts" means the same thing here as everywhere else.
+    "openapi-spec-validator>=0.7",
     "ruff>=0.6",
     "mypy>=1.11",
     "types-pyyaml>=6.0",
