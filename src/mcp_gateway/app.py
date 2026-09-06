@@ -35,6 +35,7 @@ from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
 from mcp_gateway.outbound import outbound_service
+from mcp_gateway.web.auth import mount_admin
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,9 @@ def create_app(
 
     app.add_middleware(RequestLog)
     app.include_router(router)
+    #: The admin account, or ``None`` when the pages are open (spec §3.3). Set
+    #: before any router that guards itself with ``require_session`` is added.
+    app.state.admin = mount_admin(app, settings, keys)
     #: The MCP endpoint. Mounted here so the route exists however the app is
     #: built; it answers 503 until ``mcp_service`` starts it (spec §6).
     app.state.mcp = mount_mcp(app)

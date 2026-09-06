@@ -24,7 +24,7 @@ Gate the admin surfaces behind an optional username and password.
 
 ## Acceptance
 
-- [ ] Configured mode: bad credentials fail, good credentials set a cookie with the documented flags, protected routes then work.
-- [ ] Open mode: no login route exists and protected routes are reachable.
-- [ ] A tampered cookie is rejected.
-- [ ] `/mcp` and `/healthz` respond identically in both modes.
+- [x] Configured mode: bad credentials fail, good credentials set a cookie with the documented flags, protected routes then work.
+- [x] Open mode: no login route exists and protected routes are reachable.
+- [x] A tampered cookie is rejected.
+- [x] `/mcp` and `/healthz` respond identically in both modes.
