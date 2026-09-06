@@ -30,18 +30,23 @@ import hashlib
 import hmac
 import logging
 import secrets
-from pathlib import Path
-from typing import Annotated, Final
+from typing import TYPE_CHECKING, Annotated, Final
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, FastAPI, Form, Query, Request
-from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import ConfigError, Settings
 from mcp_gateway.web.passwords import PasswordHash, PasswordHashInvalid, derive, parse
+
+if TYPE_CHECKING:
+    # For the annotation only. The shell is the layer above this one — it
+    # renders pages, this one decides who may see them — so it imports these
+    # constants at runtime, and the login routes are handed the shell rather
+    # than importing it back.
+    from mcp_gateway.web.shell import Shell
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +88,6 @@ SIGN_IN_REQUIRED: Final = "Sign in to use this API."
 #: being updated; this header is how the browser is told to navigate instead.
 HTMX_REQUEST: Final = "HX-Request"
 HTMX_REDIRECT: Final = "HX-Redirect"
-
-TEMPLATES: Final = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
 # Spelled as a state rather than as an error, like the exceptions in
@@ -196,13 +199,23 @@ def signing_key(settings: Settings, keys: Keys | None) -> str:
     return secrets.token_urlsafe(48)
 
 
-def build_admin(settings: Settings, keys: Keys | None = None) -> AdminAuth | None:
+def build_admin(
+    settings: Settings,
+    keys: Keys | None = None,
+    *,
+    secret_key: str | None = None,
+) -> AdminAuth | None:
     """The admin account for a resolved configuration, or ``None`` if open.
 
     A hash given in the configuration is used as it stands; otherwise one is
     derived from the password, once, here at startup. Both being set is legal
     but ambiguous, so the hash wins — quietly preferring the plaintext would be
     the more surprising of the two — and the choice is logged.
+
+    ``secret_key`` is for a caller that has already resolved the process key and
+    wants this account signed with that one. Without it the key is resolved
+    here, which is right for a lone account and wrong for a whole application:
+    with no key on disk each call would invent a different one.
     """
     admin = settings.admin
     if admin is None:
@@ -224,7 +237,8 @@ def build_admin(settings: Settings, keys: Keys | None = None) -> AdminAuth | Non
         assert admin.password is not None
         password_hash = derive(admin.password)
 
-    return AdminAuth(admin.username, password_hash, signing_key(settings, keys))
+    key = secret_key if secret_key is not None else signing_key(settings, keys)
+    return AdminAuth(admin.username, password_hash, key)
 
 
 def require_session(request: Request) -> str | None:
@@ -279,7 +293,7 @@ def unauthenticated(request: Request, exc: Exception) -> Response:
     return RedirectResponse(target, status_code=303)
 
 
-def login_router(admin: AdminAuth) -> APIRouter:
+def login_router(admin: AdminAuth, shell: Shell) -> APIRouter:
     """The login and logout routes, mounted only when there is an account.
 
     These three are the exception to the guard: a session cannot be required to
@@ -295,15 +309,10 @@ def login_router(admin: AdminAuth) -> APIRouter:
         error: str | None = None,
         status_code: int = 200,
     ) -> Response:
-        response = TEMPLATES.TemplateResponse(
+        response = shell.render(
             request,
             "login.html",
-            {
-                "next": next_path,
-                "username": username,
-                "error": error,
-                "login_path": LOGIN_PATH,
-            },
+            {"next": next_path, "username": username, "error": error},
             status_code=status_code,
         )
         # A cached login page would hand the next person at this browser a form
@@ -354,7 +363,9 @@ def login_router(admin: AdminAuth) -> APIRouter:
     return router
 
 
-def mount_admin(app: FastAPI, settings: Settings, keys: Keys | None = None) -> AdminAuth | None:
+def mount_admin(
+    app: FastAPI, settings: Settings, shell: Shell, secret_key: str
+) -> AdminAuth | None:
     """Wire admin authentication into ``app`` and return the account, if any.
 
     The handler for :class:`NotAuthenticated` is registered in both modes: the
@@ -362,9 +373,9 @@ def mount_admin(app: FastAPI, settings: Settings, keys: Keys | None = None) -> A
     way, and an unhandled exception would be a 500 where a 401 was meant.
     """
     app.add_exception_handler(NotAuthenticated, unauthenticated)
-    admin = build_admin(settings, keys)
+    admin = build_admin(settings, secret_key=secret_key)
     if admin is not None:
-        app.include_router(login_router(admin))
+        app.include_router(login_router(admin, shell))
     return admin
 
 

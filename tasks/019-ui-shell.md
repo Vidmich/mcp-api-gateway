@@ -22,6 +22,6 @@ Build the template layer, navigation, and vendored front-end assets everything e
 
 ## Acceptance
 
-- [ ] Pages render and the nav highlights the active section.
-- [ ] A grep of the rendered HTML finds no external host references.
-- [ ] Error pages render for each of the three statuses.
+- [x] Pages render and the nav highlights the active section.
+- [x] A grep of the rendered HTML finds no external host references.
+- [x] Error pages render for each of the three statuses.

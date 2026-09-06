@@ -1,0 +1,12 @@
+{# Reached when a session was required and none was presented, and the request
+   was not one the guard could simply redirect (spec §3.3). #}
+{% extends "errors/error.html" %}
+
+{% block headline %}Sign in to continue{% endblock %}
+{% block explanation %}
+  This page is part of the gateway's configuration, which is behind the admin
+  login.
+{% endblock %}
+{% block actions %}
+<p><a class="button" href="{{ login_path }}">Sign in</a></p>
+{% endblock %}

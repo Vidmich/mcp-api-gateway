@@ -1,0 +1,19 @@
+{# What a table says when it has nothing in it.
+
+   An empty page that just shows an empty table reads as a failure. This says
+   what is missing and points at the thing that fixes it:
+
+     {% from "partials/empty_state.html" import empty_state %}
+     {{ empty_state("No servers yet",
+                    "Register an OpenAPI or Swagger service to expose it over MCP.",
+                    href="/ui/servers/new", action="Add a server") }}
+#}
+{% macro empty_state(title, message, href=none, action=none) -%}
+<div class="empty-state">
+  <h2 class="empty-state__title">{{ title }}</h2>
+  <p class="empty-state__message">{{ message }}</p>
+  {% if href and action %}
+  <p><a class="button" href="{{ href }}">{{ action }}</a></p>
+  {% endif %}
+</div>
+{%- endmacro %}

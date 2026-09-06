@@ -1,0 +1,22 @@
+{# The confirm-then-act pattern, in one place so every destructive button in the
+   UI asks the same way.
+
+   htmx's own ``hx-confirm`` is the whole mechanism: the browser asks, and the
+   request is only issued on a yes. That keeps the guard on the same element as
+   the action, which is the one arrangement that cannot drift apart — there is
+   no separate dialog that could be dismissed while the request goes out anyway.
+
+     {% from "partials/confirm.html" import confirm %}
+     {{ confirm("/api/v1/servers/7", "Delete",
+                "Delete petstore and its 24 operations? Metrics are kept.") }}
+#}
+{% macro confirm(action, label, question, method="delete", target="closest tr", swap="outerHTML") -%}
+<button
+  class="button button--danger"
+  type="button"
+  hx-{{ method }}="{{ action }}"
+  hx-confirm="{{ question }}"
+  hx-target="{{ target }}"
+  hx-swap="{{ swap }}"
+>{{ label }}</button>
+{%- endmacro %}

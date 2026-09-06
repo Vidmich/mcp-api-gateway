@@ -1,0 +1,24 @@
+{# The error page, and the base of the three that say something more specific.
+
+   Every one of them renders inside the ordinary layout: an operator who hits a
+   404 should still be one click from where they meant to go, rather than on a
+   bare page with a back button. #}
+{% extends "base.html" %}
+
+{% block title %}{{ status }} &middot; mcp-gateway{% endblock %}
+{% block body_class %}page--error{% endblock %}
+
+{% block content %}
+<section class="error">
+  <p class="error__status">{{ status }}</p>
+  <h1 class="error__headline">{% block headline %}Something went wrong{% endblock %}</h1>
+  <p class="error__explanation">
+    {%- block explanation -%}
+    The gateway could not complete that request.
+    {%- endblock -%}
+  </p>
+  {% block actions %}
+  <p><a class="button" href="{{ home_path }}">Back to servers</a></p>
+  {% endblock %}
+</section>
+{% endblock %}

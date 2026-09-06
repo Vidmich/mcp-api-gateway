@@ -1,96 +1,43 @@
 {# The sign-in page (spec §3.3).
 
-   Standalone rather than extending a layout: this is the one page that renders
-   before task 019's shell exists, and the one page a browser can reach without
-   a session. It references nothing external — no font, no script, no CDN — so
-   it works on an isolated network exactly as the rest of the UI must. #}
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Sign in &middot; mcp-gateway</title>
-    <style>
-      body {
-        font-family: system-ui, sans-serif;
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        background: #f4f5f7;
-        color: #1c1e21;
-      }
-      main {
-        width: min(22rem, 90vw);
-        padding: 2rem;
-        background: #fff;
-        border: 1px solid #d8dade;
-        border-radius: 0.5rem;
-      }
-      h1 {
-        margin: 0 0 1.5rem;
-        font-size: 1.25rem;
-      }
-      label {
-        display: block;
-        margin-bottom: 0.25rem;
-        font-size: 0.875rem;
-      }
-      input {
-        width: 100%;
-        margin-bottom: 1rem;
-        padding: 0.5rem;
-        font: inherit;
-        border: 1px solid #b9bcc2;
-        border-radius: 0.25rem;
-        box-sizing: border-box;
-      }
-      button {
-        width: 100%;
-        padding: 0.5rem;
-        font: inherit;
-        color: #fff;
-        background: #2f5fdb;
-        border: 0;
-        border-radius: 0.25rem;
-        cursor: pointer;
-      }
-      .error {
-        margin: 0 0 1rem;
-        padding: 0.5rem 0.75rem;
-        font-size: 0.875rem;
-        color: #7d1d1d;
-        background: #fdecec;
-        border: 1px solid #f0b4b4;
-        border-radius: 0.25rem;
-      }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>mcp-gateway</h1>
-      {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
-      <form method="post" action="{{ login_path }}">
-        <input type="hidden" name="next" value="{{ next }}" />
-        <label for="username">Username</label>
-        <input
-          id="username"
-          name="username"
-          value="{{ username }}"
-          autocomplete="username"
-          autofocus
-          required
-        />
-        <label for="password">Password</label>
-        <input
-          id="password"
-          name="password"
-          type="password"
-          autocomplete="current-password"
-          required
-        />
-        <button type="submit">Sign in</button>
-      </form>
-    </main>
-  </body>
-</html>
+   Renders inside the layout for the stylesheet's sake, but replaces the
+   masthead with nothing: its navigation would lead only to pages this visitor
+   cannot open yet, and its Sign out button is meaningless to someone who is not
+   signed in. #}
+{% extends "base.html" %}
+
+{% block title %}Sign in &middot; mcp-gateway{% endblock %}
+{% block body_class %}page--centred{% endblock %}
+{% block masthead %}{% endblock %}
+
+{% block content %}
+<section class="card card--narrow">
+  <h1 class="card__title">mcp-gateway</h1>
+  {% if error %}<p class="flash flash--error" role="alert">{{ error }}</p>{% endif %}
+  <form method="post" action="{{ login_path }}">
+    <input type="hidden" name="next" value="{{ next }}" />
+    <label class="field">
+      <span class="field__label">Username</span>
+      <input
+        class="field__input"
+        name="username"
+        value="{{ username }}"
+        autocomplete="username"
+        autofocus
+        required
+      />
+    </label>
+    <label class="field">
+      <span class="field__label">Password</span>
+      <input
+        class="field__input"
+        name="password"
+        type="password"
+        autocomplete="current-password"
+        required
+      />
+    </label>
+    <button class="button button--primary button--block" type="submit">Sign in</button>
+  </form>
+</section>
+{% endblock %}

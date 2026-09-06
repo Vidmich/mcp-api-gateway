@@ -35,7 +35,8 @@ from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
 from mcp_gateway.outbound import outbound_service
-from mcp_gateway.web.auth import mount_admin
+from mcp_gateway.web.auth import mount_admin, signing_key
+from mcp_gateway.web.shell import mount_shell
 
 logger = logging.getLogger(__name__)
 
@@ -195,9 +196,16 @@ def create_app(
 
     app.add_middleware(RequestLog)
     app.include_router(router)
+    #: The key everything that signs a cookie uses, resolved once: with no key
+    #: file on disk each call to ``signing_key`` invents a different one.
+    app.state.secret_key = secret_key = signing_key(settings, keys)
+    #: The templates, static assets and error pages the UI renders through
+    #: (spec §7.1). First, so that every router added after it — the login
+    #: routes included — is handed a shell rather than building one.
+    app.state.shell = shell = mount_shell(app, secret_key)
     #: The admin account, or ``None`` when the pages are open (spec §3.3). Set
     #: before any router that guards itself with ``require_session`` is added.
-    app.state.admin = mount_admin(app, settings, keys)
+    app.state.admin = mount_admin(app, settings, shell, secret_key)
     #: The MCP endpoint. Mounted here so the route exists however the app is
     #: built; it answers 503 until ``mcp_service`` starts it (spec §6).
     app.state.mcp = mount_mcp(app)

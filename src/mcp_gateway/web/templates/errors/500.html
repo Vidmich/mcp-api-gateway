@@ -1,0 +1,10 @@
+{# A bug, not a mistake by the person reading it. Says where the detail is,
+   because on this page the operator and the person who can read the log are
+   almost always the same person. #}
+{% extends "errors/error.html" %}
+
+{% block headline %}The gateway hit an error{% endblock %}
+{% block explanation %}
+  Something failed while handling that request. The gateway's log has the
+  traceback, with the URL that produced it.
+{% endblock %}

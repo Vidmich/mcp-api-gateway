@@ -1,0 +1,24 @@
+{# The status badge, in one place so that "Needs attention" is spelled the same
+   way on the server list, the detail page and the monitoring strip.
+
+   Used as a macro rather than an include so a caller cannot forget to set the
+   variable it reads:
+
+     {% from "partials/status_badge.html" import status_badge %}
+     {{ status_badge("attention") }}
+     {{ status_badge("error", label="3 failures", title="Last: 502 from /pets") }}
+#}
+{% macro status_badge(status, label=none, title=none) -%}
+{%- set labels = {
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "attention": "Needs attention",
+      "ok": "OK",
+      "error": "Error",
+      "new": "New",
+      "changed": "Changed",
+      "removed": "Removed",
+      "unknown": "Never refreshed",
+    } -%}
+<span class="badge badge--{{ status }}"{% if title %} title="{{ title }}"{% endif %}>{{ label if label is not none else labels.get(status, status) }}</span>
+{%- endmacro %}

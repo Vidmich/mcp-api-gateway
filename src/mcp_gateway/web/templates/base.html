@@ -1,0 +1,45 @@
+{# The layout every page renders into (spec §7.1).
+
+   Everything it loads is served from this package: no font host, no CDN, no
+   analytics. The gateway is often installed in front of an internal API on a
+   network that cannot reach any of them, and a page that half-loads there is
+   worse than one that never referred to them at all. #}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}mcp-gateway{% endblock %}</title>
+    <link rel="stylesheet" href="{{ static_url('css/app.css') }}" />
+    <script src="{{ static_url('js/htmx.min.js') }}" defer></script>
+  </head>
+  <body class="{% block body_class %}{% endblock %}">
+    {% block masthead %}
+    <header class="masthead">
+      <a class="masthead__brand" href="{{ home_path }}">mcp-gateway</a>
+      <nav class="nav" aria-label="Sections">
+        {% for item in nav %}
+        {% set current = active is not none and active.path == item.path %}
+        <a
+          class="nav__item{% if current %} nav__item--active{% endif %}"
+          href="{{ item.path }}"
+          {% if current %}aria-current="page"{% endif %}
+        >{{ item.label }}</a>
+        {% endfor %}
+      </nav>
+      {% if signed_in %}
+      <form class="masthead__signout" method="post" action="{{ logout_path }}">
+        <button class="button button--quiet" type="submit">Sign out</button>
+      </form>
+      {% endif %}
+    </header>
+    {% endblock %}
+
+    <main class="page">
+      {% include "partials/flashes.html" %}
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">mcp-gateway {{ version }}</footer>
+  </body>
+</html>

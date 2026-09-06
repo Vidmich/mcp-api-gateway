@@ -1,0 +1,9 @@
+{# The most common way to arrive here is a bookmark to a server that has since
+   been deleted, so the wording says that rather than blaming the URL. #}
+{% extends "errors/error.html" %}
+
+{% block headline %}Nothing here{% endblock %}
+{% block explanation %}
+  That address does not match anything in this gateway. If you followed a link
+  or a bookmark, whatever it pointed at may have been deleted since.
+{% endblock %}

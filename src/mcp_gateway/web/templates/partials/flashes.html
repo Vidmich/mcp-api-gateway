@@ -1,0 +1,12 @@
+{# Messages carried over from the request that redirected here.
+
+   ``role="status"`` rather than ``role="alert"``: these are reports of things
+   that already happened, and a screen reader should finish its sentence before
+   reading them out. #}
+{% if flashes %}
+<ul class="flashes" role="status">
+  {% for flash in flashes %}
+  <li class="flash flash--{{ flash.level }}">{{ flash.message }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
