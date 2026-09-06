@@ -319,14 +319,17 @@ pyproject.toml            # hatchling, requires-python = ">=3.11"
 README.md
 SPEC.md
 src/mcp_gateway/
-  __init__.py  __main__.py  cli.py  config.py  app.py  crypto.py  metrics.py  scheduler.py
-  db/            models.py  session.py  repo.py  migrations/
-  openapi/       fetch.py  normalize.py  swagger2.py  refs.py  schema.py  diff.py
+  __init__.py  __main__.py  cli.py  config.py  bootstrap.py  app.py
+  crypto.py  outbound.py  metrics.py  scheduler.py
+  db/            models.py  session.py  repo.py  migrate.py  migrations/
+  openapi/       diagnostics.py  fetch.py  normalize.py  swagger2.py  refs.py  schema.py  diff.py
   mcpsrv/        server.py  tools.py  proxy.py  auth.py
   web/           routes_ui.py  routes_api.py  auth.py  templates/  static/
 tests/           unit/  integration/  fixtures/specs/
 docs/            install.md  service-setup.md  configuration.md  security.md
 ```
+
+`outbound.py` and `openapi/diagnostics.py` are shared vocabulary rather than stages of anything: the first turns a stored credential into request headers for both the spec fetch (§5.1) and the tool-call proxy (§6), so those two cannot disagree about what a credential means; the second holds the warning and error types every ingestion stage reports through, so the UI has one shape to render and one root to catch.
 
 **Dependencies:** `fastapi`, `uvicorn[standard]`, `jinja2`, `httpx`, `pydantic` v2, `sqlalchemy[asyncio]`, `aiosqlite`, `alembic`, `mcp`, `pyyaml`, `jsonschema`, `cryptography`, `itsdangerous`, `python-multipart`. Dev: `pytest`, `pytest-asyncio`, `respx`, `ruff`, `mypy`.
 

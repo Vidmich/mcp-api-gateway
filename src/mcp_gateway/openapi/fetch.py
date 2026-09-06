@@ -38,6 +38,7 @@ import yaml
 
 from mcp_gateway.config import HttpSettings
 from mcp_gateway.crypto import Credential
+from mcp_gateway.openapi.diagnostics import SpecError
 from mcp_gateway.outbound import credential_headers, origin_of, outbound_client, same_origin
 
 logger = logging.getLogger(__name__)
@@ -65,13 +66,15 @@ BOM: Final = chr(0xFEFF)
 ParsedAs: TypeAlias = Literal["json", "yaml"]
 
 
-class SpecFetchError(Exception):
+class SpecFetchError(SpecError):
     """A spec document could not be obtained.
 
     Every failure below is one of these, so a caller that only wants to report
-    the problem has one thing to catch. ``url`` is the URL that failed, which
-    after a redirect is not necessarily the one the operator typed;
-    ``status_code`` is set only when an HTTP response was the problem.
+    the problem has one thing to catch — and this is itself a
+    :class:`~mcp_gateway.openapi.diagnostics.SpecError`, so a caller that wants
+    the whole ingestion pipeline can catch that one instead. ``url`` is the URL
+    that failed, which after a redirect is not necessarily the one the operator
+    typed; ``status_code`` is set only when an HTTP response was the problem.
     """
 
     status_code: int | None = None
