@@ -4,11 +4,12 @@
 test can build one against a throwaway :class:`~mcp_gateway.config.Settings`
 without a server, a database, or a config file anywhere near it.
 
-Everything with a lifetime — the refresh scheduler, the metrics writer, the
-database engine — arrives later as a *service*: an async context manager entered
-during startup and exited, in reverse order, during shutdown (spec §8). Nothing
-registers one yet; the seam exists so those tasks do not have to reopen this
-module's lifespan.
+Everything with a lifetime — the database engine, and later the refresh
+scheduler and the metrics writer — is a *service*: an async context manager
+entered during startup and exited, in reverse order, during shutdown (spec §8).
+:func:`default_services` names the set a real gateway runs; a test that wants an
+inert app passes its own, so no future background task has to reopen the
+lifespan to be added.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from uvicorn.server import HANDLED_SIGNALS
 from mcp_gateway import __version__
 from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import Settings
+from mcp_gateway.db.session import database_service
 
 logger = logging.getLogger(__name__)
 
@@ -151,10 +153,22 @@ def create_app(
     app.state.keys = keys
     #: Set when the lifespan starts; ``None`` in an app that was never started.
     app.state.started_at = None
+    #: Set by the database service; ``None`` in an app that does not run one.
+    app.state.db = None
 
     app.middleware("http")(_log_request)
     app.include_router(router)
     return app
+
+
+def default_services(settings: Settings) -> tuple[Service, ...]:
+    """The services a real gateway runs, in start-up order.
+
+    The database comes first because everything with a lifetime after it —
+    the refresh scheduler, the metrics writer — needs a migrated schema to
+    write into. Tests that want an inert app pass their own list instead.
+    """
+    return (database_service(settings),)
 
 
 def uvicorn_config(app: FastAPI, settings: Settings) -> uvicorn.Config:
@@ -204,6 +218,7 @@ def serve(settings: Settings, keys: Keys | None = None) -> int:
     in-flight requests finish, and runs the lifespan teardown; a second one gives
     up on the stragglers. Returns the process exit code.
     """
-    server = Server(uvicorn_config(create_app(settings, keys), settings))
+    app = create_app(settings, keys, default_services(settings))
+    server = Server(uvicorn_config(app, settings))
     server.run()
     return 0

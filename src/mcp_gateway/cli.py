@@ -75,14 +75,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: Loggers that must not follow the root level down.
+#:
+#: ``--log-level debug`` is a request to see what the gateway is doing, not to
+#: turn on SQLAlchemy's statement echo: that logs every statement *and its bound
+#: parameters* — thousands of lines a minute, with upstream credentials among
+#: them. A developer who does want it can raise these by name.
+_NOISY_LOGGERS = ("sqlalchemy.engine", "sqlalchemy.pool", "aiosqlite")
+_NOISY_FLOOR = logging.WARNING
+
+
 def configure_logging(level: str = "info") -> None:
     """Point the root logger at stderr at ``level``."""
+    resolved = _LOG_LEVELS.get(level, logging.INFO)
     logging.basicConfig(
-        level=_LOG_LEVELS.get(level, logging.INFO),
+        level=resolved,
         format="%(levelname)-8s %(name)s: %(message)s",
         stream=sys.stderr,
         force=True,
     )
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(max(resolved, _NOISY_FLOOR))
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from conftest import ServeCall
-from mcp_gateway.cli import main
+from mcp_gateway.cli import configure_logging, main
 from mcp_gateway.config import (
     ConfigError,
     Settings,
@@ -299,3 +299,34 @@ def test_a_successful_run_serves_the_resolved_configuration(
     assert len(serve_calls) == 1
     assert serve_calls[0].settings.server.port == 9001
     assert serve_calls[0].settings.admin is None
+
+
+@pytest.fixture
+def restore_logging() -> Iterator[None]:
+    """Put the process-wide logger levels back after a test changes them."""
+    watched = ["", "sqlalchemy.engine", "sqlalchemy.pool", "aiosqlite"]
+    before = {name: logging.getLogger(name).level for name in watched}
+    try:
+        yield
+    finally:
+        for name, level in before.items():
+            logging.getLogger(name).setLevel(level)
+
+
+def test_debug_logging_does_not_turn_on_sqlalchemy_s_statement_echo(
+    restore_logging: None,
+) -> None:
+    # SQLAlchemy logs every statement and its bound parameters from INFO down.
+    # Following --log-level debug there would bury the gateway's own output and
+    # put upstream credentials in the log.
+    configure_logging("debug")
+
+    assert logging.getLogger().level == logging.DEBUG
+    assert logging.getLogger("sqlalchemy.engine").level == logging.WARNING
+    assert logging.getLogger("mcp_gateway.app").getEffectiveLevel() == logging.DEBUG
+
+
+def test_a_quieter_level_still_quiets_the_noisy_loggers(restore_logging: None) -> None:
+    configure_logging("error")
+
+    assert logging.getLogger("sqlalchemy.engine").level == logging.ERROR

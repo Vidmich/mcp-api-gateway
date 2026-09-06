@@ -24,7 +24,7 @@ Define the SQLite schema and the migration path that creates it.
 
 ## Acceptance
 
-- [ ] `alembic upgrade head` on an empty file produces the full schema; `downgrade base` reverses it.
-- [ ] Each uniqueness constraint has a test that asserts the violation is raised.
-- [ ] Deleting a server deletes its operations and leaves its metric rows intact.
-- [ ] Starting the app twice against the same DB is a no-op the second time.
+- [x] `alembic upgrade head` on an empty file produces the full schema; `downgrade base` reverses it.
+- [x] Each uniqueness constraint has a test that asserts the violation is raised.
+- [x] Deleting a server deletes its operations and leaves its metric rows intact.
+- [x] Starting the app twice against the same DB is a no-op the second time.
