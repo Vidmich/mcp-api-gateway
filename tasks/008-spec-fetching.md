@@ -24,8 +24,8 @@ Download an OpenAPI or Swagger document, optionally authenticated, with the safe
 
 ## Acceptance
 
-- [ ] respx tests: each of the three auth modes sends exactly the expected headers.
-- [ ] A same-origin redirect keeps credentials; a cross-origin redirect drops them.
-- [ ] A 401 surfaces as a typed error carrying the status, not a generic failure.
-- [ ] A body over the cap is rejected without being fully buffered.
-- [ ] YAML served as `text/plain` still parses.
+- [x] respx tests: each of the three auth modes sends exactly the expected headers.
+- [x] A same-origin redirect keeps credentials; a cross-origin redirect drops them.
+- [x] A 401 surfaces as a typed error carrying the status, not a generic failure.
+- [x] A body over the cap is rejected without being fully buffered.
+- [x] YAML served as `text/plain` still parses.
