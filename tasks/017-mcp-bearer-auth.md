@@ -21,6 +21,6 @@ Make `/mcp` optionally require a bearer token, as configured.
 
 ## Acceptance
 
-- [ ] Token set: correct token passes, wrong and missing both return 401 with the challenge header.
-- [ ] Token unset: requests pass with no header.
-- [ ] A valid admin cookie alone does not authenticate `/mcp` when a token is configured.
+- [x] Token set: correct token passes, wrong and missing both return 401 with the challenge header.
+- [x] Token unset: requests pass with no header.
+- [x] A valid admin cookie alone does not authenticate `/mcp` when a token is configured.

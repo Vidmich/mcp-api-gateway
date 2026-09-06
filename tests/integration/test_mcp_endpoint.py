@@ -23,11 +23,13 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI, Header
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.shared.exceptions import MCPError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
@@ -58,11 +60,12 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def settings_for(tmp_path: Path, port: int) -> Settings:
+def settings_for(tmp_path: Path, port: int, auth_token: str = "") -> Settings:
     tmp_path.mkdir(parents=True, exist_ok=True)
     config = tmp_path / "config.toml"
     config.write_text(
-        f'[server]\nhost = "127.0.0.1"\nport = {port}\ndata_dir = "{tmp_path.as_posix()}"\n',
+        f'[server]\nhost = "127.0.0.1"\nport = {port}\ndata_dir = "{tmp_path.as_posix()}"\n'
+        + (f'\n[mcp]\nauth_token = "{auth_token}"\n' if auth_token else ""),
         encoding="utf-8",
     )
     return load_settings({"config": str(config)}, environ={})
@@ -105,8 +108,8 @@ async def start(app: FastAPI, settings: Settings) -> tuple[uvicorn.Server, async
 
 
 @asynccontextmanager
-async def running_gateway(tmp_path: Path) -> AsyncIterator[RunningGateway]:
-    settings = settings_for(tmp_path, free_port())
+async def running_gateway(tmp_path: Path, auth_token: str = "") -> AsyncIterator[RunningGateway]:
+    settings = settings_for(tmp_path, free_port(), auth_token)
     # Real keys: without them the gateway has no cipher, and a tool call it
     # cannot authenticate is refused before it is made.
     keys = Keys("signing", generate_key(), path=None)
@@ -230,10 +233,22 @@ def a_pet_lookup(prefix: str) -> OperationInput:
 
 
 @asynccontextmanager
-async def connected(url: str) -> AsyncIterator[ClientSession]:
-    """An MCP client session against ``url``, closed on the way out."""
+async def connected(url: str, token: str | None = None) -> AsyncIterator[ClientSession]:
+    """An MCP client session against ``url``, closed on the way out.
+
+    ``token`` is presented the way a real client would present one: on the
+    transport's own HTTP client, so it rides every request of the session
+    rather than only the handshake.
+    """
     async with AsyncExitStack() as stack:
-        read, write, *_ = await stack.enter_async_context(streamable_http_client(url))
+        http = None
+        if token is not None:
+            http = await stack.enter_async_context(
+                create_mcp_http_client(headers={"Authorization": f"Bearer {token}"})
+            )
+        read, write, *_ = await stack.enter_async_context(
+            streamable_http_client(url, http_client=http)
+        )
         yield await stack.enter_async_context(ClientSession(read, write))
 
 
@@ -419,3 +434,39 @@ async def test_shutting_down_with_a_live_session_is_clean(
         and record.getMessage() != DRAINED_STREAM
     ]
     assert complaints == [], [record.getMessage() for record in complaints]
+
+
+# --- the bearer token, over the wire -----------------------------------------
+
+
+async def test_a_real_client_that_presents_the_token_gets_a_session(tmp_path: Path) -> None:
+    token = "a-long-random-string"
+    async with (
+        running_gateway(tmp_path, token) as gateway,
+        connected(gateway.url, token) as session,
+    ):
+        result = await session.initialize()
+        listed = await session.list_tools()
+
+    assert result.server_info.name == SERVER_NAME
+    # The token holds for the whole session, not only the handshake.
+    assert listed.tools == []
+
+
+async def test_a_client_with_no_token_never_reaches_the_protocol(tmp_path: Path) -> None:
+    # Asserted over plain HTTP rather than through the SDK client: what matters
+    # is the status and the challenge, and a transport that cannot connect
+    # would only be able to report that it could not.
+    async with (
+        running_gateway(tmp_path, "a-long-random-string") as gateway,
+        httpx.AsyncClient() as client,
+    ):
+        response = await client.post(
+            gateway.url,
+            headers={"content-type": "application/json", "accept": "application/json"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        )
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert "mcp-session-id" not in response.headers

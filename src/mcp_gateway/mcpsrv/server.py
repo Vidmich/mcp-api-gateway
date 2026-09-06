@@ -6,7 +6,9 @@ Three things live here, in the order a request meets them.
 FastAPI router at ``mcp.path``. It is a route rather than a mount so that the
 path the operator configured is the path clients POST to — a mount would only
 match ``<path>/…`` and answer ``<path>`` itself with a redirect, which an MCP
-client sending a POST has no reason to follow.
+client sending a POST has no reason to follow. When ``mcp.auth_token`` is set
+the endpoint goes on the router wrapped in :mod:`mcp_gateway.mcpsrv.auth`'s
+guard, so an unauthenticated request is refused before any of what follows.
 
 **The session manager.** The SDK's :class:`StreamableHTTPSessionManager` owns
 the sessions and the task group they run in. That task group can only exist
@@ -64,6 +66,7 @@ from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import Database
 from mcp_gateway.mcpsrv import proxy, tools
+from mcp_gateway.mcpsrv.auth import protect
 from mcp_gateway.mcpsrv.proxy import Upstream
 
 logger = logging.getLogger(__name__)
@@ -288,10 +291,16 @@ def mount_mcp(app: FastAPI) -> MCPEndpoint:
 
     Appended after the app's own routes, so a gateway configured to serve MCP
     at ``/`` still answers ``/healthz`` itself.
+
+    Returns the endpoint rather than whatever went on the router: the caller
+    wants the thing with a lifetime, and the bearer guard has none.
     """
     settings: Settings = app.state.settings
     endpoint = MCPEndpoint(app_sessions(app), app_upstreams(app))
-    app.router.routes.append(Route(settings.mcp.path, endpoint=endpoint, name=ROUTE_NAME))
+    # The route serves the guarded application; ``app.state.mcp`` stays the
+    # endpoint itself, because that is what the lifespan has to start.
+    guarded = protect(endpoint, settings.mcp)
+    app.router.routes.append(Route(settings.mcp.path, endpoint=guarded, name=ROUTE_NAME))
     return endpoint
 
 
