@@ -14,7 +14,9 @@ from starlette.routing import Route
 import mcp_gateway
 from mcp_gateway.app import HEALTH_PATH, create_app, default_services
 from mcp_gateway.config import Settings, load_settings
+from mcp_gateway.db.session import database_service
 from mcp_gateway.mcpsrv.server import (
+    NO_DATABASE,
     ROUTE_NAME,
     SERVER_NAME,
     MCPEndpoint,
@@ -53,16 +55,34 @@ def initialize_request() -> dict[str, Any]:
     }
 
 
-def result_of(body: str) -> dict[str, Any]:
-    """Pull the JSON-RPC result out of a response, SSE-framed or not.
+def payload_of(body: str) -> dict[str, Any]:
+    """Pull the JSON-RPC message out of a response, SSE-framed or not.
 
     Streamable HTTP answers a POST either way depending on what the client
-    accepts; a test that asserts on the payload should not care which.
+    accepts; a test that asserts on the payload should not care which. The whole
+    message comes back rather than its ``result``, because some of these calls
+    are meant to fail.
     """
     for line in body.splitlines():
         if line.startswith("data: "):
-            return dict(json.loads(line[6:])["result"])
-    return dict(json.loads(body)["result"])
+            return dict(json.loads(line[6:]))
+    return dict(json.loads(body))
+
+
+def result_of(body: str) -> dict[str, Any]:
+    """The ``result`` of a call that was supposed to succeed."""
+    return dict(payload_of(body)["result"])
+
+
+def ask_for_tools(client: TestClient) -> dict[str, Any]:
+    """Open a session and call ``tools/list``, returning the JSON-RPC message."""
+    handshake = client.post("/mcp", headers=MCP_HEADERS, json=initialize_request())
+    listed = client.post(
+        "/mcp",
+        headers={**MCP_HEADERS, "mcp-session-id": handshake.headers["mcp-session-id"]},
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+    )
+    return payload_of(listed.text)
 
 
 def mcp_routes(app: Any) -> list[Route]:
@@ -153,21 +173,24 @@ def test_the_handshake_reports_the_gateway_and_its_capabilities(tmp_path: Path) 
     assert result["capabilities"]["tools"]["listChanged"] is True
 
 
-def test_the_tool_list_starts_empty(tmp_path: Path) -> None:
-    # Task 015 fills it from the database; until then the handler exists so
-    # that the capability does.
+def test_a_gateway_with_nothing_registered_lists_no_tools(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    app = create_app(settings, services=[database_service(settings), mcp_service])
+
+    with TestClient(app) as client:
+        assert ask_for_tools(client)["result"]["tools"] == []
+
+
+def test_a_gateway_without_a_database_says_so_instead_of_listing_nothing(tmp_path: Path) -> None:
+    # "No tools" is a decision the operator made; "no database" is not, and an
+    # empty list would make the second look exactly like the first.
     app = create_app(settings_for(tmp_path), services=[mcp_service])
 
     with TestClient(app) as client:
-        response = client.post("/mcp", headers=MCP_HEADERS, json=initialize_request())
-        session_id = response.headers["mcp-session-id"]
-        listed = client.post(
-            "/mcp",
-            headers={**MCP_HEADERS, "mcp-session-id": session_id},
-            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-        )
+        message = ask_for_tools(client)
 
-    assert result_of(listed.text)["tools"] == []
+    assert "result" not in message
+    assert message["error"]["message"] == NO_DATABASE
 
 
 # --- when it runs ------------------------------------------------------------

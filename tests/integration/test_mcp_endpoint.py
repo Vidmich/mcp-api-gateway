@@ -12,18 +12,24 @@ import asyncio
 import gc
 import logging
 import socket
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 
 import pytest
 import uvicorn
+from fastapi import FastAPI
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import mcp_gateway
 from mcp_gateway.app import create_app, default_services, uvicorn_config
 from mcp_gateway.config import Settings, load_settings
+from mcp_gateway.crypto import CredentialCipher, generate_key
+from mcp_gateway.db import repo
+from mcp_gateway.db.repo import NewServer, OperationInput
+from mcp_gateway.db.session import Database
 from mcp_gateway.mcpsrv.server import SERVER_NAME
 
 #: Uvicorn's note for a connection torn down while its response was still
@@ -53,10 +59,20 @@ def settings_for(tmp_path: Path, port: int) -> Settings:
 class RunningGateway:
     """A gateway serving on a real port, with the switch that stops it."""
 
-    def __init__(self, server: uvicorn.Server, task: asyncio.Task[None], port: int) -> None:
+    def __init__(
+        self, app: FastAPI, server: uvicorn.Server, task: asyncio.Task[None], port: int
+    ) -> None:
+        self.app = app
         self.server = server
         self.task = task
         self.url = f"http://127.0.0.1:{port}/mcp"
+
+    @asynccontextmanager
+    async def session(self) -> AsyncIterator[AsyncSession]:
+        """A session on the gateway's own database — the one it will read back."""
+        database: Database = self.app.state.db
+        async with database.session() as session:
+            yield session
 
     async def stop(self) -> None:
         """Exactly what a signal does, minus the signal."""
@@ -76,11 +92,56 @@ async def running_gateway(tmp_path: Path) -> AsyncIterator[RunningGateway]:
         if asyncio.get_running_loop().time() > deadline:
             raise AssertionError("the gateway never started")
         await asyncio.sleep(0.02)
-    gateway = RunningGateway(server, task, port)
+    gateway = RunningGateway(app, server, task, port)
     try:
         yield gateway
     finally:
         await gateway.stop()
+
+
+def an_operation(op_key: str, *, prefix: str, summary: str) -> OperationInput:
+    method, path = op_key.split(" ", 1)
+    slug = path.strip("/").replace("/", "_").replace("{", "").replace("}", "") or "root"
+    return OperationInput(
+        op_key=op_key,
+        operation_id=f"{method.lower()}_{slug}",
+        method=method,
+        path=path,
+        summary=summary,
+        input_schema={"type": "object", "properties": {"limit": {"type": "integer"}}},
+        input_schema_hash=f"hash-{op_key}",
+        tool_name=f"{prefix}__{method.lower()}_{slug}",
+    )
+
+
+async def register(
+    session: AsyncSession, slug: str, *operations: tuple[str, str], selected: Sequence[str]
+) -> int:
+    """Put one server and its operations in the gateway's database.
+
+    ``selected`` is given separately because that is how it works for real: an
+    import writes every operation it found, and only the ones the operator
+    ticked become tools.
+    """
+    server = await repo.create_server(
+        session,
+        NewServer(
+            name=slug.title(),
+            slug=slug,
+            tool_prefix=slug,
+            spec_url=f"https://{slug}.example/openapi.json",
+            spec_format="openapi-3.1",
+            base_url=f"https://{slug}.example/api",
+        ),
+        cipher=CredentialCipher(generate_key()),
+    )
+    await repo.upsert_operations(
+        session,
+        server.id,
+        [an_operation(key, prefix=slug, summary=summary) for key, summary in operations],
+    )
+    await repo.set_selected(session, server.id, selected)
+    return int(server.id)
 
 
 @asynccontextmanager
@@ -115,6 +176,57 @@ async def test_a_session_survives_more_than_one_request(tmp_path: Path) -> None:
 
         assert (await session.list_tools()).tools == []
         assert (await session.list_tools()).tools == []
+
+
+async def test_a_client_is_offered_exactly_the_selected_tools(tmp_path: Path) -> None:
+    """Two servers, four operations, three ticked — and one of them disabled."""
+    async with running_gateway(tmp_path) as gateway:
+        async with gateway.session() as db:
+            await register(
+                db,
+                "petstore",
+                ("GET /pets", "List pets"),
+                ("POST /pets", "Add a pet"),
+                ("DELETE /pets/{petId}", "Delete a pet"),
+                selected=["GET /pets", "POST /pets"],
+            )
+            await register(db, "billing", ("GET /invoices", "List invoices"), selected=[])
+
+        async with connected(gateway.url) as session:
+            await session.initialize()
+            tools = (await session.list_tools()).tools
+
+    assert [tool.name for tool in tools] == ["petstore__get_pets", "petstore__post_pets"]
+
+    listing = tools[0]
+    assert listing.description == "List pets\n\n(HTTP GET /pets on Petstore)"
+    assert listing.input_schema == {"type": "object", "properties": {"limit": {"type": "integer"}}}
+
+
+async def test_disabling_a_server_empties_the_next_listing(tmp_path: Path) -> None:
+    """A change made while a client is connected reaches it without a restart.
+
+    The same session asks twice: nothing is cached between the database and the
+    wire, which is what spec §6 means by configuration taking effect on the next
+    ``tools/list``.
+    """
+    async with running_gateway(tmp_path) as gateway:
+        async with gateway.session() as db:
+            server_id = await register(
+                db, "petstore", ("GET /pets", "List pets"), selected=["GET /pets"]
+            )
+
+        async with connected(gateway.url) as session:
+            await session.initialize()
+            before = (await session.list_tools()).tools
+
+            async with gateway.session() as db:
+                await repo.set_server_enabled(db, server_id, enabled=False)
+
+            after = (await session.list_tools()).tools
+
+    assert [tool.name for tool in before] == ["petstore__get_pets"]
+    assert after == []
 
 
 async def test_shutting_down_with_a_live_session_is_clean(

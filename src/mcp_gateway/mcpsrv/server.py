@@ -18,7 +18,11 @@ half-started gateway should say so in a status code.
 
 **The server.** :class:`GatewayServer` is the SDK's low-level ``Server`` with
 one correction, described on the class: it advertises ``tools.listChanged``,
-which spec §6 promises and task 025 delivers.
+which spec §6 promises and task 025 delivers. Its ``tools/list`` handler opens
+a database session per request — see :data:`Sessions` — and hands the rows to
+:mod:`mcp_gateway.mcpsrv.tools` to be dressed as MCP tools. Nothing is cached
+anywhere along that path, which is what makes a change made in the UI visible
+to the next call without a restart.
 
 Streamable HTTP only. There is no SSE fallback pair (``/sse`` plus
 ``/messages``) and no stateless mode: sessions are what a ``list_changed``
@@ -29,8 +33,8 @@ connected client needs them.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Final
 
 from fastapi import FastAPI
@@ -39,12 +43,17 @@ from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+from mcp.shared.exceptions import MCPError
+from mcp_types import INTERNAL_ERROR
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
 from mcp_gateway import __version__
 from mcp_gateway.config import Settings
+from mcp_gateway.db.session import Database
+from mcp_gateway.mcpsrv import tools
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +66,53 @@ ROUTE_NAME: Final = "mcp"
 #: The notifications the gateway promises to send. ``tools_changed`` turns into
 #: ``capabilities.tools.listChanged`` at ``initialize``; task 025 sends it.
 NOTIFICATIONS: Final = NotificationOptions(tools_changed=True)
+
+#: Answer to a client whose request needs the database and cannot have it.
+NO_DATABASE: Final = "The gateway's database is not available."
+
+#: Where a request handler gets a database session, opened per request because
+#: the tool list is read fresh every time (spec §6).
+Sessions = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+
+
+def no_database() -> AbstractAsyncContextManager[AsyncSession]:
+    """The session source of a server that was given none.
+
+    A real gateway never uses this: :func:`~mcp_gateway.app.default_services`
+    starts the database before the MCP service, so a session is always there to
+    be had. It stands in for an endpoint built on its own — in a test, or in a
+    milestone that has not wired the two together — and it fails as an MCP error
+    rather than an empty list, because "no tools" and "no database" are not the
+    same answer and only one of them is the operator's doing.
+    """
+    raise MCPError(INTERNAL_ERROR, NO_DATABASE)
+
+
+def app_sessions(app: FastAPI) -> Sessions:
+    """Database sessions taken from a running app.
+
+    Read off ``app.state`` per call rather than captured once: the database
+    service sets it during startup and clears it on the way down, so anything
+    captured when the route was built would be ``None`` for the app's whole life.
+    """
+
+    def open_session() -> AbstractAsyncContextManager[AsyncSession]:
+        database: Database | None = app.state.db
+        if database is None:
+            raise MCPError(INTERNAL_ERROR, NO_DATABASE)
+        return database.session()
+
+    return open_session
+
+
+def record_listing(count: int) -> None:
+    """Note that a ``tools/list`` was served.
+
+    The metrics hook spec §4 asks for: task 028 counts this as a ``tools_list``
+    bucket with a null server. Until then it is the log line, which is also how
+    an operator watching at debug sees the list change size under them.
+    """
+    logger.debug("tools/list -> %d tool(s)", count)
 
 
 class GatewayServer(Server[Any]):
@@ -85,21 +141,19 @@ class GatewayServer(Server[Any]):
         )
 
 
-async def _list_tools(
-    context: ServerRequestContext[Any], params: types.PaginatedRequestParams | None
-) -> types.ListToolsResult:
-    """Answer ``tools/list``. Task 015 fills this in from the database.
-
-    It is registered now, empty, because capabilities follow handlers: without
-    a ``tools/list`` handler the server advertises no ``tools`` capability at
-    all, and a client would have no reason to ask again later.
-    """
-    return types.ListToolsResult(tools=[])
-
-
-def build_server() -> GatewayServer:
+def build_server(sessions: Sessions = no_database) -> GatewayServer:
     """The MCP server the gateway presents to clients."""
-    return GatewayServer(name=SERVER_NAME, version=__version__, on_list_tools=_list_tools)
+
+    async def on_list_tools(
+        context: ServerRequestContext[Any], params: types.PaginatedRequestParams | None
+    ) -> types.ListToolsResult:
+        """Answer ``tools/list`` from the database, as of right now (spec §6)."""
+        async with sessions() as session:
+            listed = await tools.list_tools(session)
+        record_listing(len(listed.tools))
+        return listed
+
+    return GatewayServer(name=SERVER_NAME, version=__version__, on_list_tools=on_list_tools)
 
 
 class MCPEndpoint:
@@ -111,8 +165,8 @@ class MCPEndpoint:
     building a second app already gives you.
     """
 
-    def __init__(self, server: GatewayServer | None = None) -> None:
-        self.server = build_server() if server is None else server
+    def __init__(self, sessions: Sessions = no_database) -> None:
+        self.server = build_server(sessions)
         self.sessions = StreamableHTTPSessionManager(app=self.server)
         #: True only between the start and stop of :meth:`run`.
         self.running = False
@@ -152,7 +206,7 @@ def mount_mcp(app: FastAPI) -> MCPEndpoint:
     at ``/`` still answers ``/healthz`` itself.
     """
     settings: Settings = app.state.settings
-    endpoint = MCPEndpoint()
+    endpoint = MCPEndpoint(app_sessions(app))
     app.router.routes.append(Route(settings.mcp.path, endpoint=endpoint, name=ROUTE_NAME))
     return endpoint
 
@@ -171,11 +225,16 @@ async def mcp_service(app: FastAPI) -> AsyncIterator[None]:
 
 __all__ = [
     "NOTIFICATIONS",
+    "NO_DATABASE",
     "ROUTE_NAME",
     "SERVER_NAME",
     "GatewayServer",
     "MCPEndpoint",
+    "Sessions",
+    "app_sessions",
     "build_server",
     "mcp_service",
     "mount_mcp",
+    "no_database",
+    "record_listing",
 ]

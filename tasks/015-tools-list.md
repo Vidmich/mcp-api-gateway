@@ -20,7 +20,7 @@ Serve the live tool list assembled from the operator's selections.
 
 ## Acceptance
 
-- [ ] Integration test lists exactly the expected tools for a seeded DB.
-- [ ] Disabling a server removes its tools from the next response.
-- [ ] `removed` and unselected operations never appear.
-- [ ] A `tools/list` call is recorded as a `tools_list` metric once task 028 lands — leave the hook in place.
+- [x] Integration test lists exactly the expected tools for a seeded DB.
+- [x] Disabling a server removes its tools from the next response.
+- [x] `removed` and unselected operations never appear.
+- [x] A `tools/list` call is recorded as a `tools_list` metric once task 028 lands — leave the hook in place.
