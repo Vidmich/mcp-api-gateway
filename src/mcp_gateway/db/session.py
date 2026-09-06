@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from sqlalchemy import URL, event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -37,6 +37,8 @@ from mcp_gateway.db.migrate import upgrade_to_head
 logger = logging.getLogger(__name__)
 
 DATABASE_FILENAME: Final = "gateway.db"
+#: What a request is told when there is no open database to serve it from.
+NO_DATABASE: Final = "The gateway's database is not available."
 #: How long a connection waits for a competing writer before giving up.
 BUSY_TIMEOUT_MS: Final = 5000
 
@@ -112,6 +114,24 @@ def open_database(settings: Settings) -> Database:
         session_factory=async_sessionmaker(engine, expire_on_commit=False),
         path=path,
     )
+
+
+async def request_session(request: Request) -> AsyncIterator[AsyncSession]:
+    """Dependency: one database session for the life of one request.
+
+    Committed when the request ends and rolled back if it raised, because that
+    is what :meth:`Database.session` does and a web request is exactly the unit
+    of work it was written for.
+
+    A 503 rather than a 500 when there is no database: the process is up and
+    answering, and an app built without services is a normal thing in a test and
+    a brief thing during shutdown.
+    """
+    database: Database | None = request.app.state.db
+    if database is None:
+        raise HTTPException(status_code=503, detail=NO_DATABASE)
+    async with database.session() as session:
+        yield session
 
 
 def database_service(

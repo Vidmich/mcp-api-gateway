@@ -152,6 +152,44 @@ pre {
   font-size: 1.125rem;
 }
 
+/* --- page header ---------------------------------------------------------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  margin-bottom: 1.25rem;
+}
+
+.toolbar__title {
+  margin: 0;
+  font-size: 1.375rem;
+}
+
+/* Pushes the action to the far edge whatever else the toolbar picks up later. */
+.toolbar > .button {
+  margin-left: auto;
+}
+
+/* --- the enabled toggle --------------------------------------------------- */
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+
+.toggle__label {
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.row-actions {
+  text-align: right;
+  white-space: nowrap;
+}
+
 /* --- forms ---------------------------------------------------------------- */
 
 .field {
@@ -298,6 +336,13 @@ pre {
   white-space: nowrap;
   border: 1px solid transparent;
   border-radius: 999px;
+}
+
+/* A badge that follows a name or a count carries its own gap, so no template
+ * has to wrap one in an element that exists only to space it. A badge that is
+ * the whole cell gets none, and stays flush with the column. */
+.badge:not(:first-child) {
+  margin-left: 0.35rem;
 }
 
 .badge--enabled,

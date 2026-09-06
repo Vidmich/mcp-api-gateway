@@ -1,0 +1,39 @@
+{# The server table, or what stands in for it when there is nothing to show.
+
+   An ordinary template rather than a macro, unlike the partials in this folder
+   that are only ever included: this one is also returned on its own, as the
+   answer to a delete, and a macro rendered as a response would produce an empty
+   body. Its context is ``rows``, ``new_server_path``, ``list_id`` and
+   ``list_target``, which is what ``routes_ui._list_context`` exists to build.
+
+   Both halves live inside ``list_target`` on purpose. Deleting the last server
+   has to turn the table into the empty state, and swapping the region rather
+   than the row is what lets one become the other. #}
+{% from "partials/empty_state.html" import empty_state %}
+<div id="{{ list_id }}">
+  {% if rows %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th scope="col">Name</th>
+        <th scope="col">Base URL</th>
+        <th scope="col">Enabled</th>
+        <th scope="col" class="numeric">Operations</th>
+        <th scope="col">Last refresh</th>
+        <th scope="col">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      {% include "partials/server_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  {{ empty_state(
+       "No servers yet",
+       "Register an OpenAPI or Swagger service and its endpoints become MCP tools.",
+       href=new_server_path,
+       action="Add a server") }}
+  {% endif %}
+</div>

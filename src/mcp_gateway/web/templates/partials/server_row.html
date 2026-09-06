@@ -1,0 +1,62 @@
+{# One line of the server table, from the ``row`` in context.
+
+   Returned on its own as the answer to a toggle, which is why it is a template
+   rather than a macro and why it starts at the ``<tr>``: htmx replaces the row
+   it came from with exactly this.
+
+   The toggle is a real form with a real ``action``, and htmx only intercepts
+   it. Without the script the operator still gets a checkbox and a Save button
+   pointing at the same route, which is also what makes the route testable
+   without a browser. #}
+{% from "partials/status_badge.html" import status_badge %}
+{% from "partials/confirm.html" import confirm %}
+<tr id="server-{{ row.server.id }}">
+  <td>
+    <a href="{{ row.detail_path }}">{{ row.server.name }}</a>
+    {% if row.server.needs_attention %}
+    {{ status_badge("attention", title="A refresh found changes nobody has reviewed yet.") }}
+    {% endif %}
+  </td>
+  <td><code>{{ row.server.base_url }}</code></td>
+  <td>
+    <form
+      class="toggle"
+      method="post"
+      action="{{ row.toggle_path }}"
+      hx-post="{{ row.toggle_path }}"
+      hx-trigger="change"
+      hx-target="closest tr"
+      hx-swap="outerHTML"
+    >
+      <input
+        class="toggle__input"
+        type="checkbox"
+        id="enabled-{{ row.server.id }}"
+        name="enabled"
+        value="true"
+        {% if row.server.enabled %}checked{% endif %}
+      />
+      <label class="toggle__label" for="enabled-{{ row.server.id }}">
+        {{ "Enabled" if row.server.enabled else "Disabled" }}
+      </label>
+      <noscript><button class="button" type="submit">Save</button></noscript>
+    </form>
+  </td>
+  <td class="numeric">
+    <span title="{{ row.counts_title }}">
+      {{ row.server.counts.selected }} / {{ row.server.counts.total }}
+    </span>
+    {% if row.server.counts.new %}
+    {{ status_badge("new", label="%d new"|format(row.server.counts.new)) }}
+    {% endif %}
+  </td>
+  <td>{{ status_badge(row.state, label=row.refreshed, title=row.refresh_title) }}</td>
+  <td class="row-actions">
+    {{ confirm(
+         row.delete_path,
+         "Delete",
+         row.delete_question,
+         target=list_target,
+         swap="outerHTML") }}
+  </td>
+</tr>

@@ -22,7 +22,7 @@ The Configuration landing page: every registered server at a glance.
 
 ## Acceptance
 
-- [ ] The table renders seeded servers with correct counts and badges.
-- [ ] Toggling a server changes the DB and removes its tools from the next `tools/list`.
-- [ ] Deleting a server removes its operations and keeps its metric rows.
-- [ ] The empty state appears when no servers exist.
+- [x] The table renders seeded servers with correct counts and badges.
+- [x] Toggling a server changes the DB and removes its tools from the next `tools/list`.
+- [x] Deleting a server removes its operations and keeps its metric rows.
+- [x] The empty state appears when no servers exist.

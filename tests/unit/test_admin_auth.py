@@ -58,7 +58,10 @@ PASSWORD = "s3cret-password"
 #: dominate the suite; the two tests that care about the real cost say so.
 CHEAP_HASH = str(derive(PASSWORD, iterations=1))
 
-PROTECTED_PAGE = f"{UI_PREFIX}/servers"
+#: A page behind the guard that no task has built yet. It was ``/ui/servers``
+#: until task 020 made that one real, and it moves on again when task 030
+#: claims this one: what is under test is the guard, not the page.
+PROTECTED_PAGE = f"{UI_PREFIX}/monitoring"
 PROTECTED_API = f"{API_PREFIX}/servers"
 
 #: What the streamable HTTP transport requires of a POST.
@@ -99,7 +102,7 @@ def admin_for(tmp_path: Path) -> AdminAuth:
 
 
 def guarded_app(settings: Settings, keys: Keys | None = None, **kwargs: Any) -> FastAPI:
-    """An app with the routes tasks 019 to 024 will add, standing in for them now."""
+    """An app with a page and an API route standing in for the ones still to come."""
     app = create_app(settings, keys, **kwargs)
     router = APIRouter(dependencies=[Depends(require_session)])
 
@@ -525,7 +528,7 @@ def test_an_anonymous_browser_is_sent_to_the_login_page(tmp_path: Path) -> None:
         response = client.get(PROTECTED_PAGE, follow_redirects=False)
 
     assert response.status_code == 303
-    assert response.headers["location"] == f"{LOGIN_PATH}?next=%2Fui%2Fservers"
+    assert response.headers["location"] == f"{LOGIN_PATH}?next=%2Fui%2Fmonitoring"
 
 
 def test_an_anonymous_api_request_gets_401_rather_than_a_redirect(tmp_path: Path) -> None:
@@ -545,7 +548,7 @@ def test_an_anonymous_htmx_request_is_told_to_navigate(tmp_path: Path) -> None:
         response = client.get(PROTECTED_PAGE, headers={HTMX_REQUEST: "true"})
 
     assert response.status_code == 401
-    assert response.headers[HTMX_REDIRECT] == f"{LOGIN_PATH}?next=%2Fui%2Fservers"
+    assert response.headers[HTMX_REDIRECT] == f"{LOGIN_PATH}?next=%2Fui%2Fmonitoring"
 
 
 def test_a_tampered_cookie_does_not_open_a_protected_page(tmp_path: Path) -> None:

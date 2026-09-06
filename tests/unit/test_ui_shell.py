@@ -39,7 +39,10 @@ from mcp_gateway.web.shell import (
     under,
 )
 
-LAYOUT_PAGE = f"{UI_PREFIX}/servers"
+#: A page that renders nothing but the layout. Task 020 owns ``/ui/servers``
+#: itself now, so the stand-in moved down one level, to where task 023's
+#: detail page will be.
+LAYOUT_PAGE = f"{UI_PREFIX}/servers/7"
 BOOM_PAGE = f"{UI_PREFIX}/boom"
 FLASH_PAGE = f"{UI_PREFIX}/flash"
 
@@ -73,8 +76,7 @@ def shelled_app(settings: Settings, **kwargs: Any) -> FastAPI:
     app = create_app(settings, **kwargs)
     router = APIRouter()
 
-    @router.get(LAYOUT_PAGE)
-    @router.get(f"{LAYOUT_PAGE}/{{server_id}}")
+    @router.get(f"{UI_PREFIX}/servers/{{server_id}}")
     @router.get(MONITORING_PATH)
     async def page(request: Request) -> Response:
         shell: Shell = request.app.state.shell
@@ -196,7 +198,7 @@ def test_the_active_section_is_marked_in_the_page(tmp_path: Path) -> None:
 
 def test_a_child_page_still_marks_its_section(tmp_path: Path) -> None:
     with client(settings_for(tmp_path)) as http:
-        body = http.get(f"{LAYOUT_PAGE}/7", headers=HTML).text
+        body = http.get(LAYOUT_PAGE, headers=HTML).text
 
     marked = re.findall(r'<a\s+class="nav__item nav__item--active"\s+href="([^"]+)"', body)
     assert marked == [HOME_PATH]
