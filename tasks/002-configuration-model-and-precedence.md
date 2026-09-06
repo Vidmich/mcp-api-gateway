@@ -25,7 +25,7 @@ Load settings from TOML, environment, and CLI flags with a defined precedence or
 
 ## Acceptance
 
-- [ ] Precedence unit tests: for one key from each section, CLI beats env beats file beats default.
-- [ ] Missing config file yields a fully populated settings object on defaults.
-- [ ] A malformed TOML file and a type-invalid value both exit 2 with a message that names the key.
-- [ ] `--admin-user` / `--admin-password` populate the admin section even when the file has no `[admin]`.
+- [x] Precedence unit tests: for one key from each section, CLI beats env beats file beats default.
+- [x] Missing config file yields a fully populated settings object on defaults.
+- [x] A malformed TOML file and a type-invalid value both exit 2 with a message that names the key.
+- [x] `--admin-user` / `--admin-password` populate the admin section even when the file has no `[admin]`.
