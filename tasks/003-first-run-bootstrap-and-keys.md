@@ -25,7 +25,7 @@ On first run, write a minimal config file and generate the encryption and cookie
 
 ## Acceptance
 
-- [ ] First run in an empty directory produces a `config.toml` and a `keys.json`; second run modifies neither.
-- [ ] Generated config is valid TOML and parses back into equivalent settings.
-- [ ] Read-only config directory: process starts, logs the failure, and uses defaults.
-- [ ] `keys.json` is `0600` on POSIX; the test asserts the mode and is skipped on Windows.
+- [x] First run in an empty directory produces a `config.toml` and a `keys.json`; second run modifies neither.
+- [x] Generated config is valid TOML and parses back into equivalent settings.
+- [x] Read-only config directory: process starts, logs the failure, and uses defaults.
+- [x] `keys.json` is `0600` on POSIX; the test asserts the mode and is skipped on Windows.

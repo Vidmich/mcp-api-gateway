@@ -14,7 +14,8 @@ import sys
 from collections.abc import Sequence
 
 from mcp_gateway import __version__
-from mcp_gateway.config import ConfigError, Settings, load_settings
+from mcp_gateway.bootstrap import Keys, bootstrap, ensure_config_file
+from mcp_gateway.config import ConfigError, Settings, load_settings, resolve_config_path
 
 PROG = "mcp-gateway"
 
@@ -82,7 +83,7 @@ def configure_logging(level: str = "info") -> None:
     )
 
 
-def _summarise(settings: Settings) -> str:
+def _summarise(settings: Settings, keys: Keys) -> str:
     """Describe the resolved configuration for the operator.
 
     Stands in for actually serving until the app factory lands; deliberately
@@ -94,6 +95,7 @@ def _summarise(settings: Settings) -> str:
             f"config file:  {origin}",
             f"listening on: http://{settings.server.host}:{settings.server.port}",
             f"data dir:     {settings.server.data_dir}",
+            f"key file:     {keys.path or 'none (keys come from the config)'}",
             f"mcp endpoint: {settings.mcp.path}"
             + (" (bearer token required)" if settings.mcp.auth_required else " (open)"),
             "admin login:  "
@@ -110,12 +112,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Logging is up before the config is read so that the loader's warnings about
     # unknown keys are not swallowed.
     configure_logging(args.log_level or "info")
+    cli = vars(args)
     try:
-        settings = load_settings(vars(args))
+        # Written before the load so that a first run reads back the same file
+        # every later run will read.
+        ensure_config_file(resolve_config_path(cli.get("config")), cli)
+        settings = load_settings(cli)
+        configure_logging(settings.server.log_level)
+        keys = bootstrap(settings)
     except ConfigError as exc:
         print(f"{PROG}: {exc}", file=sys.stderr)
         return 2
 
-    configure_logging(settings.server.log_level)
-    print(_summarise(settings))
+    print(_summarise(settings, keys))
     return 0
