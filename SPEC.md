@@ -320,7 +320,7 @@ README.md
 SPEC.md
 src/mcp_gateway/
   __init__.py  __main__.py  cli.py  config.py  bootstrap.py  app.py
-  crypto.py  outbound.py  metrics.py  scheduler.py
+  crypto.py  outbound.py  naming.py  metrics.py  scheduler.py
   db/            models.py  session.py  repo.py  migrate.py  migrations/
   openapi/       diagnostics.py  fetch.py  normalize.py  swagger2.py  refs.py  schema.py  diff.py
   mcpsrv/        server.py  tools.py  proxy.py  auth.py
@@ -329,7 +329,7 @@ tests/           unit/  integration/  fixtures/specs/
 docs/            install.md  service-setup.md  configuration.md  security.md
 ```
 
-`outbound.py` and `openapi/diagnostics.py` are shared vocabulary rather than stages of anything: the first turns a stored credential into request headers for both the spec fetch (§5.1) and the tool-call proxy (§6), so those two cannot disagree about what a credential means; the second holds the warning and error types every ingestion stage reports through, so the UI has one shape to render and one root to catch.
+`outbound.py` and `openapi/diagnostics.py` are shared vocabulary rather than stages of anything: the first turns a stored credential into request headers for both the spec fetch (§5.1) and the tool-call proxy (§6), so those two cannot disagree about what a credential means; the second holds the warning and error types every ingestion stage reports through, so the UI has one shape to render and one root to catch. `naming.py` is the third: it decides what an operation is called, and the wizard, the settings page and the refresh all name operations, so the rule that a collision is reported rather than resolved lives in one place.
 
 **Dependencies:** `fastapi`, `uvicorn[standard]`, `jinja2`, `httpx`, `pydantic` v2, `sqlalchemy[asyncio]`, `aiosqlite`, `alembic`, `mcp`, `pyyaml`, `jsonschema`, `cryptography`, `itsdangerous`, `python-multipart`. Dev: `pytest`, `pytest-asyncio`, `respx`, `ruff`, `mypy`.
 

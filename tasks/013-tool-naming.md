@@ -22,7 +22,7 @@ Generate stable, unique, MCP-legal tool names with room for operator overrides.
 
 ## Acceptance
 
-- [ ] Two servers exposing `getUser` produce distinct default names.
-- [ ] A collision created by an override returns a conflict identifying both sides.
-- [ ] A very long `operationId` truncates deterministically and stays unique.
-- [ ] Names containing spaces, slashes, or braces are sanitised to the legal character set.
+- [x] Two servers exposing `getUser` produce distinct default names.
+- [x] A collision created by an override returns a conflict identifying both sides.
+- [x] A very long `operationId` truncates deterministically and stays unique.
+- [x] Names containing spaces, slashes, or braces are sanitised to the legal character set.
