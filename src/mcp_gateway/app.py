@@ -30,6 +30,7 @@ from uvicorn.server import HANDLED_SIGNALS
 from mcp_gateway import __version__
 from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import Settings
+from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
 
 logger = logging.getLogger(__name__)
@@ -137,7 +138,10 @@ def create_app(
     """Build the application for a resolved configuration.
 
     ``keys`` and ``services`` are optional so that a test — or an early
-    milestone — can build a working app without them.
+    milestone — can build a working app without them. Passing ``keys`` builds
+    the credential cipher here, which is what makes an unusable
+    ``security.encryption_key`` a startup failure (:class:`ConfigError`, exit 2)
+    rather than something the operator meets when they first save a credential.
     """
     app = FastAPI(
         title="mcp-gateway",
@@ -155,6 +159,8 @@ def create_app(
     app.state.started_at = None
     #: Set by the database service; ``None`` in an app that does not run one.
     app.state.db = None
+    #: Encrypts stored upstream credentials; ``None`` without keys (spec §3.2).
+    app.state.cipher = None if keys is None else CredentialCipher(keys.encryption_key)
 
     app.middleware("http")(_log_request)
     app.include_router(router)

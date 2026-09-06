@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,7 +15,8 @@ from fastapi.testclient import TestClient
 import mcp_gateway
 from mcp_gateway.app import HEALTH_PATH, create_app, startup_banner, uvicorn_config
 from mcp_gateway.bootstrap import Keys
-from mcp_gateway.config import Settings, load_settings
+from mcp_gateway.config import ConfigError, Settings, load_settings
+from mcp_gateway.crypto import CredentialCipher, generate_key
 
 
 def settings_for(tmp_path: Path, body: str = "") -> Settings:
@@ -90,12 +92,28 @@ def test_services_stop_in_reverse_order(tmp_path: Path) -> None:
 
 def test_the_app_carries_its_settings_and_keys(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
-    keys = Keys("signing", "encryption", path=tmp_path / "keys.json")
+    keys = Keys("signing", generate_key(), path=tmp_path / "keys.json")
 
     app = create_app(settings, keys)
 
     assert app.state.settings is settings
     assert app.state.keys is keys
+    assert isinstance(app.state.cipher, CredentialCipher)
+
+
+def test_an_app_without_keys_has_no_cipher(tmp_path: Path) -> None:
+    # Nothing can encrypt a credential before the keys have been resolved, and
+    # a None that a caller trips over beats a cipher keyed on a placeholder.
+    assert create_app(settings_for(tmp_path)).state.cipher is None
+
+
+def test_an_unusable_encryption_key_stops_the_app_from_being_built(tmp_path: Path) -> None:
+    # An operator who pasted the wrong thing into security.encryption_key hears
+    # about it now, not the first time they try to save an upstream credential.
+    keys = Keys("signing", "not-a-fernet-key", path=tmp_path / "keys.json")
+
+    with pytest.raises(ConfigError, match=re.escape("security.encryption_key")):
+        create_app(settings_for(tmp_path), keys)
 
 
 def test_one_line_per_request_at_debug(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

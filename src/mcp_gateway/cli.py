@@ -114,10 +114,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = load_settings(cli)
         configure_logging(settings.server.log_level)
         keys = bootstrap(settings)
+        # Serving is inside the try because building the app is where the rest
+        # of the configuration is first put to use — an unusable encryption key,
+        # an unwritable data directory — and those deserve the same exit 2 as a
+        # malformed config file rather than a traceback.
+        #
+        # The resolved configuration is announced by the app's startup banner, so
+        # what is logged is what is actually being served.
+        return serve(settings, keys)
     except ConfigError as exc:
         print(f"{PROG}: {exc}", file=sys.stderr)
         return 2
-
-    # The resolved configuration is announced by the app's startup banner, so
-    # what is logged is what is actually being served.
-    return serve(settings, keys)

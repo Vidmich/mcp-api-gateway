@@ -10,6 +10,8 @@ from typing import Any
 import pytest
 
 from conftest import ServeCall
+from mcp_gateway.app import create_app
+from mcp_gateway.bootstrap import Keys
 from mcp_gateway.cli import configure_logging, main
 from mcp_gateway.config import (
     ConfigError,
@@ -286,6 +288,25 @@ def test_out_of_range_value_from_the_environment_names_its_variable(
     stderr = capsys.readouterr().err
     assert "server.port" in stderr
     assert "MCP_GATEWAY_SERVER__PORT" in stderr
+
+
+def test_an_unusable_encryption_key_exits_2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The key is not put to use until the app is built, which happens inside
+    # serve; standing in for serve lets the failure travel the route it really
+    # takes, and proves it comes back as exit 2 rather than a traceback.
+    def build_the_app(settings: Settings, keys: Keys | None = None) -> int:
+        create_app(settings, keys)
+        return 0
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("mcp_gateway.cli.serve", build_the_app)
+    write_config(tmp_path, '[security]\nencryption_key = "not-a-fernet-key"\n')
+
+    assert main([]) == 2
+
+    assert "security.encryption_key" in capsys.readouterr().err
 
 
 def test_a_successful_run_serves_the_resolved_configuration(

@@ -22,7 +22,7 @@ Encrypt and decrypt stored credentials so the SQLite file is useless without the
 
 ## Acceptance
 
-- [ ] Round-trip test for all four payload shapes.
-- [ ] Decrypting with the wrong key raises `CredentialUnreadable`, not a library exception.
-- [ ] A tampered ciphertext byte is detected and rejected.
-- [ ] No test or log output ever contains a plaintext credential value.
+- [x] Round-trip test for all four payload shapes.
+- [x] Decrypting with the wrong key raises `CredentialUnreadable`, not a library exception.
+- [x] A tampered ciphertext byte is detected and rejected.
+- [x] No test or log output ever contains a plaintext credential value.

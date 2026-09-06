@@ -27,9 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from cryptography.fernet import Fernet
-
 from mcp_gateway.config import ConfigError, ServerSettings, Settings
+from mcp_gateway.crypto import generate_key
 
 logger = logging.getLogger(__name__)
 
@@ -215,10 +214,10 @@ def load_or_create_keys(settings: Settings) -> Keys:
 
     stored = _read_keys_file(path) if path.is_file() else {}
     generators = {
-        # The cookie signer takes any high-entropy string; Fernet needs its own
-        # 32-byte urlsafe-base64 format.
+        # The cookie signer takes any high-entropy string; the credential
+        # cipher needs Fernet's own 32-byte urlsafe-base64 format.
         SECRET_KEY_FIELD: lambda: secrets.token_urlsafe(48),
-        ENCRYPTION_KEY_FIELD: lambda: Fernet.generate_key().decode("ascii"),
+        ENCRYPTION_KEY_FIELD: generate_key,
     }
     generated = [field for field in wanted if not stored.get(field)]
     for field in generated:

@@ -42,10 +42,13 @@ from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
+from mcp_gateway.crypto import CredentialType
+
 #: Where the spec came from and which dialect it is written in.
 SpecFormat = Literal["openapi-3.1", "openapi-3.0", "swagger-2.0"]
-#: How calls to an upstream API are authenticated.
-AuthType = Literal["none", "bearer", "api_key", "basic", "headers"]
+#: What ``auth_type`` holds. Every value but ``none`` names a stored credential,
+#: so the shapes are defined once, next to the code that encrypts them.
+AuthType = Literal["none"] | CredentialType
 #: How the fetch of the spec document itself is authenticated (spec §5).
 SpecAuthMode = Literal["none", "same_as_api", "custom"]
 #: Lifecycle of an operation across refreshes (spec §6).
