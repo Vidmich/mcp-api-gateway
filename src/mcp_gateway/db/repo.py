@@ -1,0 +1,958 @@
+"""Typed data access for the schema in :mod:`mcp_gateway.db.models`.
+
+Everything above this layer — the wizard, the JSON API, the MCP endpoint, the
+refresh scheduler — reads and writes through the functions here, so the rules
+that must hold across all of them are written down once.
+
+Four conventions run through the module:
+
+*The caller owns the transaction.* Every function takes an :class:`AsyncSession`
+and none of them commit. Mutations ``flush`` — which is how a new row gets its
+id and how a unique constraint is raised at the point that caused it — but a
+request handler that fails halfway still rolls back as a whole.
+
+*Credentials go in and out through* :mod:`mcp_gateway.crypto`. The encrypted
+columns are written only by the functions here, so a caller cannot store a
+credential in the clear by mistake, and :func:`credential_for` is the only way
+back out.
+
+*Read models never carry a credential.* The DTOs below report ``auth_type``, the
+spec-auth mode, and whether a credential is ``stored`` or ``missing`` — never a
+value, not even an encrypted one. Anything rendered or serialised upstream is
+built from these, which is what makes "no response body ever contains a stored
+credential" (spec §7.3) a property of the type rather than of each handler.
+
+*The ORM rows stay available.* Machinery that needs the whole row — the refresh
+diff wants ``spec_snapshot``, the proxy wants the credential — gets a
+:class:`~mcp_gateway.db.models.Server` from :func:`get_server`. The DTOs are for
+what leaves the process.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any, Final
+
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import Select, case, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from mcp_gateway.crypto import (
+    Credential,
+    CredentialCipher,
+    CredentialState,
+    CredentialUnreadable,
+    credential_state,
+    parse_credential,
+)
+from mcp_gateway.db.models import (
+    Operation,
+    OperationStatus,
+    Server,
+    Setting,
+    SpecAuthMode,
+    SpecFormat,
+    utcnow,
+)
+
+#: Statuses that mean the operator has something to look at (spec §5.4).
+UNREVIEWED: Final[frozenset[str]] = frozenset({"new", "changed"})
+
+
+# Named the way the standard library names a failed lookup — KeyError, not
+# KeyLookupError — because that is how these read at a call site.
+class ServerNotFound(LookupError):  # noqa: N818
+    """No server with that id.
+
+    A ``LookupError`` rather than a return of ``None``: every caller answers a
+    missing server with a 404, and a bool that goes unchecked turns a delete of
+    the wrong id into a silent no-op.
+    """
+
+    def __init__(self, server_id: int) -> None:
+        self.server_id = server_id
+        super().__init__(f"No server with id {server_id}.")
+
+
+class OperationNotFound(LookupError):  # noqa: N818
+    """No operation with that id."""
+
+    def __init__(self, operation_id: int) -> None:
+        self.operation_id = operation_id
+        super().__init__(f"No operation with id {operation_id}.")
+
+
+# --------------------------------------------------------------------------- #
+# Read models
+# --------------------------------------------------------------------------- #
+
+
+class OperationCounts(BaseModel):
+    """What a server's operations add up to, for badges and totals.
+
+    ``selected`` counts only what a server actually contributes to ``tools/list``
+    when it is enabled, so a selected operation that has since been removed
+    upstream is not counted as a live tool.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    total: int = 0
+    selected: int = 0
+    new: int = 0
+    changed: int = 0
+    removed: int = 0
+
+
+class ServerSummary(BaseModel):
+    """One row of the server list. Carries credential *state*, never a value."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    name: str
+    slug: str
+    tool_prefix: str
+    spec_url: str
+    spec_format: str
+    base_url: str
+    enabled: bool
+    needs_attention: bool
+
+    auth_type: str
+    #: ``none`` / ``stored`` / ``missing`` — see :func:`~mcp_gateway.crypto.credential_state`.
+    auth: CredentialState
+    spec_auth_mode: str
+    spec_auth_type: str | None
+    spec_auth: CredentialState
+
+    auto_refresh: bool
+    last_refresh_at: dt.datetime | None
+    last_refresh_status: str | None
+    last_refresh_error: str | None
+    #: sha256 of the last normalised spec; the document itself is not exposed.
+    spec_hash: str | None
+
+    counts: OperationCounts
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class OperationView(BaseModel):
+    """One operation as the UI and the API see it.
+
+    ``input_schema`` is deliberately absent: it is large, every list would carry
+    it, and the two places that need it — ``tools/list`` and the proxy — read it
+    through :class:`ToolRow`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    server_id: int
+    op_key: str
+    operation_id: str | None
+    method: str
+    path: str
+    summary: str | None
+    description: str | None
+    description_override: str | None
+    tool_name_override: str | None
+    effective_tool_name: str
+    input_schema_hash: str
+    selected: bool
+    status: str
+    first_seen_at: dt.datetime
+    last_seen_at: dt.datetime
+
+
+class ServerDetail(ServerSummary):
+    """A server together with its operations."""
+
+    operations: tuple[OperationView, ...] = ()
+
+
+class ToolRow(BaseModel):
+    """Everything needed to advertise a tool and to call it.
+
+    Assembled from the operation and its server in one query so that
+    ``tools/list`` and ``tools/call`` cannot disagree about which operations are
+    live. Credentials are not part of it — the proxy fetches those separately,
+    through :func:`credential_for`, when it is about to build a request.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    server_id: int
+    server_name: str
+    base_url: str
+    tool_name: str
+    method: str
+    path: str
+    summary: str | None
+    description: str | None
+    description_override: str | None
+    input_schema: dict[str, Any]
+
+
+# --------------------------------------------------------------------------- #
+# Write models
+# --------------------------------------------------------------------------- #
+
+
+class NewServer(BaseModel):
+    """A server about to be registered.
+
+    ``credential`` and ``spec_credential`` are plain credential payloads; they
+    are encrypted on the way into the database and never stored otherwise.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    slug: str = Field(min_length=1, max_length=100)
+    tool_prefix: str = Field(min_length=1, max_length=100)
+    spec_url: str = Field(min_length=1)
+    spec_format: SpecFormat
+    base_url: str = Field(min_length=1)
+
+    enabled: bool = True
+    auto_refresh: bool = False
+
+    credential: Credential | None = None
+    spec_auth_mode: SpecAuthMode = "none"
+    spec_credential: Credential | None = None
+
+    spec_hash: str | None = None
+    spec_snapshot: dict[str, Any] | None = None
+
+
+class ServerPatch(BaseModel):
+    """A partial edit of a server.
+
+    Only the fields actually set are applied, which is what lets ``None`` mean
+    something: ``credential=None`` clears the stored credential, while leaving
+    ``credential`` out keeps it. That distinction is the whole reason the detail
+    form can render ``set`` / ``not set`` and still submit safely (spec §7.3).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    slug: str | None = Field(default=None, min_length=1, max_length=100)
+    tool_prefix: str | None = Field(default=None, min_length=1, max_length=100)
+    spec_url: str | None = Field(default=None, min_length=1)
+    base_url: str | None = Field(default=None, min_length=1)
+    enabled: bool | None = None
+    auto_refresh: bool | None = None
+
+    credential: Credential | None = None
+    spec_auth_mode: SpecAuthMode | None = None
+    spec_credential: Credential | None = None
+
+
+class OperationPatch(BaseModel):
+    """The operator's edits to one operation.
+
+    ``effective_tool_name`` travels with ``tool_name_override`` because the two
+    are computed together: task 013 resolves the name — including the fall back
+    to the generated default when an override is cleared — and hands the result
+    here rather than letting this layer guess.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    selected: bool | None = None
+    tool_name_override: str | None = None
+    description_override: str | None = None
+    effective_tool_name: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class OperationInput(BaseModel):
+    """One operation as ingestion produces it (tasks 012 and 013)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    op_key: str = Field(min_length=1)
+    operation_id: str | None = None
+    method: str
+    path: str
+    summary: str | None = None
+    description: str | None = None
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    input_schema_hash: str = ""
+    #: The effective tool name for a *new* row. An existing row keeps the name it
+    #: has, so a refresh can never rename a tool a client is already calling.
+    tool_name: str = Field(min_length=1, max_length=128)
+
+
+class OperationSync(BaseModel):
+    """What :func:`upsert_operations` did, by ``op_key``.
+
+    The buckets are the four transitions of spec §5.4 plus ``restored`` — an
+    operation that had been marked ``removed`` and came back unchanged. It is
+    reported separately because it is not news the operator has to act on, but
+    it is not "nothing happened" either.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    inserted: tuple[str, ...] = ()
+    changed: tuple[str, ...] = ()
+    removed: tuple[str, ...] = ()
+    restored: tuple[str, ...] = ()
+    unchanged: tuple[str, ...] = ()
+
+    @property
+    def needs_attention(self) -> bool:
+        """Whether this sync is something the operator must review (spec §5.4)."""
+        return bool(self.inserted or self.changed or self.removed)
+
+
+# --------------------------------------------------------------------------- #
+# Credentials
+# --------------------------------------------------------------------------- #
+
+
+def _spec_auth_state(server: Server) -> CredentialState:
+    """How the spec URL is authenticated, without decrypting anything."""
+    if server.spec_auth_mode == "none":
+        return "none"
+    if server.spec_auth_mode == "same_as_api":
+        # Reusing the API credential when there is none to reuse is a half-saved
+        # configuration, not an unauthenticated fetch.
+        return "missing" if server.auth_type == "none" else _api_auth_state(server)
+    return credential_state(server.spec_auth_type or "none", server.spec_auth_config_encrypted)
+
+
+def _api_auth_state(server: Server) -> CredentialState:
+    return credential_state(server.auth_type, server.auth_config_encrypted)
+
+
+def _decrypt(blob: bytes | None, *, server: Server, cipher: CredentialCipher) -> Credential:
+    if not blob:
+        raise CredentialUnreadable(server_id=server.id, reason="no credential is stored")
+    return cipher.decrypt_json(blob, server_id=server.id)
+
+
+def credential_for(server: Server, cipher: CredentialCipher) -> Credential | None:
+    """The credential to send upstream when calling this server's API.
+
+    ``None`` when the server authenticates with nothing. A configured credential
+    that cannot be produced — the key changed, the blob is damaged, the row was
+    saved half-way — raises :class:`~mcp_gateway.crypto.CredentialUnreadable`
+    naming the server, which is what the UI turns into "re-enter it".
+    """
+    if server.auth_type == "none":
+        return None
+    return _decrypt(server.auth_config_encrypted, server=server, cipher=cipher)
+
+
+def spec_credential_for(server: Server, cipher: CredentialCipher) -> Credential | None:
+    """The credential to send when fetching the spec document itself (spec §5.1).
+
+    The three modes in one place, so the fetcher does not have to know them:
+    ``none`` sends nothing, ``same_as_api`` reuses the API credential, ``custom``
+    uses the credential stored for the spec URL alone.
+    """
+    if server.spec_auth_mode == "none":
+        return None
+    if server.spec_auth_mode == "same_as_api":
+        return credential_for(server, cipher)
+    return _decrypt(server.spec_auth_config_encrypted, server=server, cipher=cipher)
+
+
+def _write_api_credential(
+    server: Server, credential: Credential | None, *, cipher: CredentialCipher
+) -> None:
+    """Store, or clear, the API credential — and keep ``auth_type`` agreeing.
+
+    The type is taken from the payload rather than accepted alongside it: two
+    fields that must match are two fields that can disagree.
+    """
+    if credential is None:
+        server.auth_type = "none"
+        server.auth_config_encrypted = None
+        return
+    parsed = parse_credential(credential)
+    server.auth_type = parsed.type
+    server.auth_config_encrypted = cipher.encrypt_json(parsed)
+
+
+def _write_spec_credential(
+    server: Server, credential: Credential | None, *, cipher: CredentialCipher
+) -> None:
+    if credential is None:
+        server.spec_auth_type = None
+        server.spec_auth_config_encrypted = None
+        return
+    parsed = parse_credential(credential)
+    server.spec_auth_type = parsed.type
+    server.spec_auth_config_encrypted = cipher.encrypt_json(parsed)
+
+
+def _settle_spec_auth(server: Server) -> None:
+    """Hold the spec-auth columns to the mode (spec §4).
+
+    A credential stored under a mode that no longer uses it is a secret kept for
+    nothing, and a ``custom`` mode with nothing stored is a fetch that will fail
+    later with a 401 rather than now with an explanation.
+    """
+    if server.spec_auth_mode != "custom":
+        server.spec_auth_type = None
+        server.spec_auth_config_encrypted = None
+    elif not server.spec_auth_config_encrypted:
+        raise ValueError("spec_auth_mode 'custom' needs a credential for the spec URL.")
+
+
+# --------------------------------------------------------------------------- #
+# Servers
+# --------------------------------------------------------------------------- #
+
+
+async def get_server(session: AsyncSession, server_id: int) -> Server | None:
+    """The ORM row, for callers that need more than the read models expose."""
+    return await session.get(Server, server_id)
+
+
+async def require_server(session: AsyncSession, server_id: int) -> Server:
+    """The ORM row, or :class:`ServerNotFound`."""
+    server = await session.get(Server, server_id)
+    if server is None:
+        raise ServerNotFound(server_id)
+    return server
+
+
+async def get_server_by_slug(session: AsyncSession, slug: str) -> Server | None:
+    """Used by the wizard to answer "is this slug taken" before writing."""
+    return (await session.scalars(select(Server).where(Server.slug == slug))).first()
+
+
+async def create_server(
+    session: AsyncSession, new: NewServer, *, cipher: CredentialCipher
+) -> Server:
+    """Register a server. Returns the flushed row, so its id is available."""
+    server = Server(
+        name=new.name,
+        slug=new.slug,
+        tool_prefix=new.tool_prefix,
+        spec_url=new.spec_url,
+        spec_format=new.spec_format,
+        base_url=new.base_url,
+        enabled=new.enabled,
+        auto_refresh=new.auto_refresh,
+        spec_auth_mode=new.spec_auth_mode,
+        spec_hash=new.spec_hash,
+        spec_snapshot=new.spec_snapshot,
+    )
+    _write_api_credential(server, new.credential, cipher=cipher)
+    _write_spec_credential(server, new.spec_credential, cipher=cipher)
+    _settle_spec_auth(server)
+
+    session.add(server)
+    await session.flush()
+    return server
+
+
+async def update_server(
+    session: AsyncSession, server_id: int, patch: ServerPatch, *, cipher: CredentialCipher
+) -> Server:
+    """Apply the fields the caller actually set. See :class:`ServerPatch`."""
+    server = await require_server(session, server_id)
+    provided = {name: getattr(patch, name) for name in patch.model_fields_set}
+
+    for field in ("name", "slug", "tool_prefix", "spec_url", "base_url", "enabled", "auto_refresh"):
+        if field in provided:
+            setattr(server, field, provided[field])
+
+    if "credential" in provided:
+        _write_api_credential(server, provided["credential"], cipher=cipher)
+    if "spec_auth_mode" in provided:
+        server.spec_auth_mode = provided["spec_auth_mode"]
+    if "spec_credential" in provided:
+        _write_spec_credential(server, provided["spec_credential"], cipher=cipher)
+    # Runs whether or not spec auth was touched: switching the mode alone has to
+    # drop a credential the mode no longer uses.
+    _settle_spec_auth(server)
+
+    await session.flush()
+    return server
+
+
+async def set_server_enabled(session: AsyncSession, server_id: int, *, enabled: bool) -> Server:
+    """The list page's toggle. Takes no cipher, because it touches no secret."""
+    server = await require_server(session, server_id)
+    server.enabled = enabled
+    await session.flush()
+    return server
+
+
+async def mark_needs_attention(session: AsyncSession, server_id: int) -> Server:
+    """Flag a server whose refresh found something (spec §5.4 step 3)."""
+    server = await require_server(session, server_id)
+    server.needs_attention = True
+    await session.flush()
+    return server
+
+
+async def acknowledge_server(session: AsyncSession, server_id: int) -> Server:
+    """Clear the flag and settle the operations the operator has just reviewed.
+
+    ``new`` and ``changed`` rows become ``active``; ``removed`` rows are left
+    alone, since deleting them is a separate decision. Only this — never a
+    refresh — clears **Needs Attention** (spec §5.4).
+    """
+    server = await require_server(session, server_id)
+    operations = await session.scalars(
+        select(Operation).where(Operation.server_id == server_id, Operation.status.in_(UNREVIEWED))
+    )
+    for operation in operations:
+        operation.status = "active"
+    server.needs_attention = False
+    await session.flush()
+    return server
+
+
+async def record_refresh(
+    session: AsyncSession,
+    server_id: int,
+    *,
+    status: str,
+    error: str | None = None,
+    spec_hash: str | None = None,
+    spec_snapshot: Mapping[str, Any] | None = None,
+    at: dt.datetime | None = None,
+) -> Server:
+    """Write the outcome of a refresh attempt.
+
+    The hash and the snapshot are written only when given, so a failed refresh
+    records what went wrong without discarding the document the last successful
+    one is still being diffed against.
+    """
+    server = await require_server(session, server_id)
+    server.last_refresh_at = at or utcnow()
+    server.last_refresh_status = status
+    server.last_refresh_error = error
+    if spec_hash is not None:
+        server.spec_hash = spec_hash
+    if spec_snapshot is not None:
+        server.spec_snapshot = dict(spec_snapshot)
+    await session.flush()
+    return server
+
+
+async def delete_server(session: AsyncSession, server_id: int) -> None:
+    """Delete a server and, by cascade, its operations.
+
+    Metric rows keep pointing at the id on purpose: usage history outlives the
+    server it describes, and ``servers`` is ``AUTOINCREMENT`` so the id is never
+    handed to a replacement (spec §4).
+    """
+    server = await require_server(session, server_id)
+    await session.delete(server)
+    await session.flush()
+
+
+async def _counts_by_server(
+    session: AsyncSession, server_ids: Sequence[int] | None = None
+) -> dict[int, OperationCounts]:
+    """Operation tallies for every server, in one grouped query."""
+    live = case((Operation.status == "removed", 0), else_=1)
+    statement = select(
+        Operation.server_id,
+        Operation.status,
+        func.count(),
+        func.sum(case((Operation.selected, live), else_=0)),
+    ).group_by(Operation.server_id, Operation.status)
+    if server_ids is not None:
+        statement = statement.where(Operation.server_id.in_(server_ids))
+
+    tallies: dict[int, dict[str, int]] = {}
+    for server_id, status, total, selected in await session.execute(statement):
+        counts = tallies.setdefault(server_id, {})
+        counts["total"] = counts.get("total", 0) + total
+        counts["selected"] = counts.get("selected", 0) + (selected or 0)
+        if status in ("new", "changed", "removed"):
+            counts[status] = counts.get(status, 0) + total
+    return {server_id: OperationCounts(**counts) for server_id, counts in tallies.items()}
+
+
+def _summary_fields(server: Server, counts: OperationCounts) -> dict[str, Any]:
+    return {
+        "id": server.id,
+        "name": server.name,
+        "slug": server.slug,
+        "tool_prefix": server.tool_prefix,
+        "spec_url": server.spec_url,
+        "spec_format": server.spec_format,
+        "base_url": server.base_url,
+        "enabled": server.enabled,
+        "needs_attention": server.needs_attention,
+        "auth_type": server.auth_type,
+        "auth": _api_auth_state(server),
+        "spec_auth_mode": server.spec_auth_mode,
+        "spec_auth_type": server.spec_auth_type,
+        "spec_auth": _spec_auth_state(server),
+        "auto_refresh": server.auto_refresh,
+        "last_refresh_at": server.last_refresh_at,
+        "last_refresh_status": server.last_refresh_status,
+        "last_refresh_error": server.last_refresh_error,
+        "spec_hash": server.spec_hash,
+        "counts": counts,
+        "created_at": server.created_at,
+        "updated_at": server.updated_at,
+    }
+
+
+def to_summary(server: Server, counts: OperationCounts | None = None) -> ServerSummary:
+    """A server row as the list page sees it."""
+    return ServerSummary(**_summary_fields(server, counts or OperationCounts()))
+
+
+def to_view(operation: Operation) -> OperationView:
+    """An operation row as the detail page and the API see it."""
+    return OperationView(
+        id=operation.id,
+        server_id=operation.server_id,
+        op_key=operation.op_key,
+        operation_id=operation.operation_id,
+        method=operation.method,
+        path=operation.path,
+        summary=operation.summary,
+        description=operation.description,
+        description_override=operation.description_override,
+        tool_name_override=operation.tool_name_override,
+        effective_tool_name=operation.effective_tool_name,
+        input_schema_hash=operation.input_schema_hash,
+        selected=operation.selected,
+        status=operation.status,
+        first_seen_at=operation.first_seen_at,
+        last_seen_at=operation.last_seen_at,
+    )
+
+
+async def list_servers(session: AsyncSession) -> list[ServerSummary]:
+    """Every server, with its operation tallies, ordered for display."""
+    servers = list(await session.scalars(select(Server).order_by(func.lower(Server.name))))
+    counts = await _counts_by_server(session, [server.id for server in servers])
+    return [to_summary(server, counts.get(server.id)) for server in servers]
+
+
+async def server_detail(session: AsyncSession, server_id: int) -> ServerDetail:
+    """One server together with its operations."""
+    server = await require_server(session, server_id)
+    counts = (await _counts_by_server(session, [server_id])).get(server_id)
+    operations = await list_operations(session, server_id)
+    return ServerDetail(
+        **_summary_fields(server, counts or OperationCounts()),
+        operations=tuple(operations),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Operations
+# --------------------------------------------------------------------------- #
+
+
+async def list_operations(
+    session: AsyncSession, server_id: int, *, status: OperationStatus | None = None
+) -> list[OperationView]:
+    """One server's operations, newest spec order aside, sorted for reading."""
+    statement = select(Operation).where(Operation.server_id == server_id)
+    if status is not None:
+        statement = statement.where(Operation.status == status)
+    rows = await session.scalars(statement.order_by(Operation.path, Operation.method))
+    return [to_view(operation) for operation in rows]
+
+
+async def get_operation(session: AsyncSession, operation_id: int) -> Operation | None:
+    return await session.get(Operation, operation_id)
+
+
+async def update_operation(
+    session: AsyncSession, operation_id: int, patch: OperationPatch
+) -> Operation:
+    """Apply the operator's edits to one operation."""
+    operation = await session.get(Operation, operation_id)
+    if operation is None:
+        raise OperationNotFound(operation_id)
+    for field in patch.model_fields_set:
+        setattr(operation, field, getattr(patch, field))
+    await session.flush()
+    return operation
+
+
+async def set_selected(
+    session: AsyncSession, server_id: int, op_keys: Iterable[str], *, selected: bool = True
+) -> int:
+    """Select (or deselect) operations by ``op_key``; returns how many changed.
+
+    ``op_key`` rather than row id because this is what the wizard has: the
+    operator ticks boxes against a freshly parsed spec, and the rows were only
+    just written.
+    """
+    keys = list(op_keys)
+    if not keys:
+        return 0
+    rows = await session.scalars(
+        select(Operation).where(Operation.server_id == server_id, Operation.op_key.in_(keys))
+    )
+    changed = 0
+    for operation in rows:
+        if operation.selected != selected:
+            operation.selected = selected
+            changed += 1
+    await session.flush()
+    return changed
+
+
+async def delete_operation(session: AsyncSession, operation_id: int) -> None:
+    """Delete one operation — the review screen's way of retiring a ``removed`` row."""
+    operation = await session.get(Operation, operation_id)
+    if operation is None:
+        raise OperationNotFound(operation_id)
+    await session.delete(operation)
+    await session.flush()
+
+
+async def upsert_operations(
+    session: AsyncSession, server_id: int, incoming: Sequence[OperationInput]
+) -> OperationSync:
+    """Reconcile one server's operations against a freshly parsed spec.
+
+    The primitive the refresh diff is built on (task 025), and the same call the
+    first import makes. What it guarantees:
+
+    * a new operation arrives ``new`` and **unselected**, so nothing is ever
+      exposed over MCP that the operator did not tick;
+    * an operation whose schema changed keeps its selection, its overrides and
+      its effective tool name — a client calling that tool keeps working, and the
+      change is reported for review instead;
+    * an operation that vanished upstream is marked ``removed``, never deleted,
+      so a rename or a selection survives an endpoint that briefly disappears;
+    * an operation already awaiting review stays ``new`` or ``changed``. Spec
+      §5.4 reads "otherwise → active", but demoting an unreviewed row on the next
+      scheduled refresh would quietly erase the list of what changed, and the
+      same section is explicit that only acknowledgement clears the flag.
+    """
+    await require_server(session, server_id)
+    stored = {
+        operation.op_key: operation
+        for operation in await session.scalars(
+            select(Operation).where(Operation.server_id == server_id)
+        )
+    }
+    seen_at = utcnow()
+    inserted: list[str] = []
+    changed: list[str] = []
+    restored: list[str] = []
+    unchanged: list[str] = []
+
+    for item in incoming:
+        operation = stored.get(item.op_key)
+        if operation is None:
+            session.add(
+                Operation(
+                    server_id=server_id,
+                    op_key=item.op_key,
+                    operation_id=item.operation_id,
+                    method=item.method,
+                    path=item.path,
+                    summary=item.summary,
+                    description=item.description,
+                    input_schema=item.input_schema,
+                    input_schema_hash=item.input_schema_hash,
+                    effective_tool_name=item.tool_name,
+                    selected=False,
+                    status="new",
+                    first_seen_at=seen_at,
+                    last_seen_at=seen_at,
+                )
+            )
+            inserted.append(item.op_key)
+            continue
+
+        # The spec's own text is always refreshed; the operator's edits — the
+        # overrides, the selection, the effective name — are never touched here.
+        operation.operation_id = item.operation_id
+        operation.method = item.method
+        operation.path = item.path
+        operation.summary = item.summary
+        operation.description = item.description
+        operation.last_seen_at = seen_at
+
+        if operation.input_schema_hash != item.input_schema_hash:
+            operation.input_schema = item.input_schema
+            operation.input_schema_hash = item.input_schema_hash
+            operation.status = "changed"
+            changed.append(item.op_key)
+        elif operation.status == "removed":
+            operation.status = "active"
+            restored.append(item.op_key)
+        else:
+            unchanged.append(item.op_key)
+
+    present = {item.op_key for item in incoming}
+    removed = [
+        operation.op_key
+        for operation in stored.values()
+        if operation.op_key not in present and operation.status != "removed"
+    ]
+    for op_key in removed:
+        stored[op_key].status = "removed"
+
+    await session.flush()
+    return OperationSync(
+        inserted=tuple(inserted),
+        changed=tuple(changed),
+        removed=tuple(removed),
+        restored=tuple(restored),
+        unchanged=tuple(unchanged),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# The live tool list
+# --------------------------------------------------------------------------- #
+
+
+def _live_tools() -> Select[tuple[Operation, Server]]:
+    """Selected, non-``removed`` operations of enabled servers (spec §6).
+
+    One statement behind both the listing and the lookup, so a tool can never be
+    callable while absent from the list, or the other way round.
+    """
+    return (
+        select(Operation, Server)
+        .join(Server, Operation.server_id == Server.id)
+        .where(
+            Server.enabled.is_(True),
+            Operation.selected.is_(True),
+            Operation.status != "removed",
+        )
+    )
+
+
+def _to_tool(operation: Operation, server: Server) -> ToolRow:
+    return ToolRow(
+        id=operation.id,
+        server_id=server.id,
+        server_name=server.name,
+        base_url=server.base_url,
+        tool_name=operation.effective_tool_name,
+        method=operation.method,
+        path=operation.path,
+        summary=operation.summary,
+        description=operation.description,
+        description_override=operation.description_override,
+        input_schema=operation.input_schema,
+    )
+
+
+async def list_tools(session: AsyncSession) -> list[ToolRow]:
+    """Every tool the gateway currently exposes, read fresh per request.
+
+    Nothing is cached: a selection made in the UI takes effect on the next
+    ``tools/list`` without a restart (spec §6).
+    """
+    rows = await session.execute(_live_tools().order_by(Operation.effective_tool_name))
+    return [_to_tool(operation, server) for operation, server in rows]
+
+
+async def get_tool(session: AsyncSession, tool_name: str) -> ToolRow | None:
+    """Look up one live tool by its effective name, for ``tools/call``.
+
+    ``None`` for a name that is unknown *or* no longer live — a server disabled
+    mid-session, an operation deselected — which the MCP layer answers with an
+    error rather than an exception (spec §6).
+    """
+    row = (
+        await session.execute(_live_tools().where(Operation.effective_tool_name == tool_name))
+    ).first()
+    return None if row is None else _to_tool(row[0], row[1])
+
+
+# --------------------------------------------------------------------------- #
+# Runtime settings
+# --------------------------------------------------------------------------- #
+
+
+async def get_setting(session: AsyncSession, key: str, default: str | None = None) -> str | None:
+    """One runtime setting, or ``default`` when the UI has never set it."""
+    setting = await session.get(Setting, key)
+    return default if setting is None else setting.value
+
+
+async def set_setting(session: AsyncSession, key: str, value: str) -> Setting:
+    """Write a runtime setting, inserting or updating as needed."""
+    setting = await session.get(Setting, key)
+    if setting is None:
+        setting = Setting(key=key, value=value)
+        session.add(setting)
+    else:
+        setting.value = value
+    await session.flush()
+    return setting
+
+
+async def all_settings(session: AsyncSession) -> dict[str, str]:
+    """Every runtime setting, for the configuration page."""
+    rows = await session.scalars(select(Setting).order_by(Setting.key))
+    return {setting.key: setting.value for setting in rows}
+
+
+async def delete_setting(session: AsyncSession, key: str) -> bool:
+    """Drop a setting so it falls back to the configured default."""
+    setting = await session.get(Setting, key)
+    if setting is None:
+        return False
+    await session.delete(setting)
+    await session.flush()
+    return True
+
+
+__all__ = [
+    "NewServer",
+    "OperationCounts",
+    "OperationInput",
+    "OperationNotFound",
+    "OperationPatch",
+    "OperationStatus",
+    "OperationSync",
+    "OperationView",
+    "ServerDetail",
+    "ServerNotFound",
+    "ServerPatch",
+    "ServerSummary",
+    "ToolRow",
+    "acknowledge_server",
+    "all_settings",
+    "create_server",
+    "credential_for",
+    "delete_operation",
+    "delete_server",
+    "delete_setting",
+    "get_operation",
+    "get_server",
+    "get_server_by_slug",
+    "get_setting",
+    "get_tool",
+    "list_operations",
+    "list_servers",
+    "list_tools",
+    "mark_needs_attention",
+    "record_refresh",
+    "require_server",
+    "server_detail",
+    "set_selected",
+    "set_server_enabled",
+    "set_setting",
+    "spec_credential_for",
+    "to_summary",
+    "to_view",
+    "update_operation",
+    "update_server",
+    "upsert_operations",
+]

@@ -24,6 +24,6 @@ Provide the typed data-access functions every later task will build on.
 
 ## Acceptance
 
-- [ ] Unit tests against a temp SQLite file cover each function.
-- [ ] A DTO returned by any read path contains no plaintext credential — asserted by a test that inspects the serialised output.
-- [ ] The tool-list query excludes operations from a disabled server and `removed` operations from an enabled one.
+- [x] Unit tests against a temp SQLite file cover each function.
+- [x] A DTO returned by any read path contains no plaintext credential — asserted by a test that inspects the serialised output.
+- [x] The tool-list query excludes operations from a disabled server and `removed` operations from an enabled one.
