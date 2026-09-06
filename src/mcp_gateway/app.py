@@ -19,12 +19,13 @@ import logging
 import signal
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 
 import uvicorn
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import APIRouter, FastAPI, Request
 from pydantic import BaseModel
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from uvicorn.server import HANDLED_SIGNALS
 
 from mcp_gateway import __version__
@@ -32,6 +33,7 @@ from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
+from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
 
 logger = logging.getLogger(__name__)
 
@@ -90,24 +92,49 @@ def startup_banner(settings: Settings, keys: Keys | None = None) -> str:
     )
 
 
-async def _log_request(
-    request: Request, call_next: Callable[[Request], Awaitable[Response]]
-) -> Response:
+class RequestLog:
     """Log one line per request at debug.
 
     Uvicorn's own access log is turned off in :func:`uvicorn_config` so this is
     the only such line, and it stays quiet at the default level.
+
+    Written as plain ASGI rather than as a ``BaseHTTPMiddleware``. That base
+    class runs the application in a task group of its own and wraps ``receive``
+    and ``send`` to do it, which a long-lived streaming response — the MCP
+    endpoint's, for one — can lose a race against, ending in a request that
+    produced no response at all. Reading the status off ``http.response.start``
+    costs nothing and leaves every route on the plain ASGI path.
+
+    The line is logged when the response *finishes*, so for a streamed response
+    the duration covers the whole stream rather than the moment the headers
+    went out.
     """
-    started = time.perf_counter()
-    response = await call_next(request)
-    logger.debug(
-        "%s %s -> %s in %.1f ms",
-        request.method,
-        request.url.path,
-        response.status_code,
-        (time.perf_counter() - started) * 1000,
-    )
-    return response
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        started = time.perf_counter()
+        status = 0
+
+        async def watch(message: Message) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = int(message["status"])
+            await send(message)
+
+        await self.app(scope, receive, watch)
+        logger.debug(
+            "%s %s -> %s in %.1f ms",
+            scope["method"],
+            scope["path"],
+            status,
+            (time.perf_counter() - started) * 1000,
+        )
 
 
 def _build_lifespan(
@@ -162,8 +189,11 @@ def create_app(
     #: Encrypts stored upstream credentials; ``None`` without keys (spec §3.2).
     app.state.cipher = None if keys is None else CredentialCipher(keys.encryption_key)
 
-    app.middleware("http")(_log_request)
+    app.add_middleware(RequestLog)
     app.include_router(router)
+    #: The MCP endpoint. Mounted here so the route exists however the app is
+    #: built; it answers 503 until ``mcp_service`` starts it (spec §6).
+    app.state.mcp = mount_mcp(app)
     return app
 
 
@@ -171,10 +201,11 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     """The services a real gateway runs, in start-up order.
 
     The database comes first because everything with a lifetime after it —
-    the refresh scheduler, the metrics writer — needs a migrated schema to
-    write into. Tests that want an inert app pass their own list instead.
+    the MCP session manager, the refresh scheduler, the metrics writer — needs
+    a migrated schema to read and write. Tests that want an inert app pass
+    their own list instead.
     """
-    return (database_service(settings),)
+    return (database_service(settings), mcp_service)
 
 
 def uvicorn_config(app: FastAPI, settings: Settings) -> uvicorn.Config:

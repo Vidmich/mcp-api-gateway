@@ -22,6 +22,6 @@ Mount a working MCP server at the configured path and complete the initialize ha
 
 ## Acceptance
 
-- [ ] A real MCP client completes `initialize` against a running server.
-- [ ] The advertised capabilities include `tools.listChanged`.
-- [ ] Session manager shutdown is clean: no pending-task warnings on exit.
+- [x] A real MCP client completes `initialize` against a running server.
+- [x] The advertised capabilities include `tools.listChanged`.
+- [x] Session manager shutdown is clean: no pending-task warnings on exit.
