@@ -4,33 +4,44 @@ The unit tests speak JSON-RPC at the route directly, which proves the wiring
 but not the protocol. These run the gateway under uvicorn and point the
 official SDK's streamable HTTP client at it, because "a client can connect" is
 the only form of that claim worth making.
+
+Tool calls get a second real server: :func:`petstore_app` is an actual API on
+an actual port, with an actual bearer token it checks. Nothing between the
+model and the upstream is stubbed, so a credential that fails to be applied
+comes back the way it would in production — as that API's own 401.
 """
 
 from __future__ import annotations
 
 import asyncio
 import gc
+import json
 import logging
 import socket
 from collections.abc import AsyncIterator, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared.exceptions import MCPError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import JSONResponse
 
 import mcp_gateway
 from mcp_gateway.app import create_app, default_services, uvicorn_config
+from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import Settings, load_settings
-from mcp_gateway.crypto import CredentialCipher, generate_key
+from mcp_gateway.crypto import BearerCredential, CredentialCipher, generate_key
 from mcp_gateway.db import repo
 from mcp_gateway.db.repo import NewServer, OperationInput
 from mcp_gateway.db.session import Database
 from mcp_gateway.mcpsrv.server import SERVER_NAME
+from mcp_gateway.openapi.schema import EXTENSION
 
 #: Uvicorn's note for a connection torn down while its response was still
 #: streaming. ``sse-starlette`` drains open SSE streams when the server starts
@@ -48,6 +59,7 @@ def free_port() -> int:
 
 
 def settings_for(tmp_path: Path, port: int) -> Settings:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     config = tmp_path / "config.toml"
     config.write_text(
         f'[server]\nhost = "127.0.0.1"\nport = {port}\ndata_dir = "{tmp_path.as_posix()}"\n',
@@ -80,23 +92,62 @@ class RunningGateway:
         await asyncio.wait_for(self.task, timeout=15)
 
 
-@asynccontextmanager
-async def running_gateway(tmp_path: Path) -> AsyncIterator[RunningGateway]:
-    port = free_port()
-    settings = settings_for(tmp_path, port)
-    app = create_app(settings, services=default_services(settings))
+async def start(app: FastAPI, settings: Settings) -> tuple[uvicorn.Server, asyncio.Task[None]]:
+    """Serve ``app`` on the configured port and wait until it is listening."""
     server = uvicorn.Server(uvicorn_config(app, settings))
     task = asyncio.create_task(server.serve())
     deadline = asyncio.get_running_loop().time() + 30
     while not server.started:
         if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError("the gateway never started")
+            raise AssertionError(f"nothing started on port {settings.server.port}")
         await asyncio.sleep(0.02)
-    gateway = RunningGateway(app, server, task, port)
+    return server, task
+
+
+@asynccontextmanager
+async def running_gateway(tmp_path: Path) -> AsyncIterator[RunningGateway]:
+    settings = settings_for(tmp_path, free_port())
+    # Real keys: without them the gateway has no cipher, and a tool call it
+    # cannot authenticate is refused before it is made.
+    keys = Keys("signing", generate_key(), path=None)
+    app = create_app(settings, keys, services=default_services(settings))
+    server, task = await start(app, settings)
+    gateway = RunningGateway(app, server, task, settings.server.port)
     try:
         yield gateway
     finally:
         await gateway.stop()
+
+
+@asynccontextmanager
+async def running_upstream(tmp_path: Path, token: str) -> AsyncIterator[str]:
+    """A real API on a real port, yielding the base URL a server registers."""
+    settings = settings_for(tmp_path / "upstream", free_port())
+    server, task = await start(petstore_app(token), settings)
+    try:
+        yield f"http://127.0.0.1:{settings.server.port}/api"
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, timeout=15)
+
+
+def petstore_app(token: str) -> FastAPI:
+    """The upstream the gateway proxies to: two endpoints and a bearer check."""
+    api = FastAPI()
+
+    @api.get("/api/pets/{pet_id}")
+    async def one_pet(
+        pet_id: str, verbose: bool = False, authorization: str = Header(default="")
+    ) -> Any:
+        if authorization != f"Bearer {token}":
+            return JSONResponse({"error": "who are you"}, status_code=401)
+        return {"id": pet_id, "name": "Rex", "verbose": verbose}
+
+    @api.get("/api/boom")
+    async def boom() -> Any:
+        return JSONResponse({"error": "the database is on fire"}, status_code=500)
+
+    return api
 
 
 def an_operation(op_key: str, *, prefix: str, summary: str) -> OperationInput:
@@ -115,7 +166,13 @@ def an_operation(op_key: str, *, prefix: str, summary: str) -> OperationInput:
 
 
 async def register(
-    session: AsyncSession, slug: str, *operations: tuple[str, str], selected: Sequence[str]
+    session: AsyncSession,
+    slug: str,
+    *operations: tuple[str, str],
+    selected: Sequence[str],
+    base_url: str | None = None,
+    credential: BearerCredential | None = None,
+    cipher: CredentialCipher | None = None,
 ) -> int:
     """Put one server and its operations in the gateway's database.
 
@@ -131,9 +188,12 @@ async def register(
             tool_prefix=slug,
             spec_url=f"https://{slug}.example/openapi.json",
             spec_format="openapi-3.1",
-            base_url=f"https://{slug}.example/api",
+            base_url=base_url or f"https://{slug}.example/api",
+            credential=credential,
         ),
-        cipher=CredentialCipher(generate_key()),
+        # A credential has to be encrypted with the key the gateway itself will
+        # decrypt it with, so a caller that stores one passes the app's cipher.
+        cipher=cipher or CredentialCipher(generate_key()),
     )
     await repo.upsert_operations(
         session,
@@ -142,6 +202,31 @@ async def register(
     )
     await repo.set_selected(session, server.id, selected)
     return int(server.id)
+
+
+def a_pet_lookup(prefix: str) -> OperationInput:
+    """``GET /pets/{petId}``, wired the way ingestion wires one (spec §5.3)."""
+    return OperationInput(
+        op_key="GET /pets/{petId}",
+        operation_id="getPet",
+        method="GET",
+        path="/pets/{petId}",
+        summary="Fetch one pet",
+        input_schema={
+            "type": "object",
+            "properties": {"petId": {"type": "string"}, "verbose": {"type": "boolean"}},
+            "required": ["petId"],
+            "additionalProperties": False,
+            EXTENSION: {
+                "parameters": [
+                    {"name": "petId", "in": "path", "argument": "petId"},
+                    {"name": "verbose", "in": "query", "argument": "verbose"},
+                ]
+            },
+        },
+        input_schema_hash="hash-pet",
+        tool_name=f"{prefix}__get_pet",
+    )
 
 
 @asynccontextmanager
@@ -227,6 +312,76 @@ async def test_disabling_a_server_empties_the_next_listing(tmp_path: Path) -> No
 
     assert [tool.name for tool in before] == ["petstore__get_pets"]
     assert after == []
+
+
+async def test_a_client_calls_a_tool_and_reaches_the_real_api(tmp_path: Path) -> None:
+    """The whole path: MCP client, gateway, credential, upstream, and back.
+
+    The upstream answers 401 to anything without the right bearer token, so a
+    result carrying the pet is also the proof that the stored credential was
+    decrypted and applied.
+    """
+    token = "SENTINEL-INTEGRATION-TOKEN"
+    async with running_upstream(tmp_path, token) as base_url, running_gateway(tmp_path) as gateway:
+        async with gateway.session() as db:
+            server_id = await register(
+                db,
+                "petstore",
+                selected=[],
+                base_url=base_url,
+                credential=BearerCredential(token=token),  # type: ignore[arg-type]
+                cipher=gateway.app.state.cipher,
+            )
+            await repo.upsert_operations(db, server_id, [a_pet_lookup("petstore")])
+            await repo.set_selected(db, server_id, ["GET /pets/{petId}"])
+
+        async with connected(gateway.url) as session:
+            await session.initialize()
+            result = await session.call_tool("petstore__get_pet", {"petId": "42", "verbose": True})
+
+    assert result.is_error is False  # type: ignore[union-attr]
+    assert json.loads(result.content[0].text) == {  # type: ignore[union-attr,index]
+        "id": "42",
+        "name": "Rex",
+        "verbose": True,
+    }
+
+
+async def test_an_upstream_failure_comes_back_as_a_result_the_model_can_read(
+    tmp_path: Path,
+) -> None:
+    # A 500 is not a broken session. The upstream's own words come with it,
+    # because that is usually the part the model needs (spec §6).
+    async with running_upstream(tmp_path, "unused") as base_url, running_gateway(tmp_path) as gw:
+        async with gw.session() as db:
+            await register(
+                db,
+                "petstore",
+                ("GET /boom", "Break something"),
+                selected=["GET /boom"],
+                base_url=base_url,
+            )
+
+        async with connected(gw.url) as session:
+            await session.initialize()
+            result = await session.call_tool("petstore__get_boom")
+            # The session is still usable afterwards.
+            assert [tool.name for tool in (await session.list_tools()).tools] == [
+                "petstore__get_boom"
+            ]
+
+    assert result.is_error is True  # type: ignore[union-attr]
+    text = result.content[0].text  # type: ignore[union-attr,index]
+    assert "HTTP 500 Internal Server Error" in text
+    assert "the database is on fire" in text
+
+
+async def test_calling_a_tool_that_is_not_offered_is_a_protocol_error(tmp_path: Path) -> None:
+    async with running_gateway(tmp_path) as gateway, connected(gateway.url) as session:
+        await session.initialize()
+
+        with pytest.raises(MCPError, match="petstore__get_pet"):
+            await session.call_tool("petstore__get_pet", {"petId": "42"})
 
 
 async def test_shutting_down_with_a_live_session_is_clean(

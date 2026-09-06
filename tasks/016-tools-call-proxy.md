@@ -25,9 +25,9 @@ Execute a tool call as a real HTTP request against the upstream API and return a
 
 ## Acceptance
 
-- [ ] respx tests assert the exact outbound method, URL, query, headers, and body for a representative operation.
-- [ ] Missing a required argument returns `isError` with a readable message and makes no HTTP call.
-- [ ] A 500 from the upstream returns `isError` including the upstream body.
-- [ ] A timeout returns `isError` rather than propagating an exception into the session.
-- [ ] An oversize response is truncated and the result says so.
-- [ ] Credentials never appear in an error message or log line.
+- [x] respx tests assert the exact outbound method, URL, query, headers, and body for a representative operation.
+- [x] Missing a required argument returns `isError` with a readable message and makes no HTTP call.
+- [x] A 500 from the upstream returns `isError` including the upstream body.
+- [x] A timeout returns `isError` rather than propagating an exception into the session.
+- [x] An oversize response is truncated and the result says so.
+- [x] Credentials never appear in an error message or log line.

@@ -22,7 +22,15 @@ which spec §6 promises and task 025 delivers. Its ``tools/list`` handler opens
 a database session per request — see :data:`Sessions` — and hands the rows to
 :mod:`mcp_gateway.mcpsrv.tools` to be dressed as MCP tools. Nothing is cached
 anywhere along that path, which is what makes a change made in the UI visible
-to the next call without a restart.
+to the next call without a restart. Its ``tools/call`` handler asks for rather
+more — a session, the credential cipher and the shared HTTP client, gathered by
+:data:`Upstreams` — and hands the lot to :mod:`mcp_gateway.mcpsrv.proxy`, which
+makes the request the tool stands for.
+
+What the two ask for differs on purpose. A listing needs only the database, so
+a gateway whose credentials have become unreadable can still be inspected; a
+call cannot be made without the means to authenticate it, and says so rather
+than reaching an upstream without a token and reporting the 401 that follows.
 
 Streamable HTTP only. There is no SSE fallback pair (``/sse`` plus
 ``/messages``) and no stateless mode: sessions are what a ``list_changed``
@@ -37,6 +45,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Final
 
+import httpx
 from fastapi import FastAPI
 from mcp import types
 from mcp.server.context import ServerRequestContext
@@ -44,7 +53,7 @@ from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.shared.exceptions import MCPError
-from mcp_types import INTERNAL_ERROR
+from mcp_types import INTERNAL_ERROR, INVALID_PARAMS
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -52,8 +61,10 @@ from starlette.types import Receive, Scope, Send
 
 from mcp_gateway import __version__
 from mcp_gateway.config import Settings
+from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import Database
-from mcp_gateway.mcpsrv import tools
+from mcp_gateway.mcpsrv import proxy, tools
+from mcp_gateway.mcpsrv.proxy import Upstream
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +81,20 @@ NOTIFICATIONS: Final = NotificationOptions(tools_changed=True)
 #: Answer to a client whose request needs the database and cannot have it.
 NO_DATABASE: Final = "The gateway's database is not available."
 
+#: Answer to a tool call the gateway has no way to authenticate. Without the
+#: cipher every stored credential is an unreadable blob, and calling an upstream
+#: anyway would turn a configuration problem into an upstream's 401.
+NO_CIPHER: Final = "The gateway cannot read its stored credentials."
+
+#: Answer to a tool call with nowhere to send the request.
+NO_CLIENT: Final = "The gateway's HTTP client is not running."
+
 #: Where a request handler gets a database session, opened per request because
 #: the tool list is read fresh every time (spec §6).
 Sessions = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+
+#: Where ``tools/call`` gets the session, cipher and client it needs, together.
+Upstreams = Callable[[], AbstractAsyncContextManager[Upstream]]
 
 
 def no_database() -> AbstractAsyncContextManager[AsyncSession]:
@@ -103,6 +125,44 @@ def app_sessions(app: FastAPI) -> Sessions:
         return database.session()
 
     return open_session
+
+
+def no_upstream() -> AbstractAsyncContextManager[Upstream]:
+    """The upstream source of a server that was given none.
+
+    The counterpart of :func:`no_database` for ``tools/call``: an endpoint built
+    on its own has no database, no cipher and no client, and a tool call that
+    cannot be made is an error rather than an empty answer.
+    """
+    raise MCPError(INTERNAL_ERROR, NO_DATABASE)
+
+
+def app_upstreams(app: FastAPI) -> Upstreams:
+    """Everything a tool call needs, taken from a running app.
+
+    Read off ``app.state`` per call, for the reason :func:`app_sessions` gives,
+    and gathered in one place so a handler never has to cope with half of it
+    being there. Each piece is missing for a different reason and says so: no
+    database is a gateway that has not finished starting, no cipher is one built
+    without keys, and no client is the outbound service not running.
+    """
+
+    @asynccontextmanager
+    async def open_upstream() -> AsyncIterator[Upstream]:
+        database: Database | None = app.state.db
+        cipher: CredentialCipher | None = app.state.cipher
+        client: httpx.AsyncClient | None = app.state.http_client
+        if database is None:
+            raise MCPError(INTERNAL_ERROR, NO_DATABASE)
+        if cipher is None:
+            raise MCPError(INTERNAL_ERROR, NO_CIPHER)
+        if client is None:
+            raise MCPError(INTERNAL_ERROR, NO_CLIENT)
+        settings: Settings = app.state.settings
+        async with database.session() as session:
+            yield Upstream(session=session, cipher=cipher, client=client, http=settings.http)
+
+    return open_upstream
 
 
 def record_listing(count: int) -> None:
@@ -141,7 +201,9 @@ class GatewayServer(Server[Any]):
         )
 
 
-def build_server(sessions: Sessions = no_database) -> GatewayServer:
+def build_server(
+    sessions: Sessions = no_database, upstreams: Upstreams = no_upstream
+) -> GatewayServer:
     """The MCP server the gateway presents to clients."""
 
     async def on_list_tools(
@@ -153,7 +215,27 @@ def build_server(sessions: Sessions = no_database) -> GatewayServer:
         record_listing(len(listed.tools))
         return listed
 
-    return GatewayServer(name=SERVER_NAME, version=__version__, on_list_tools=on_list_tools)
+    async def on_call_tool(
+        context: ServerRequestContext[Any], params: types.CallToolRequestParams
+    ) -> types.CallToolResult:
+        """Make the call one tool stands for (spec §6).
+
+        Only an unknown name escapes as an error: the proxy answers everything
+        else — a bad argument, a 500, an upstream that never replied — with a
+        result the model can read.
+        """
+        try:
+            async with upstreams() as upstream:
+                return await proxy.call_tool(upstream, params.name, params.arguments)
+        except proxy.UnknownTool as unknown:
+            raise MCPError(INVALID_PARAMS, str(unknown)) from unknown
+
+    return GatewayServer(
+        name=SERVER_NAME,
+        version=__version__,
+        on_list_tools=on_list_tools,
+        on_call_tool=on_call_tool,
+    )
 
 
 class MCPEndpoint:
@@ -165,8 +247,10 @@ class MCPEndpoint:
     building a second app already gives you.
     """
 
-    def __init__(self, sessions: Sessions = no_database) -> None:
-        self.server = build_server(sessions)
+    def __init__(
+        self, sessions: Sessions = no_database, upstreams: Upstreams = no_upstream
+    ) -> None:
+        self.server = build_server(sessions, upstreams)
         self.sessions = StreamableHTTPSessionManager(app=self.server)
         #: True only between the start and stop of :meth:`run`.
         self.running = False
@@ -206,7 +290,7 @@ def mount_mcp(app: FastAPI) -> MCPEndpoint:
     at ``/`` still answers ``/healthz`` itself.
     """
     settings: Settings = app.state.settings
-    endpoint = MCPEndpoint(app_sessions(app))
+    endpoint = MCPEndpoint(app_sessions(app), app_upstreams(app))
     app.router.routes.append(Route(settings.mcp.path, endpoint=endpoint, name=ROUTE_NAME))
     return endpoint
 
@@ -225,16 +309,21 @@ async def mcp_service(app: FastAPI) -> AsyncIterator[None]:
 
 __all__ = [
     "NOTIFICATIONS",
+    "NO_CIPHER",
+    "NO_CLIENT",
     "NO_DATABASE",
     "ROUTE_NAME",
     "SERVER_NAME",
     "GatewayServer",
     "MCPEndpoint",
     "Sessions",
+    "Upstreams",
     "app_sessions",
+    "app_upstreams",
     "build_server",
     "mcp_service",
     "mount_mcp",
     "no_database",
+    "no_upstream",
     "record_listing",
 ]

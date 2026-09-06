@@ -34,6 +34,7 @@ from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
+from mcp_gateway.outbound import outbound_service
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +187,8 @@ def create_app(
     app.state.started_at = None
     #: Set by the database service; ``None`` in an app that does not run one.
     app.state.db = None
+    #: The shared outbound client, set by ``outbound_service`` (spec §2).
+    app.state.http_client = None
     #: Encrypts stored upstream credentials; ``None`` without keys (spec §3.2).
     app.state.cipher = None if keys is None else CredentialCipher(keys.encryption_key)
 
@@ -202,10 +205,11 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
 
     The database comes first because everything with a lifetime after it —
     the MCP session manager, the refresh scheduler, the metrics writer — needs
-    a migrated schema to read and write. Tests that want an inert app pass
-    their own list instead.
+    a migrated schema to read and write. The outbound client comes next, so that
+    the endpoint which uses it to proxy tool calls cannot start before it exists.
+    Tests that want an inert app pass their own list instead.
     """
-    return (database_service(settings), mcp_service)
+    return (database_service(settings), outbound_service(settings.http), mcp_service)
 
 
 def uvicorn_config(app: FastAPI, settings: Settings) -> uvicorn.Config:

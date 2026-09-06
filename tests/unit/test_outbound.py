@@ -11,6 +11,7 @@ import base64
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
 from mcp_gateway.config import HttpSettings
 from mcp_gateway.crypto import (
@@ -25,6 +26,7 @@ from mcp_gateway.outbound import (
     credential_headers,
     origin_of,
     outbound_client,
+    outbound_service,
     same_origin,
 )
 
@@ -122,3 +124,22 @@ def test_the_client_carries_the_configured_limits() -> None:
     assert client.headers["user-agent"] == http.user_agent
     # Redirects are followed by the caller, which knows which headers are secret.
     assert client.follow_redirects is False
+
+
+async def test_the_shared_client_lives_exactly_as_long_as_the_app() -> None:
+    """The pool opens on startup and is closed and forgotten on the way down.
+
+    A client left on ``app.state`` after shutdown is a pool bound to an event
+    loop that has stopped, which fails at the next use rather than here.
+    """
+    app = FastAPI()
+    service = outbound_service(HttpSettings(timeout_seconds=3.0))
+
+    async with service(app):
+        client = app.state.http_client
+        assert isinstance(client, httpx.AsyncClient)
+        assert client.timeout.connect == 3.0
+        assert client.is_closed is False
+
+    assert app.state.http_client is None
+    assert client.is_closed is True

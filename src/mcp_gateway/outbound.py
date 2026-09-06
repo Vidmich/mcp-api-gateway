@@ -14,9 +14,12 @@ which go straight to httpx and nowhere else.
 from __future__ import annotations
 
 import base64
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Final, TypeAlias, assert_never
 
 import httpx
+from fastapi import FastAPI
 
 from mcp_gateway.config import HttpSettings
 from mcp_gateway.crypto import (
@@ -100,6 +103,33 @@ def outbound_client(http: HttpSettings) -> httpx.AsyncClient:
     )
 
 
+def outbound_service(
+    http: HttpSettings,
+) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+    """The shared outbound client as a lifespan service (see :mod:`mcp_gateway.app`).
+
+    One client, and therefore one connection pool, for the whole process. A tool
+    is called over and over against the same handful of hosts, and a client
+    built per call would throw away the connection — and the TLS handshake that
+    paid for it — every time.
+
+    It is a service rather than a module-level singleton so that it closes when
+    the app does: a pool that outlives its event loop is a warning at
+    interpreter exit and a leaked socket in a test suite that builds many apps.
+    """
+
+    @asynccontextmanager
+    async def service(app: FastAPI) -> AsyncIterator[None]:
+        async with outbound_client(http) as client:
+            app.state.http_client = client
+            try:
+                yield
+            finally:
+                app.state.http_client = None
+
+    return service
+
+
 __all__ = [
     "AUTHORIZATION",
     "Origin",
@@ -107,5 +137,6 @@ __all__ = [
     "credential_headers",
     "origin_of",
     "outbound_client",
+    "outbound_service",
     "same_origin",
 ]

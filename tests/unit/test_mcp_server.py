@@ -13,9 +13,12 @@ from starlette.routing import Route
 
 import mcp_gateway
 from mcp_gateway.app import HEALTH_PATH, create_app, default_services
+from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import Settings, load_settings
+from mcp_gateway.crypto import generate_key
 from mcp_gateway.db.session import database_service
 from mcp_gateway.mcpsrv.server import (
+    NO_CIPHER,
     NO_DATABASE,
     ROUTE_NAME,
     SERVER_NAME,
@@ -23,6 +26,7 @@ from mcp_gateway.mcpsrv.server import (
     build_server,
     mcp_service,
 )
+from mcp_gateway.outbound import outbound_service
 
 #: A version a real client would ask for. The gateway negotiates down to one it
 #: knows, so the exact value matters less than that it is a plausible one.
@@ -83,6 +87,26 @@ def ask_for_tools(client: TestClient) -> dict[str, Any]:
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
     )
     return payload_of(listed.text)
+
+
+def ask_to_call(client: TestClient, name: str, arguments: dict[str, Any] | None = None) -> Any:
+    """Open a session and call one tool, returning the JSON-RPC message."""
+    handshake = client.post("/mcp", headers=MCP_HEADERS, json=initialize_request())
+    called = client.post(
+        "/mcp",
+        headers={**MCP_HEADERS, "mcp-session-id": handshake.headers["mcp-session-id"]},
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments or {}},
+        },
+    )
+    return payload_of(called.text)
+
+
+def keys_for(tmp_path: Path) -> Keys:
+    return Keys("signing", generate_key(), path=tmp_path / "keys.json")
 
 
 def mcp_routes(app: Any) -> list[Route]:
@@ -190,6 +214,49 @@ def test_a_gateway_without_a_database_says_so_instead_of_listing_nothing(tmp_pat
         message = ask_for_tools(client)
 
     assert "result" not in message
+    assert message["error"]["message"] == NO_DATABASE
+
+
+def test_calling_a_tool_that_does_not_exist_is_an_error_and_not_a_crash(tmp_path: Path) -> None:
+    # An unknown name is a protocol error rather than ``isError``: the client
+    # asked for something that is not there, which is not a result to read.
+    settings = settings_for(tmp_path)
+    app = create_app(
+        settings,
+        keys_for(tmp_path),
+        services=[database_service(settings), outbound_service(settings.http), mcp_service],
+    )
+
+    with TestClient(app) as client:
+        message = ask_to_call(client, "petstore__get_pets")
+
+    assert "result" not in message
+    assert "petstore__get_pets" in message["error"]["message"]
+
+
+def test_a_call_a_gateway_cannot_authenticate_is_refused_before_it_is_made(
+    tmp_path: Path,
+) -> None:
+    # Without keys every stored credential is an unreadable blob. Calling the
+    # upstream anyway would turn that into somebody else's 401.
+    settings = settings_for(tmp_path)
+    app = create_app(
+        settings,
+        services=[database_service(settings), outbound_service(settings.http), mcp_service],
+    )
+
+    with TestClient(app) as client:
+        message = ask_to_call(client, "petstore__get_pets")
+
+    assert message["error"]["message"] == NO_CIPHER
+
+
+def test_a_call_into_a_gateway_with_no_database_says_so(tmp_path: Path) -> None:
+    app = create_app(settings_for(tmp_path), keys_for(tmp_path), services=[mcp_service])
+
+    with TestClient(app) as client:
+        message = ask_to_call(client, "petstore__get_pets")
+
     assert message["error"]["message"] == NO_DATABASE
 
 
