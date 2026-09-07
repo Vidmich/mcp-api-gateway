@@ -1,0 +1,97 @@
+{# Add a server, step 2: what the document turned out to contain.
+
+   Still nothing saved. This page is the whole point of previewing — an operator
+   who is about to expose somebody else's API as tools should see the list
+   before the row exists, warnings and all (spec §5.1).
+
+   Task 022 turns this table into the picker: a checkbox per row, the tool name
+   each operation will get, filters, and the save that writes all of it in one
+   transaction. What is here now is what that save would be made of. #}
+{% extends "base.html" %}
+{% from "partials/empty_state.html" import empty_state %}
+
+{% block title %}{{ pending.name }} &middot; Add a server{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <h1 class="toolbar__title">{{ pending.name }}</h1>
+</div>
+
+{% if not pending.base_url %}
+<p class="flash flash--warning" role="alert">
+  This document does not say where its API lives, so tool calls would have
+  nowhere to go. Go back and set a base URL.
+</p>
+{% endif %}
+
+{% if warnings %}
+<ul class="flashes" role="status">
+  {% for warning in warnings %}
+  <li class="flash flash--warning">
+    {{ warning.message }}
+    {% if warning.location %}<code>{{ warning.location }}</code>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<dl class="summary">
+  <div class="summary__pair">
+    <dt class="summary__term">Spec URL</dt>
+    <dd class="summary__value"><code>{{ preview.requested_url }}</code></dd>
+  </div>
+  {% if preview.redirected %}
+  <div class="summary__pair">
+    <dt class="summary__term">Fetched from</dt>
+    <dd class="summary__value"><code>{{ preview.fetched_url }}</code></dd>
+  </div>
+  {% endif %}
+  <div class="summary__pair">
+    <dt class="summary__term">Format</dt>
+    <dd class="summary__value">
+      {{ preview.spec_format }}{% if preview.version %}, version {{ preview.version }}{% endif %}
+    </dd>
+  </div>
+  <div class="summary__pair">
+    <dt class="summary__term">Base URL</dt>
+    <dd class="summary__value">
+      {% if pending.base_url %}<code>{{ pending.base_url }}</code>{% else %}Not set{% endif %}
+    </dd>
+  </div>
+  <div class="summary__pair">
+    <dt class="summary__term">Operations</dt>
+    <dd class="summary__value">{{ preview.operation_count }}</dd>
+  </div>
+</dl>
+
+{% if operations %}
+<table class="table">
+  <thead>
+    <tr>
+      <th scope="col">Method</th>
+      <th scope="col">Path</th>
+      <th scope="col">Summary</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for operation in operations %}
+    <tr>
+      <td><code>{{ operation.method }}</code></td>
+      <td><code>{{ operation.path }}</code></td>
+      <td>{{ operation.summary or operation.operation_id or "" }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+{{ empty_state(
+     "No operations",
+     "The document parsed, but it describes no endpoints the gateway can expose.",
+     href=new_server_path,
+     action="Try another spec") }}
+{% endif %}
+
+<div class="form-actions">
+  <a class="button" href="{{ new_server_path }}">Back</a>
+</div>
+{% endblock %}

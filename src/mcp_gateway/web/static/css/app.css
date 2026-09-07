@@ -192,6 +192,54 @@ pre {
 
 /* --- forms ---------------------------------------------------------------- */
 
+/* The reveal panels of forms.js, and anything else a template hides outright.
+ * Needed because .field sets its own display, which would win over the
+ * attribute's default rule. */
+[hidden] {
+  display: none !important;
+}
+
+.form {
+  max-width: 34rem;
+}
+
+.form__lead {
+  margin: 0 0 1.25rem;
+  color: var(--ink-soft);
+}
+
+.form__note {
+  margin: 1.25rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.fieldset {
+  margin: 1.5rem 0 0;
+  padding: 1rem 1rem 0.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.fieldset__legend {
+  padding: 0 0.35rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.fieldset__note {
+  margin: 0 0 1rem;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.form-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+
 .field {
   display: block;
   margin-bottom: 1rem;
@@ -233,6 +281,18 @@ pre {
   margin-top: 0.25rem;
   font-size: 0.8125rem;
   color: var(--ink-soft);
+}
+
+.field__error {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8125rem;
+  color: var(--bad);
+}
+
+textarea.field__input {
+  font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
+  resize: vertical;
 }
 
 /* --- buttons -------------------------------------------------------------- */
@@ -377,6 +437,35 @@ pre {
   color: var(--accent-dark);
   background: var(--info-soft);
   border-color: #c3d2f6;
+}
+
+/* --- summaries ------------------------------------------------------------ */
+
+/* A definition list read as rows: the term on the left at a fixed width, so a
+ * column of values lines up without a table pretending to be one. */
+.summary {
+  margin: 0 0 1.5rem;
+  padding: 1rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.summary__pair {
+  display: flex;
+  gap: var(--gap);
+  padding: 0.2rem 0;
+}
+
+.summary__term {
+  flex: 0 0 8rem;
+  color: var(--ink-soft);
+}
+
+.summary__value {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* --- tables --------------------------------------------------------------- */

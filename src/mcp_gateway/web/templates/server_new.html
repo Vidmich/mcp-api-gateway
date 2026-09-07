@@ -1,0 +1,76 @@
+{# Add a server, step 1 (spec §7.1): a URL, a name, and two credentials.
+
+   Submitting this fetches and parses the document and stores nothing at all.
+   The operator sees what they are about to register on the next page, and only
+   then does anything reach the database.
+
+   An ordinary form with an ordinary POST. htmx is on the page, and this is not
+   the place for it: a submission here makes a network call to somebody else's
+   server, and the honest way to show that is a page that navigates. #}
+{% extends "base.html" %}
+{% from "partials/field.html" import field, choice %}
+{% from "partials/credential_fields.html" import credential_fields %}
+
+{% block title %}Add a server &middot; mcp-gateway{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/forms.js') }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <h1 class="toolbar__title">Add a server</h1>
+</div>
+
+<form class="card form" method="post" action="{{ new_server_path }}">
+  <p class="form__lead">
+    The gateway downloads the document, reads every operation out of it, and
+    shows you what it found. Nothing is saved until you say so.
+  </p>
+
+  {{ field("spec_url", "Spec URL", value=fields.spec_url, required=true,
+           hint="Where the OpenAPI or Swagger document is served from.",
+           error=errors.get("spec_url")) }}
+
+  {{ field("name", "Display name", value=fields.name,
+           hint="Optional. Defaults to the title the document gives itself.",
+           error=errors.get("name")) }}
+
+  {{ field("base_url", "Base URL", value=fields.base_url,
+           hint="Optional. Overrides where the document says its API lives.",
+           error=errors.get("base_url")) }}
+
+  <fieldset class="fieldset">
+    <legend class="fieldset__legend">API authentication</legend>
+    <p class="fieldset__note">How the gateway authenticates the tool calls it proxies.</p>
+    {{ choice("auth_type", "Type", auth_options, fields.auth_type, reveal="api",
+              error=errors.get("auth_type")) }}
+    {{ credential_fields("api", errors=errors) }}
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend class="fieldset__legend">Spec download</legend>
+    <p class="fieldset__note">
+      How the document itself is fetched, now and on every later refresh. Often
+      the same credential as the API, sometimes a different one, usually neither.
+    </p>
+    {{ choice("spec_auth_mode", "Authentication", mode_options, fields.spec_auth_mode,
+              reveal="spec_mode", error=errors.get("spec_auth_mode")) }}
+    <div class="reveal" data-reveal-for="spec_mode" data-reveal-when="custom">
+      {{ choice("spec_auth_type", "Type", spec_auth_options, fields.spec_auth_type,
+                reveal="spec_type", error=errors.get("spec_auth_type")) }}
+      {{ credential_fields("spec_type", prefix="spec_", errors=errors) }}
+    </div>
+  </fieldset>
+
+  <p class="form__note">
+    Credentials are never shown again once submitted, so a form that comes back
+    with a correction has its credential boxes empty. Fill in the ones you need.
+  </p>
+
+  <div class="form-actions">
+    <a class="button" href="{{ servers_path }}">Cancel</a>
+    <button class="button button--primary" type="submit">Fetch the spec</button>
+  </div>
+</form>
+{% endblock %}

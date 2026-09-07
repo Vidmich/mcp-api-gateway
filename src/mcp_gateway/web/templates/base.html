@@ -12,6 +12,9 @@
     <title>{% block title %}mcp-gateway{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('css/app.css') }}" />
     <script src="{{ static_url('js/htmx.min.js') }}" defer></script>
+    {# Whatever else this particular page needs. Deferred like htmx, so a page
+       may rely on the DOM being there without waiting for load. #}
+    {% block scripts %}{% endblock %}
   </head>
   <body class="{% block body_class %}{% endblock %}">
     {% block masthead %}

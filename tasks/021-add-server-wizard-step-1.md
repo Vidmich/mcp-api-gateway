@@ -22,8 +22,8 @@ Collect a spec URL and its credentials, then fetch and parse without saving anyt
 
 ## Acceptance
 
-- [ ] Previewing a public fixture spec lists its operations.
-- [ ] Previewing an authenticated fixture fails cleanly with `none` and succeeds with credentials.
-- [ ] A 401 lands back on step 1 with the spec-auth field highlighted.
-- [ ] Nothing is written to the DB by a preview, successful or not.
-- [ ] Credentials are not echoed back into the rendered form's value attributes.
+- [x] Previewing a public fixture spec lists its operations.
+- [x] Previewing an authenticated fixture fails cleanly with `none` and succeeds with credentials.
+- [x] A 401 lands back on step 1 with the spec-auth field highlighted.
+- [x] Nothing is written to the DB by a preview, successful or not.
+- [x] Credentials are not echoed back into the rendered form's value attributes.

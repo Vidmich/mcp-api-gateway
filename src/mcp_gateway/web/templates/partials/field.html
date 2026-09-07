@@ -1,0 +1,87 @@
+{# One labelled control, in the four shapes the configuration forms need.
+
+   Macros rather than includes so a caller cannot forget to set the variable one
+   reads, and so the distinction that matters here is structural: ``field`` and
+   ``choice`` take a value and put it back, ``secret`` and ``secret_lines`` have
+   no value parameter at all. A credential cannot be echoed into a page by
+   somebody passing the wrong argument, because there is no argument to pass.
+
+     {% from "partials/field.html" import field, secret, choice %}
+     {{ field("name", "Display name", value=fields.name, hint="Defaults to the spec's title.") }}
+     {{ secret("token", "Token", error=errors.get("token")) }}
+     {{ choice("auth_type", "Authentication", auth_options, fields.auth_type) }}
+#}
+
+{% macro _messages(name, hint, error) -%}
+{% if hint %}<span class="field__hint">{{ hint }}</span>{% endif %}
+{% if error %}<span class="field__error" id="{{ name }}-error" role="alert">{{ error }}</span>{% endif %}
+{%- endmacro %}
+
+{% macro field(name, label, value="", hint=none, error=none, type="text", required=false) -%}
+<label class="field{% if error %} field--invalid{% endif %}">
+  <span class="field__label">{{ label }}</span>
+  <input
+    class="field__input"
+    type="{{ type }}"
+    name="{{ name }}"
+    value="{{ value }}"
+    autocomplete="off"
+    spellcheck="false"
+    {% if required %}required{% endif %}
+    {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+  />
+  {{ _messages(name, hint, error) }}
+</label>
+{%- endmacro %}
+
+{# A credential field. Never carries a value, in any circumstance: what the
+   operator typed last time is either already stored or was wrong. #}
+{% macro secret(name, label, hint=none, error=none) -%}
+<label class="field{% if error %} field--invalid{% endif %}">
+  <span class="field__label">{{ label }}</span>
+  <input
+    class="field__input"
+    type="password"
+    name="{{ name }}"
+    autocomplete="new-password"
+    spellcheck="false"
+    {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+  />
+  {{ _messages(name, hint, error) }}
+</label>
+{%- endmacro %}
+
+{# The same promise, for a credential that is more than one line. #}
+{% macro secret_lines(name, label, hint=none, error=none, rows=4) -%}
+<label class="field{% if error %} field--invalid{% endif %}">
+  <span class="field__label">{{ label }}</span>
+  <textarea
+    class="field__input"
+    name="{{ name }}"
+    rows="{{ rows }}"
+    autocomplete="off"
+    spellcheck="false"
+    {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+  ></textarea>
+  {{ _messages(name, hint, error) }}
+</label>
+{%- endmacro %}
+
+{# ``options`` is a list of (value, label) pairs. ``reveal`` names the group of
+   panels this control shows and hides; see static/js/forms.js. #}
+{% macro choice(name, label, options, value="", hint=none, error=none, reveal=none) -%}
+<label class="field{% if error %} field--invalid{% endif %}">
+  <span class="field__label">{{ label }}</span>
+  <select
+    class="field__select"
+    name="{{ name }}"
+    {% if reveal %}data-reveal="{{ reveal }}"{% endif %}
+    {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+  >
+    {% for option, text in options %}
+    <option value="{{ option }}"{% if option == value %} selected{% endif %}>{{ text }}</option>
+    {% endfor %}
+  </select>
+  {{ _messages(name, hint, error) }}
+</label>
+{%- endmacro %}

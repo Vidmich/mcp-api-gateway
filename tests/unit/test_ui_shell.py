@@ -56,6 +56,11 @@ EXTERNAL = re.compile(r"""(?:https?:)?//[^/"'\s]""")
 #: rather than a URL and only a scheme means anything.
 EXTERNAL_IN_ASSET = re.compile(r"https?://")
 
+#: Every file the browser can load from this package. Discovered rather than
+#: listed, so an asset added later is held to the same two rules without anybody
+#: having to remember to add it here.
+ASSETS = sorted(p.relative_to(STATIC_DIR).as_posix() for p in STATIC_DIR.rglob("*") if p.is_file())
+
 
 def settings_for(tmp_path: Path, body: str = "") -> Settings:
     config = tmp_path / "config.toml"
@@ -234,7 +239,7 @@ def test_htmx_is_vendored_into_the_package() -> None:
     assert htmx.stat().st_size > 10_000
 
 
-@pytest.mark.parametrize("asset", ["css/app.css", "js/htmx.min.js"])
+@pytest.mark.parametrize("asset", ASSETS)
 def test_an_asset_is_served(tmp_path: Path, asset: str) -> None:
     with client(settings_for(tmp_path)) as http:
         response = http.get(f"{STATIC_PREFIX}/{asset}")
@@ -261,7 +266,7 @@ def test_no_template_refers_to_another_host(template: str) -> None:
     assert EXTERNAL.search(source) is None, f"{template} refers to another host"
 
 
-@pytest.mark.parametrize("asset", ["css/app.css", "js/htmx.min.js"])
+@pytest.mark.parametrize("asset", ASSETS)
 def test_no_asset_refers_to_another_host(asset: str) -> None:
     source = (STATIC_DIR / asset).read_text(encoding="utf-8")
 
