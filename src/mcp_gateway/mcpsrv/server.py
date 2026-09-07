@@ -67,7 +67,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
-from mcp_gateway import __version__
+from mcp_gateway import __version__, limits
 from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import Database
@@ -164,6 +164,18 @@ def app_upstreams(app: FastAPI) -> Upstreams:
     without keys, and no client is the outbound service not running.
     """
 
+    def refused(refusal: limits.Refusal) -> None:
+        """The log line and the throttled counter, at the same boundary.
+
+        A refusal never reaches ``note``: nothing was sent, so there is no
+        outcome to log, no bytes to add up, and nothing for the health watch
+        to hold against the server. What the gateway decided about its own
+        configuration is counted on its own line (task 101).
+        """
+        limits.record_refusal(refusal)
+        meter: Meter = app.state.metrics
+        meter.throttled(refusal.server_id)
+
     def note(outcome: proxy.CallOutcome) -> None:
         """The debug line, the counter and the health watch, at one boundary.
 
@@ -206,6 +218,8 @@ def app_upstreams(app: FastAPI) -> Upstreams:
                 client=client,
                 http=settings.http,
                 record=note,
+                limiter=app.state.limits,
+                refuse=refused,
             )
 
     return open_upstream

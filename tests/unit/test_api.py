@@ -1406,3 +1406,117 @@ def tool_names(http: TestClient) -> list[str]:
         line[len("data: ") :] for line in listed.text.splitlines() if line.startswith("data: ")
     )
     return sorted(tool["name"] for tool in json.loads(payload)["result"]["tools"])
+
+
+# --------------------------------------------------------------------------- #
+# Rate limits, through the API (task 101)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_patch_can_cap_how_fast_a_server_is_called(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        response = http.patch(
+            f"{SERVERS_PATH}/{created['id']}",
+            json={"rate_limit_calls": 5, "rate_limit_seconds": 60},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["rate_limit_calls"], body["rate_limit_seconds"]) == (5, 60)
+
+
+def test_a_new_server_carries_no_cap(tmp_path: Path, respx_mock: respx.MockRouter) -> None:
+    settings = settings_for(tmp_path)
+    serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+
+    assert (created["rate_limit_calls"], created["rate_limit_seconds"]) == (None, None)
+
+
+def test_a_patch_can_widen_a_window_without_repeating_the_call_count(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    # The ordinary way to change a limit: what has to be coherent is the row the
+    # patch would leave behind, not the patch.
+    settings = settings_for(tmp_path)
+    serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        http.patch(
+            f"{SERVERS_PATH}/{created['id']}",
+            json={"rate_limit_calls": 5, "rate_limit_seconds": 60},
+        )
+        response = http.patch(f"{SERVERS_PATH}/{created['id']}", json={"rate_limit_seconds": 30})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["rate_limit_calls"], body["rate_limit_seconds"]) == (5, 30)
+
+
+def test_a_patch_can_take_a_cap_off(tmp_path: Path, respx_mock: respx.MockRouter) -> None:
+    settings = settings_for(tmp_path)
+    serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        http.patch(
+            f"{SERVERS_PATH}/{created['id']}",
+            json={"rate_limit_calls": 5, "rate_limit_seconds": 60},
+        )
+        response = http.patch(
+            f"{SERVERS_PATH}/{created['id']}",
+            json={"rate_limit_calls": None, "rate_limit_seconds": None},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["rate_limit_calls"], body["rate_limit_seconds"]) == (None, None)
+
+
+def test_half_a_limit_is_refused_with_the_field_that_would_fix_it(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        response = http.patch(f"{SERVERS_PATH}/{created['id']}", json={"rate_limit_calls": 5})
+        after = http.get(f"{SERVERS_PATH}/{created['id']}").json()
+
+    assert response.status_code == 422
+    assert response.json()["code"] == INVALID_REQUEST
+    assert "rate_limit_seconds" in response.json()["fields"]
+    # And nothing was written: a refused patch describes the server as it is.
+    assert after["rate_limit_calls"] is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"rate_limit_calls": 0, "rate_limit_seconds": 60},
+        {"rate_limit_calls": 5, "rate_limit_seconds": 0},
+        {"rate_limit_calls": 5, "rate_limit_seconds": 86_401},
+    ],
+)
+def test_a_limit_outside_the_range_is_refused(
+    tmp_path: Path, respx_mock: respx.MockRouter, body: dict[str, int]
+) -> None:
+    settings = settings_for(tmp_path)
+    serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        response = http.patch(f"{SERVERS_PATH}/{created['id']}", json=body)
+
+    assert response.status_code == 422
+    assert response.json()["code"] == INVALID_REQUEST

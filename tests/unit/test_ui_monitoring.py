@@ -44,7 +44,7 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.migrate import upgrade_to_head
 from mcp_gateway.db.repo import BucketDelta, CallErrorView, CallFailure, MetricSlice, NewServer
 from mcp_gateway.db.session import database_service, open_database
-from mcp_gateway.metrics import EPOCH, TOOL_CALL, TOOLS_LIST
+from mcp_gateway.metrics import EPOCH, THROTTLED, TOOL_CALL, TOOLS_LIST
 from mcp_gateway.usage import (
     LISTING_ID,
     RANGES,
@@ -62,6 +62,7 @@ from mcp_gateway.web.monitoring import (
     CHART_DATA_ID,
     CHART_LISTINGS,
     CHART_REQUESTS,
+    CHART_THROTTLED,
     DEFAULT_PAGE_RANGE,
     ERROR_COLOUR,
     ERRORS_ID,
@@ -73,6 +74,7 @@ from mcp_gateway.web.monitoring import (
     NO_STATUS,
     NO_TRAFFIC,
     NOT_RECORDED,
+    NOTHING_THROTTLED,
     PALETTE,
     POLL_SECONDS,
     RANGE_LABELS,
@@ -80,6 +82,7 @@ from mcp_gateway.web.monitoring import (
     RECEIVED_STACK,
     SENT_STACK,
     STALE,
+    THROTTLED_STACK,
     USAGE_ID,
     USAGE_PATH,
     axis_label,
@@ -93,6 +96,7 @@ from mcp_gateway.web.monitoring import (
     listing_chart,
     requests_chart,
     strip_for,
+    throttling_chart,
 )
 from mcp_gateway.web.routes_api import METRICS_PATH
 from mcp_gateway.web.routes_ui import SERVERS_PATH
@@ -380,10 +384,15 @@ def test_the_listing_series_has_a_colour_of_its_own() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_the_three_charts_are_the_three_spec_asks_for() -> None:
+def test_the_charts_are_the_three_spec_asks_for_and_task_101s() -> None:
     charts = charts_for(a_report())
 
-    assert [chart.id for chart in charts] == [CHART_REQUESTS, CHART_BYTES, CHART_LISTINGS]
+    assert [chart.id for chart in charts] == [
+        CHART_REQUESTS,
+        CHART_BYTES,
+        CHART_LISTINGS,
+        CHART_THROTTLED,
+    ]
 
 
 def test_every_chart_is_drawn_against_the_same_axis() -> None:
@@ -506,11 +515,11 @@ def test_listings_are_one_filled_line_on_their_own_chart() -> None:
 
 
 def test_a_chart_with_nothing_in_it_is_still_a_chart() -> None:
-    requests, byte_counts, listings = charts_for(a_report())
+    requests, byte_counts, listings, throttled = charts_for(a_report())
 
     # An axis of the right width in every case, so a quiet window is drawn as a
     # quiet window rather than as a chart that failed to load.
-    for chart in (requests, byte_counts, listings):
+    for chart in (requests, byte_counts, listings, throttled):
         assert chart.empty is True
         assert len(chart.labels) == 60
 
@@ -518,8 +527,12 @@ def test_a_chart_with_nothing_in_it_is_still_a_chart() -> None:
     assert set(datasets(requests)[ERRORS_ID].values) == {0}
     assert set(datasets(listings)[LISTING_ID].values) == {0}
     # Bytes has no series of its own to be flat: a server appears there only
-    # once it has transferred something, and none has.
+    # once it has transferred something, and none has. Throttling is the same:
+    # a server is on it once it has been refused, and it says so in its own
+    # words rather than borrowing the one about traffic.
     assert byte_counts.datasets == ()
+    assert throttled.datasets == ()
+    assert throttled.empty_note == NOTHING_THROTTLED
 
 
 def test_what_the_script_is_handed_is_what_the_chart_says() -> None:
@@ -692,7 +705,7 @@ def test_an_empty_database_is_a_quiet_window_rather_than_a_missing_one(
     view = in_the_database(settings, lambda session: build(session, settings, "24h"))
 
     assert view.quiet is True
-    assert len(view.charts) == 3
+    assert len(view.charts) == 4
     assert all(chart.empty for chart in view.charts)
     assert view.servers == ()
     assert view.failures == ()
@@ -744,7 +757,7 @@ def test_the_page_renders_into_the_layout(settings: Settings, tmp_path: Path) ->
     assert 'class="masthead"' in response.text
 
 
-def test_the_page_draws_the_three_charts(settings: Settings, tmp_path: Path) -> None:
+def test_the_page_draws_every_chart(settings: Settings, tmp_path: Path) -> None:
     with client(settings, tmp_path) as http:
         body = http.get(MONITORING_PATH, headers=HTML).text
 
@@ -752,6 +765,7 @@ def test_the_page_draws_the_three_charts(settings: Settings, tmp_path: Path) -> 
         CHART_REQUESTS,
         CHART_BYTES,
         CHART_LISTINGS,
+        CHART_THROTTLED,
     ]
     for chart in embedded(body):
         assert f'id="{chart["canvas"]}"' in body
@@ -764,7 +778,7 @@ def test_an_empty_database_renders_charts_rather_than_an_error(
         response = http.get(MONITORING_PATH, headers=HTML)
 
     assert response.status_code == 200
-    assert len(embedded(response.text)) == 3
+    assert len(embedded(response.text)) == 4
     assert NO_TRAFFIC in response.text
     assert NO_SERVERS in response.text
     assert NO_FAILURES in response.text
@@ -798,7 +812,7 @@ def test_seeded_metrics_reach_the_page(settings: Settings, tmp_path: Path) -> No
     with client(settings, tmp_path) as http:
         body = http.get(f"{MONITORING_PATH}?range=1h", headers=HTML).text
 
-    requests, byte_counts, listings = embedded(body)
+    requests, byte_counts, listings, throttled = embedded(body)
     by_id = {one["id"]: one for one in requests["datasets"]}
 
     assert sum(by_id["server:1:tool_call"]["values"]) == 15
@@ -806,6 +820,10 @@ def test_seeded_metrics_reach_the_page(settings: Settings, tmp_path: Path) -> No
     assert sum(by_id[ERRORS_ID]["values"]) == 5
     assert sum(byte_counts["datasets"][0]["values"]) == 500
     assert sum(listings["datasets"][0]["values"]) == 7
+    # Nothing was refused, so the fourth chart is drawn and empty — and says
+    # so in its own words, which is why the traffic sentence is still absent.
+    assert throttled["datasets"] == []
+    assert NOTHING_THROTTLED in body
     assert "Petstore" in body
     assert NO_TRAFFIC not in body
 
@@ -853,7 +871,7 @@ def test_the_region_is_not_a_whole_page(settings: Settings, tmp_path: Path) -> N
     assert "<!doctype html>" not in response.text
     assert 'class="masthead"' not in response.text
     assert f'id="{USAGE_ID}"' in response.text
-    assert len(embedded(response.text)) == 3
+    assert len(embedded(response.text)) == 4
 
 
 def test_changing_range_re_queries_and_redraws_the_same_region(
@@ -954,7 +972,7 @@ def test_the_page_says_what_to_read_when_it_cannot_draw(settings: Settings, tmp_
     with client(settings, tmp_path) as http:
         body = http.get(MONITORING_PATH, headers=HTML).text
 
-    assert body.count(NO_CHARTS) == 3
+    assert body.count(NO_CHARTS) == 4
 
 
 def test_a_canvas_says_what_it_is_showing_to_a_reader_who_cannot_see_it(
@@ -964,7 +982,12 @@ def test_a_canvas_says_what_it_is_showing_to_a_reader_who_cannot_see_it(
         body = http.get(MONITORING_PATH, headers=HTML).text
 
     labelled = re.findall(r'<canvas id="chart-([a-z]+)" role="img" aria-label="([^"]+)"', body)
-    assert [one for one, _ in labelled] == [CHART_REQUESTS, CHART_BYTES, CHART_LISTINGS]
+    assert [one for one, _ in labelled] == [
+        CHART_REQUESTS,
+        CHART_BYTES,
+        CHART_LISTINGS,
+        CHART_THROTTLED,
+    ]
     assert all(label for _, label in labelled)
 
 
@@ -1033,3 +1056,111 @@ def test_a_server_named_after_a_closing_tag_cannot_end_the_data_block(
     assert "<script>alert(1)</script>" not in body
     # And the name still arrives intact where it is going.
     assert embedded(body)[0]["datasets"][0]["label"] == hostile
+
+
+# --------------------------------------------------------------------------- #
+# The throttling chart (task 101)
+# --------------------------------------------------------------------------- #
+
+
+def a_throttled_report(**counts: int) -> UsageReport:
+    """A window in which some servers were refused and one was simply busy."""
+    slices = [
+        a_slice(START, server_id=int(server_id), kind=THROTTLED, calls=count)
+        for server_id, count in counts.items()
+    ]
+    slices.append(a_slice(START, server_id=1, kind=TOOL_CALL, calls=9, errors=2))
+    return a_report(slices=slices, names={1: "Petstore", 2: "Weather"})
+
+
+def test_refusals_are_stacked_per_server_on_their_own_chart() -> None:
+    chart = throttling_chart(a_throttled_report(**{"1": 4, "2": 6}), ("a",) * 60)
+    by_id = datasets(chart)
+
+    assert set(by_id) == {"server:1:throttled", "server:2:throttled"}
+    assert [one.stack for one in chart.datasets] == [THROTTLED_STACK, THROTTLED_STACK]
+    assert chart.stacked is True
+    assert sum(by_id["server:1:throttled"].values) == 4
+    assert sum(by_id["server:2:throttled"].values) == 6
+
+
+def test_a_server_keeps_its_colour_on_the_throttling_chart() -> None:
+    # The same colour it has on every other chart, since it is the same server:
+    # a strip entry, a band and a bar have to be matchable by eye.
+    chart = throttling_chart(a_throttled_report(**{"2": 1}), ("a",) * 60)
+
+    assert datasets(chart)["server:2:throttled"].colour == colour_for(2)
+
+
+def test_the_throttling_chart_counts_no_calls_and_no_errors() -> None:
+    # Chart 1 goes on meaning what it meant: a refusal is not a call this
+    # server took, and it is not a failure of this server either.
+    report = a_throttled_report(**{"1": 4})
+    requests = requests_chart(report, ("a",) * 60)
+    by_id = datasets(requests)
+
+    assert sum(by_id["server:1:tool_call"].values) == 9
+    assert sum(by_id[ERRORS_ID].values) == 2
+    assert "server:1:throttled" not in by_id
+
+
+def test_a_window_with_nothing_refused_says_so_in_its_own_words() -> None:
+    chart = throttling_chart(a_report(), ("a",) * 60)
+
+    assert chart.empty is True
+    assert chart.datasets == ()
+    assert chart.empty_note == NOTHING_THROTTLED
+    assert len(chart.labels) == 60
+
+
+def test_seeded_refusals_reach_the_page(settings: Settings, tmp_path: Path) -> None:
+    async def seed(session: AsyncSession) -> None:
+        petstore = await a_server(session, "Petstore", "petstore")
+        await repo.add_metrics(
+            session,
+            [
+                BucketDelta(bucket_start=recent(1), server_id=petstore, kind=TOOL_CALL, calls=5),
+                BucketDelta(bucket_start=recent(1), server_id=petstore, kind=THROTTLED, calls=3),
+                BucketDelta(bucket_start=recent(2), server_id=petstore, kind=THROTTLED, calls=4),
+            ],
+        )
+
+    in_the_database(settings, seed)
+    with client(settings, tmp_path) as http:
+        body = http.get(f"{MONITORING_PATH}?range=1h", headers=HTML).text
+
+    requests, _, _, throttled = embedded(body)
+    assert sum(throttled["datasets"][0]["values"]) == 7
+    assert throttled["datasets"][0]["id"] == "server:1:throttled"
+    # And none of it leaked onto the chart of what the upstream actually did.
+    by_id = {one["id"]: one for one in requests["datasets"]}
+    assert sum(by_id["server:1:tool_call"]["values"]) == 5
+    assert sum(by_id[ERRORS_ID]["values"]) == 0
+    assert NOTHING_THROTTLED not in body
+    # And a number beside the call count, for a browser that draws no charts.
+    assert "Throttled" in body
+
+
+def test_the_totals_count_refusals_apart_from_calls(settings: Settings) -> None:
+    async def seed(session: AsyncSession) -> None:
+        petstore = await a_server(session, "Petstore", "petstore")
+        await repo.add_metrics(
+            session,
+            [
+                BucketDelta(
+                    bucket_start=recent(1),
+                    server_id=petstore,
+                    kind=TOOL_CALL,
+                    calls=5,
+                    errors=1,
+                ),
+                BucketDelta(bucket_start=recent(1), server_id=petstore, kind=THROTTLED, calls=3),
+            ],
+        )
+
+    in_the_database(settings, seed)
+    view = in_the_database(settings, lambda session: build(session, settings, "1h"))
+
+    assert view.tool_calls == 5
+    assert view.totals.errors == 1
+    assert view.totals.throttled == 3

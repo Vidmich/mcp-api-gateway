@@ -13,9 +13,10 @@ live on the next `tools/list`.
 
 - **`/mcp`** — one MCP endpoint (streamable HTTP) for every registered service.
 - **Configuration pages** — register and edit upstreams, choose operations, name
-  tools, refresh specs and review what changed.
-- **Monitoring page** — calls, bytes in and out, and failures over time, total
-  and per server.
+  tools, cap how fast each upstream may be called, refresh specs and review what
+  changed.
+- **Monitoring page** — calls, bytes in and out, failures and throttled calls
+  over time, total and per server.
 - **`/api/v1`** — the same configuration actions as JSON, for scripts.
 
 Self-hosted, single process, SQLite. No Node build step, no external services.

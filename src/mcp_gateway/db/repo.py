@@ -61,6 +61,12 @@ from mcp_gateway.db.models import (
     SpecFormat,
     utcnow,
 )
+from mcp_gateway.limits import (
+    HALF_A_LIMIT,
+    MAX_RATE_CALLS,
+    MAX_WINDOW_SECONDS,
+    half_a_limit,
+)
 
 #: Statuses that mean the operator has something to look at (spec §5.4).
 UNREVIEWED: Final[frozenset[str]] = frozenset({"new", "changed"})
@@ -151,6 +157,12 @@ class ServerSummary(BaseModel):
     spec_auth_mode: str
     spec_auth_type: str | None
     spec_auth: CredentialState
+
+    #: How many calls this server will take over how many seconds, or null in
+    #: both when it is not capped. Never one without the other; see
+    #: :meth:`~mcp_gateway.limits.Limit.of`.
+    rate_limit_calls: int | None = None
+    rate_limit_seconds: int | None = None
 
     auto_refresh: bool
     last_refresh_at: dt.datetime | None
@@ -342,6 +354,13 @@ class ServerPatch(BaseModel):
     base_url: str | None = Field(default=None, min_length=1)
     enabled: bool | None = None
     auto_refresh: bool | None = None
+
+    #: The two halves of a rate limit (task 101). ``None`` clears — which is
+    #: how a limit is taken off — and the two are written together or not at
+    #: all: :func:`update_server` refuses a patch that would leave half of one
+    #: on the row.
+    rate_limit_calls: int | None = Field(default=None, ge=1, le=MAX_RATE_CALLS)
+    rate_limit_seconds: int | None = Field(default=None, ge=1, le=MAX_WINDOW_SECONDS)
 
     credential: Credential | None = None
     spec_auth_mode: SpecAuthMode | None = None
@@ -611,9 +630,24 @@ async def update_server(
     server = await require_server(session, server_id)
     provided = {name: getattr(patch, name) for name in patch.model_fields_set}
 
-    for field in ("name", "slug", "tool_prefix", "spec_url", "base_url", "enabled", "auto_refresh"):
+    for field in (
+        "name",
+        "slug",
+        "tool_prefix",
+        "spec_url",
+        "base_url",
+        "enabled",
+        "auto_refresh",
+        "rate_limit_calls",
+        "rate_limit_seconds",
+    ):
         if field in provided:
             setattr(server, field, provided[field])
+    # After the loop rather than against the patch: a patch may set one half
+    # of a limit the row already holds the other half of, so what has to be
+    # coherent is the row it would leave behind.
+    if half_a_limit(server.rate_limit_calls, server.rate_limit_seconds):
+        raise ValueError(HALF_A_LIMIT)
 
     if "credential" in provided:
         _write_api_credential(server, provided["credential"], cipher=cipher)
@@ -809,6 +843,8 @@ def _summary_fields(server: Server, counts: OperationCounts) -> dict[str, Any]:
         "spec_auth_mode": server.spec_auth_mode,
         "spec_auth_type": server.spec_auth_type,
         "spec_auth": _spec_auth_state(server),
+        "rate_limit_calls": server.rate_limit_calls,
+        "rate_limit_seconds": server.rate_limit_seconds,
         "auto_refresh": server.auto_refresh,
         "last_refresh_at": server.last_refresh_at,
         "last_refresh_status": server.last_refresh_status,

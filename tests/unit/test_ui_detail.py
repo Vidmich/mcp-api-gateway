@@ -41,13 +41,20 @@ from mcp_gateway.db.migrate import upgrade_to_head
 from mcp_gateway.db.models import Operation, Server
 from mcp_gateway.db.repo import NewServer, OperationInput
 from mcp_gateway.db.session import database_path, database_service, open_database
+from mcp_gateway.limits import HALF_A_LIMIT
 from mcp_gateway.mcpsrv.server import mcp_service
 from mcp_gateway.naming import rename_server
 from mcp_gateway.web.detail import (
     CREDENTIAL_LABELS,
+    IS_LIMITED,
     NAME_ILLEGAL,
     NAME_REQUIRED,
+    NOT_LIMITED,
     PREFIX_UNCHANGED,
+    RATE_CALLS_FIELD,
+    RATE_CALLS_RANGE,
+    RATE_SECONDS_FIELD,
+    RATE_SECONDS_RANGE,
     OperationFilter,
     SettingsInvalid,
     parse_settings,
@@ -1128,3 +1135,178 @@ def test_the_detail_page_needs_a_session_when_one_is_configured(tmp_path: Path) 
         page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML, follow_redirects=False)
 
     assert page.status_code in (302, 303)
+
+
+# --------------------------------------------------------------------------- #
+# The rate-limit boxes (task 101)
+# --------------------------------------------------------------------------- #
+
+
+async def capped(session: AsyncSession, **limits: int) -> int:
+    """One registered server with a cap on how fast it may be called."""
+    server_id = await register(session)
+    await repo.update_server(session, server_id, repo.ServerPatch(**limits), cipher=cipher())
+    return server_id
+
+
+def limits_of(settings: Settings, server_id: int) -> tuple[int | None, int | None]:
+    """The cap this server now carries, read back out of the file."""
+    summary = seeded(settings, lambda session: repo.server_detail(session, server_id))
+    return summary.rate_limit_calls, summary.rate_limit_seconds
+
+
+def test_both_boxes_filled_in_is_a_limit() -> None:
+    patch = parse_settings(
+        settings_form(**{RATE_CALLS_FIELD: "5", RATE_SECONDS_FIELD: "60"}), a_server()
+    )
+
+    assert (patch.rate_limit_calls, patch.rate_limit_seconds) == (5, 60)
+
+
+def test_both_boxes_empty_takes_the_limit_off() -> None:
+    # Both are always written, so clearing them is how a cap comes off — the
+    # same way clearing the tool-name box restores the generated name.
+    patch = parse_settings(settings_form(), a_server(rate_limit_calls=5, rate_limit_seconds=60))
+
+    assert "rate_limit_calls" in patch.model_fields_set
+    assert "rate_limit_seconds" in patch.model_fields_set
+    assert patch.rate_limit_calls is None
+    assert patch.rate_limit_seconds is None
+
+
+@pytest.mark.parametrize(
+    ("form", "field"),
+    [
+        ({RATE_CALLS_FIELD: "5"}, RATE_SECONDS_FIELD),
+        ({RATE_SECONDS_FIELD: "60"}, RATE_CALLS_FIELD),
+    ],
+)
+def test_half_a_limit_is_answered_beside_the_empty_box(form: dict[str, str], field: str) -> None:
+    with pytest.raises(SettingsInvalid) as raised:
+        parse_settings(settings_form(**form), a_server())
+
+    assert raised.value.errors == {field: HALF_A_LIMIT}
+
+
+@pytest.mark.parametrize("typed", ["nought", "0", "-1", "2.5", "1000001"])
+def test_a_number_of_calls_that_cannot_be_counted_with_is_refused(typed: str) -> None:
+    with pytest.raises(SettingsInvalid) as raised:
+        parse_settings(
+            settings_form(**{RATE_CALLS_FIELD: typed, RATE_SECONDS_FIELD: "60"}), a_server()
+        )
+
+    assert raised.value.errors == {RATE_CALLS_FIELD: RATE_CALLS_RANGE}
+
+
+@pytest.mark.parametrize("typed", ["a minute", "0", "86401"])
+def test_a_window_that_cannot_be_counted_over_is_refused(typed: str) -> None:
+    with pytest.raises(SettingsInvalid) as raised:
+        parse_settings(
+            settings_form(**{RATE_CALLS_FIELD: "5", RATE_SECONDS_FIELD: typed}), a_server()
+        )
+
+    assert raised.value.errors == {RATE_SECONDS_FIELD: RATE_SECONDS_RANGE}
+
+
+def test_a_box_that_could_not_be_read_is_not_also_called_half_a_limit() -> None:
+    # One message per mistake: the operator has not finished correcting the box
+    # that is wrong, so telling them the pair is wrong too says nothing new.
+    with pytest.raises(SettingsInvalid) as raised:
+        parse_settings(settings_form(**{RATE_CALLS_FIELD: "lots"}), a_server())
+
+    assert set(raised.value.errors) == {RATE_CALLS_FIELD}
+
+
+def test_a_stored_limit_fills_the_boxes_back_in() -> None:
+    fields = stored_fields(a_summary(rate_limit_calls=5, rate_limit_seconds=60))
+
+    assert fields[RATE_CALLS_FIELD] == "5"
+    assert fields[RATE_SECONDS_FIELD] == "60"
+
+
+def test_no_limit_leaves_the_boxes_empty_rather_than_showing_a_zero() -> None:
+    fields = stored_fields(a_summary())
+
+    assert fields[RATE_CALLS_FIELD] == ""
+    assert fields[RATE_SECONDS_FIELD] == ""
+
+
+def test_the_note_above_the_boxes_says_what_is_in_force() -> None:
+    capped_view = settings_view(a_summary(rate_limit_calls=5, rate_limit_seconds=60))
+    uncapped = settings_view(a_summary())
+
+    assert capped_view.rate_limit_note == IS_LIMITED.format(limit="5 calls per 60 seconds")
+    assert uncapped.rate_limit_note == NOT_LIMITED
+
+
+def test_the_note_describes_the_stored_row_and_not_a_rejected_form() -> None:
+    # A rejected form still holds what was typed; a note calling that the limit
+    # would be describing a save that did not happen.
+    view = settings_view(
+        a_summary(),
+        settings_form(**{RATE_CALLS_FIELD: "5", RATE_SECONDS_FIELD: "60"}),
+        errors={RATE_SECONDS_FIELD: RATE_SECONDS_RANGE},
+    )
+
+    assert view.rate_limit_note == NOT_LIMITED
+    assert view.fields[RATE_CALLS_FIELD] == "5"
+
+
+def test_the_page_offers_the_boxes_and_says_what_is_in_force(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    server_id = seeded(
+        settings, lambda session: capped(session, rate_limit_calls=5, rate_limit_seconds=60)
+    )
+
+    with client(settings, tmp_path) as http:
+        body = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    assert f'name="{RATE_CALLS_FIELD}"' in body
+    assert f'name="{RATE_SECONDS_FIELD}"' in body
+    assert "5 calls per 60 seconds" in body
+
+
+def test_saving_the_form_writes_the_limit(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        saved = http.post(
+            f"{SERVERS_PATH}/{server_id}",
+            data=settings_form(**{RATE_CALLS_FIELD: "5", RATE_SECONDS_FIELD: "60"}),
+            headers=HTML,
+            follow_redirects=False,
+        )
+
+    assert saved.status_code == 303
+    assert limits_of(settings, server_id) == (5, 60)
+
+
+def test_saving_the_form_with_the_boxes_cleared_takes_the_limit_off(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    server_id = seeded(
+        settings, lambda session: capped(session, rate_limit_calls=5, rate_limit_seconds=60)
+    )
+
+    with client(settings, tmp_path) as http:
+        http.post(f"{SERVERS_PATH}/{server_id}", data=settings_form(), headers=HTML)
+
+    assert limits_of(settings, server_id) == (None, None)
+
+
+def test_a_form_with_half_a_limit_changes_nothing(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    server_id = seeded(
+        settings, lambda session: capped(session, rate_limit_calls=5, rate_limit_seconds=60)
+    )
+
+    with client(settings, tmp_path) as http:
+        refused = http.post(
+            f"{SERVERS_PATH}/{server_id}",
+            data=settings_form(**{RATE_CALLS_FIELD: "9"}),
+            headers=HTML,
+        )
+
+    assert refused.status_code == 422
+    assert HALF_A_LIMIT in refused.text
+    assert limits_of(settings, server_id) == (5, 60)

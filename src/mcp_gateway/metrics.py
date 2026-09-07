@@ -74,9 +74,13 @@ logger = logging.getLogger(__name__)
 #: How often the writer turns counters into rows. Spec §8's number.
 FLUSH_SECONDS: Final = 10.0
 
-#: The two kinds of row a bucket can be, spelled once (spec §4).
+#: The kinds of row a bucket can be, spelled once (spec §4).
 TOOL_CALL: Final[MetricKind] = "tool_call"
 TOOLS_LIST: Final[MetricKind] = "tools_list"
+#: A call the gateway refused before sending it, because the server it was
+#: for is over its rate limit (task 101). Its own kind, so that the two
+#: series that were here before it go on meaning what they meant.
+THROTTLED: Final[MetricKind] = "throttled"
 
 #: Bucket starts are counted from here, so that two gateways — or one before and
 #: after a restart — align on the same boundaries.
@@ -93,7 +97,7 @@ FAILURE_TEXT: Final[dict[str, str]] = {
 }
 
 #: Where a bucket's counters are kept until they are written: the start of the
-#: window, the server it belongs to, and which of the two things it counts.
+#: window, the server it belongs to, and which of the kinds it counts.
 Key = tuple[dt.datetime, int | None, MetricKind]
 
 
@@ -206,6 +210,21 @@ class Meter:
                 message=failure_text(outcome.failure, outcome.status_code),
             )
         )
+
+    def throttled(self, server_id: int) -> None:
+        """Count one call refused before it was sent (task 101).
+
+        Neither a call nor an error, and so neither: nothing left the
+        gateway, nothing came back, and no upstream was asked for an
+        opinion. Counting it as a call would make the failure rate on the
+        monitoring page a number about the operator's own configuration,
+        and counting it as an error would put the gateway's decisions on
+        the same line as the upstream's faults.
+
+        The count goes in ``calls`` because that is the column the bucket
+        has; the ``kind`` is what says a refusal is what was counted.
+        """
+        self._tally(self._now(), server_id, THROTTLED).calls += 1
 
     def listing(self, *, duration_ms: float = 0.0) -> None:
         """Count one ``tools/list``.
@@ -344,6 +363,7 @@ __all__ = [
     "EPOCH",
     "FAILURE_TEXT",
     "FLUSH_SECONDS",
+    "THROTTLED",
     "TOOLS_LIST",
     "TOOL_CALL",
     "Drained",

@@ -125,13 +125,16 @@ async def test_an_existing_database_keeps_its_rows_across_a_migration(tmp_path: 
 
     with closing(sqlite3.connect(database)) as connection:
         rows = connection.execute(
-            "SELECT name, enabled, attention_reason, disabled_at FROM servers"
+            "SELECT name, enabled, attention_reason, disabled_at, "
+            "rate_limit_calls, rate_limit_seconds FROM servers"
         ).fetchall()
         schema = connection.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'servers'"
         ).fetchone()[0]
 
-    assert rows == [("Petstore", 1, None, None)]
+    # Null in every column a later revision added, which is what makes an
+    # upgrade change nothing about how an already-registered server behaves.
+    assert rows == [("Petstore", 1, None, None, None, None)]
     assert "AUTOINCREMENT" in schema
 
 

@@ -36,12 +36,12 @@ the upstream is rate-limiting the gateway.
 
 ## Acceptance
 
-- [ ] A server with no limit configured is never throttled, however fast it is called.
-- [ ] With five calls per sixty seconds, the sixth inside the window comes back `isError` naming `429`, and respx sees exactly five outbound requests.
-- [ ] Capacity returns as the window slides: the same server is callable again once the window has passed.
-- [ ] Two servers hold independent budgets — exhausting one leaves the other callable.
-- [ ] A refusal increments that server's `throttled` bucket and leaves `calls`, `errors` and the byte counters untouched.
-- [ ] An upstream that answers `429` itself is recorded as an ordinary error, and the throttling chart stays flat.
-- [ ] The refusal text says the gateway refused the call and when to retry, and is distinguishable from an upstream's own `429`.
-- [ ] The monitoring page renders the throttling chart against seeded metrics and renders it empty, not broken, when nothing was throttled.
-- [ ] Changing a server's limit in the UI changes the next call's behaviour without a restart.
+- [x] A server with no limit configured is never throttled, however fast it is called.
+- [x] With five calls per sixty seconds, the sixth inside the window comes back `isError` naming `429`, and respx sees exactly five outbound requests.
+- [x] Capacity returns as the window slides: the same server is callable again once the window has passed.
+- [x] Two servers hold independent budgets — exhausting one leaves the other callable.
+- [x] A refusal increments that server's `throttled` bucket and leaves `calls`, `errors` and the byte counters untouched.
+- [x] An upstream that answers `429` itself is recorded as an ordinary error, and the throttling chart stays flat.
+- [x] The refusal text says the gateway refused the call and when to retry, and is distinguishable from an upstream's own `429`.
+- [x] The monitoring page renders the throttling chart against seeded metrics and renders it empty, not broken, when nothing was throttled.
+- [x] Changing a server's limit in the UI changes the next call's behaviour without a restart.

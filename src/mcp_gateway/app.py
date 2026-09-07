@@ -33,6 +33,7 @@ from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
 from mcp_gateway.health import Watcher, health_service
+from mcp_gateway.limits import Limiter
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
 from mcp_gateway.metrics import Meter, metrics_service
 from mcp_gateway.outbound import outbound_service
@@ -199,6 +200,11 @@ def create_app(
     #: Set by the health service; ``None`` in an app that does not run one, and
     #: then a server that fails is counted but never disabled.
     app.state.health_service = None
+    #: The rate-limit windows, beside the two above and for the third time for
+    #: the same reason: a tool call consults it before it consults anything
+    #: with a lifetime (task 101). It runs no service — there is nothing to
+    #: write and nothing to flush.
+    app.state.limits = Limiter()
     #: Set by the retention service; ``None`` in an app that does not run one.
     app.state.retention = None
     #: Held by every refresh, whoever started it, so that two of the same server

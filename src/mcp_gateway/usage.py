@@ -51,7 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import MetricKind, utcnow
 from mcp_gateway.db.repo import MetricSlice
-from mcp_gateway.metrics import EPOCH, TOOL_CALL, TOOLS_LIST
+from mcp_gateway.metrics import EPOCH, THROTTLED, TOOL_CALL, TOOLS_LIST
 
 #: How long a window covers, and how finely it is drawn. Spec §7.2's ranges and
 #: its "1m → 1h → 1d": sixty points for an hour, twenty-four for a day, a
@@ -86,6 +86,14 @@ DELETED_LABEL: Final = "Server {server_id} (deleted)"
 #: is exactly one of them however the tool calls are split up.
 LISTING_ID: Final = "gateway:tools_list"
 TOTAL_ID: Final = "total:tool_call"
+#: The same, for the calls that were refused before they were sent.
+THROTTLED_TOTAL_ID: Final = "total:throttled"
+
+#: Where each kind sits in the legend: what the gateway sent, then what it
+#: refused to send, then what it answered out of its own database. Written
+#: out because the three no longer sort into that order by name, and the
+#: order is a decision rather than an accident of spelling.
+KIND_ORDER: Final[dict[str, int]] = {TOOL_CALL: 0, THROTTLED: 1, TOOLS_LIST: 2}
 
 
 class UsageTotals(BaseModel):
@@ -98,10 +106,13 @@ class UsageTotals(BaseModel):
     bytes_out: int = 0
     bytes_in: int = 0
     duration_ms_sum: int = 0
+    #: Calls refused before they were sent, which is why they are not in
+    #: ``calls``: nothing went out and nothing failed (task 101).
+    throttled: int = 0
 
 
 class UsageSeries(BaseModel):
-    """One line on one chart: an identity, a label, and five parallel arrays.
+    """One line on one chart: an identity, a label, and its parallel arrays.
 
     Parallel arrays rather than a list of point objects, because every array is
     the same length as :attr:`UsageReport.buckets` and shares its x axis — which
@@ -124,6 +135,7 @@ class UsageSeries(BaseModel):
     bytes_out: tuple[int, ...] = ()
     bytes_in: tuple[int, ...] = ()
     duration_ms_sum: tuple[int, ...] = ()
+    throttled: tuple[int, ...] = ()
 
     total: UsageTotals = UsageTotals()
 
@@ -228,6 +240,7 @@ class _Accumulator:
     bytes_out: list[int] = field(default_factory=list)
     bytes_in: list[int] = field(default_factory=list)
     duration_ms_sum: list[int] = field(default_factory=list)
+    throttled: list[int] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.calls = [0] * self.points
@@ -235,8 +248,17 @@ class _Accumulator:
         self.bytes_out = [0] * self.points
         self.bytes_in = [0] * self.points
         self.duration_ms_sum = [0] * self.points
+        self.throttled = [0] * self.points
 
     def add(self, index: int, row: MetricSlice) -> None:
+        if row.kind == THROTTLED:
+            # A refusal is stored in ``calls`` because that is the column
+            # the bucket has, and read into ``throttled`` because that is
+            # what it is. Which array it lands in is the kind's business,
+            # and doing it here is what keeps ``totals.calls`` meaning
+            # exactly what it meant before task 101.
+            self.throttled[index] += row.calls
+            return
         self.calls[index] += row.calls
         self.errors[index] += row.errors
         self.bytes_out[index] += row.bytes_out
@@ -244,16 +266,20 @@ class _Accumulator:
         self.duration_ms_sum[index] += row.duration_ms_sum
 
     @property
-    def order(self) -> tuple[str, int, str, int]:
+    def order(self) -> tuple[int, int, str, int]:
         """Where this series sits in the legend.
 
-        Kind first, which puts the listings last without a special case
-        (``tool_call`` sorts before ``tools_list``); then live servers before
-        deleted ones, so history does not push what is running down the list;
-        then by name, and by id to break a tie between two servers called the
-        same thing.
+        Kind first, in :data:`KIND_ORDER`, which puts the listings last; then
+        live servers before deleted ones, so history does not push what is
+        running down the list; then by name, and by id to break a tie between
+        two servers called the same thing.
         """
-        return (self.kind, int(self.deleted), self.label.casefold(), self.server_id or 0)
+        return (
+            KIND_ORDER.get(self.kind, len(KIND_ORDER)),
+            int(self.deleted),
+            self.label.casefold(),
+            self.server_id or 0,
+        )
 
     def finish(self) -> UsageSeries:
         return UsageSeries(
@@ -267,12 +293,14 @@ class _Accumulator:
             bytes_out=tuple(self.bytes_out),
             bytes_in=tuple(self.bytes_in),
             duration_ms_sum=tuple(self.duration_ms_sum),
+            throttled=tuple(self.throttled),
             total=UsageTotals(
                 calls=sum(self.calls),
                 errors=sum(self.errors),
                 bytes_out=sum(self.bytes_out),
                 bytes_in=sum(self.bytes_in),
                 duration_ms_sum=sum(self.duration_ms_sum),
+                throttled=sum(self.throttled),
             ),
         )
 
@@ -285,15 +313,20 @@ def _identify(
     A ``tools_list`` row has no server by construction, so it is the one series
     both groupings share. A ``tool_call`` row always has one —
     :class:`~mcp_gateway.mcpsrv.proxy.CallOutcome` cannot be built without one —
-    and the only question left is whether that server is still registered.
+    and so does a ``throttled`` one, which is a call that was refused on a
+    particular server's behalf. For those the only question left is whether
+    that server is still registered.
+
+    The kind is part of the id, so a server that is being called and refused
+    in the same window is two series rather than one that cannot be drawn.
     """
     if row.kind == TOOLS_LIST:
         return LISTING_ID, LISTING_LABEL, None, False
     if group_by == "total":
-        return TOTAL_ID, TOTAL_LABEL, None, False
+        return f"total:{row.kind}", TOTAL_LABEL, None, False
     name = names.get(row.server_id) if row.server_id is not None else None
     label = DELETED_LABEL.format(server_id=row.server_id) if name is None else name
-    return f"server:{row.server_id}:{TOOL_CALL}", label, row.server_id, name is None
+    return f"server:{row.server_id}:{row.kind}", label, row.server_id, name is None
 
 
 def build_report(
@@ -358,6 +391,7 @@ def build_report(
             bytes_out=sum(one.total.bytes_out for one in finished),
             bytes_in=sum(one.total.bytes_in for one in finished),
             duration_ms_sum=sum(one.total.duration_ms_sum for one in finished),
+            throttled=sum(one.total.throttled for one in finished),
         ),
     )
 
@@ -395,9 +429,11 @@ __all__ = [
     "DEFAULT_GROUP_BY",
     "DEFAULT_RANGE",
     "DELETED_LABEL",
+    "KIND_ORDER",
     "LISTING_ID",
     "LISTING_LABEL",
     "RANGES",
+    "THROTTLED_TOTAL_ID",
     "TOTAL_ID",
     "TOTAL_LABEL",
     "GroupBy",

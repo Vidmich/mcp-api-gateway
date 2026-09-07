@@ -1,4 +1,4 @@
-{# One window of usage: the selector, the three charts, the strip, the failures.
+{# One window of usage: the selector, the charts, the strip, the failures.
 
    An ordinary template rather than a macro, like the server list: it is also
    returned on its own, as the answer to a range button and to the timer, and a
@@ -53,6 +53,13 @@
       <dt class="totals__term">Failed</dt>
       <dd class="totals__value{% if view.totals.errors %} totals__value--bad{% endif %}">{{ view.totals.errors }}</dd>
     </div>
+    {# Beside the calls rather than only on its own chart: the charts need a
+       script and this does not, and a page that could not draw the fourth one
+       would otherwise say nothing at all about a limit that is being hit. #}
+    <div class="totals__pair">
+      <dt class="totals__term">Throttled</dt>
+      <dd class="totals__value">{{ view.totals.throttled }}</dd>
+    </div>
     <div class="totals__pair">
       <dt class="totals__term">Sent</dt>
       <dd class="totals__value">{{ view.sent }}</dd>
@@ -79,7 +86,7 @@
     {# Replaced by the drawing when there is a script to draw it. #}
     <p class="chart__fallback">{{ no_charts }}</p>
     {% if chart.empty %}
-    <p class="chart__empty">{{ no_traffic }}</p>
+    <p class="chart__empty">{{ chart.empty_note }}</p>
     {% endif %}
   </figure>
   {% endfor %}

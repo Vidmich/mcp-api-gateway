@@ -118,6 +118,22 @@
   {{ switch("auto_refresh", "Refresh automatically", checked=settings.auto_refresh,
             hint="Re-read the spec on the gateway's schedule. Changes are flagged, never applied.") }}
 
+  {# Two boxes and one setting: both empty is no limit. The note above them
+     describes the stored row rather than what is in the boxes, so a rejected
+     form does not claim a cap that was never saved (task 101). #}
+  <fieldset class="fieldset">
+    <legend class="fieldset__legend">Rate limit</legend>
+    <p class="fieldset__note">{{ settings.rate_limit_note }}</p>
+    {{ field("rate_limit_calls", "Calls", value=settings.fields.rate_limit_calls,
+             type="number", placeholder="no limit",
+             hint="How many calls this server will take in the window below.",
+             error=settings.errors.get("rate_limit_calls")) }}
+    {{ field("rate_limit_seconds", "Seconds", value=settings.fields.rate_limit_seconds,
+             type="number", placeholder="no limit",
+             hint="How long that window is. Leave both boxes empty for no limit; a change applies to the next call.",
+             error=settings.errors.get("rate_limit_seconds")) }}
+  </fieldset>
+
   <fieldset class="fieldset">
     <legend class="fieldset__legend">API authentication</legend>
     <p class="fieldset__note">How the gateway authenticates the tool calls it proxies.</p>

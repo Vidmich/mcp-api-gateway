@@ -53,8 +53,10 @@ AuthType = Literal["none"] | CredentialType
 SpecAuthMode = Literal["none", "same_as_api", "custom"]
 #: Lifecycle of an operation across refreshes (spec §6).
 OperationStatus = Literal["active", "new", "changed", "removed"]
-#: What a metric bucket counts. ``tools_list`` rows carry no server.
-MetricKind = Literal["tool_call", "tools_list"]
+#: What a metric bucket counts. ``tools_list`` rows carry no server;
+#: ``throttled`` rows count calls that were refused before they were sent
+#: (task 101), which is neither a call nor an error and so is neither.
+MetricKind = Literal["tool_call", "tools_list", "throttled"]
 
 #: The ``call_errors`` ring keeps only the most recent failures (spec §4).
 MAX_CALL_ERRORS: Final = 500
@@ -163,6 +165,12 @@ class Server(Base):
     #: Null unless ``spec_auth_mode`` is ``custom``.
     spec_auth_config_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
 
+    #: How many calls this server will take, over how many seconds. Null in
+    #: both means no limit and no counting at all — see
+    #: :mod:`mcp_gateway.limits`. Never one without the other.
+    rate_limit_calls: Mapped[int | None] = mapped_column(default=None)
+    rate_limit_seconds: Mapped[int | None] = mapped_column(default=None)
+
     auto_refresh: Mapped[bool] = mapped_column(default=False)
     last_refresh_at: Mapped[dt.datetime | None] = mapped_column(Timestamp, default=None)
     last_refresh_status: Mapped[str | None] = mapped_column(String(20), default=None)
@@ -237,7 +245,14 @@ class Operation(Base):
 
 
 class MetricBucket(Base):
-    """One time bucket of usage, per server for calls and global for listings."""
+    """One time bucket of usage, per server for calls and global for listings.
+
+    A ``throttled`` bucket counts refusals in ``calls`` — it is the column
+    the row has — and leaves every other counter at zero. What that number
+    means is the ``kind``'s business, which is why
+    :mod:`mcp_gateway.usage` reads it into a series of its own rather than
+    into the call counts (task 101).
+    """
 
     __tablename__ = "metric_buckets"
     __table_args__ = (

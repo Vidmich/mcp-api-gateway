@@ -329,6 +329,7 @@ cannot take the gateway down with it.
 | Registered servers, their base URLs and credentials | the database, edited at `/ui/servers` |
 | Which operations are exposed, and what each tool is called | the database, on a server's detail page |
 | Whether a server auto-refreshes | the database, per server |
+| How fast one server may be called | the database, on that server's detail page |
 | The auto-refresh interval, once changed in the UI | the database, overriding `refresh.auto_refresh_interval_minutes` |
 | Whether a server is enabled, including after the gateway disabled it | the database, toggled at `/ui/servers` |
 

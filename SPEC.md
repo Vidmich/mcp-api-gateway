@@ -153,6 +153,8 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 | `spec_auth_mode` | `none` (default) / `same_as_api` / `custom` — how the spec URL itself is authenticated |
 | `spec_auth_type` | `bearer` / `api_key` / `basic` / `headers`; only meaningful when `spec_auth_mode = custom` |
 | `spec_auth_config_encrypted` | Fernet blob, same shape as `auth_config_encrypted`; null unless `spec_auth_mode = custom` |
+| `rate_limit_calls` | how many `tools/call`s this server will take in the window below; null for no limit |
+| `rate_limit_seconds` | how long that window is; null with the column above, never without it |
 | `auto_refresh` | bool |
 | `last_refresh_at`, `last_refresh_status`, `last_refresh_error` | |
 | `spec_hash` | sha256 of the normalized spec, used to skip no-op refreshes |
@@ -178,11 +180,13 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 
 **Auto-disable.** The outcome of every `tools/call` is watched per server, off the same in-memory counters the metrics writer drains, so the call path takes no extra query and no extra write. A server is taken out of the tool list on either of two triggers: `health.auth_failures_before_disable` consecutive `401`/`403` answers (or credentials that would not decrypt), which a successful call resets; or, over `health.failure_window_minutes`, a window holding at least `health.failure_minimum_calls` of which at least `health.failure_threshold` were `5xx` or never reached the upstream. A `400`, `404`, `409`, `422` or an argument-validation failure counts toward neither, and is not in the window at all. Tripping sets `enabled = false` and `needs_attention = true`, writes `attention_reason` and `disabled_at`, records one `call_errors` row, logs one warning naming the server, the trigger and the counts — never the credential — and emits `notifications/tools/list_changed`. Nothing comes back on its own: the operator fixes the cause and re-enables the server, which is what clears `attention_reason`. `health.auto_disable = false` keeps all of that except `enabled = false`.
 
+**Rate limits.** `rate_limit_calls` over `rate_limit_seconds` caps how fast one upstream may be called. Both columns or neither: half a limit is refused by the form and by `PATCH /servers/{id}`, and read back as no limit at all. The window is a sliding one held in memory, per process, and empty after a restart — a gateway that has just come back up cannot know what the process before it sent. Enforcement is in the proxy at the point the request would leave: after the tool is resolved, its arguments validated and its credential read, so nothing that was never going to reach the upstream spends the budget. A refused call is answered immediately — never queued — with `isError: true` whose text opens with the same `HTTP 429 Too Many Requests` status line an upstream's own error arrives under, and then says that the *gateway* refused it and roughly when there will be room. It is counted as a `throttled` metric bucket and as nothing else: not a call, not an error, and nothing in `call_errors`. An upstream's own `429` stays an ordinary error, and the two are never merged.
+
 `removed` operations are retained (never silently deleted) so renames and selections survive an upstream that briefly drops an endpoint; they are excluded from `tools/list`.
 
 ### `metric_buckets`
 
-Unique on `(bucket_start, server_id, kind)`. `kind` is `tool_call` or `tools_list`. Columns: `calls`, `errors`, `bytes_out`, `bytes_in`, `duration_ms_sum`. `server_id` is null for `tools_list`.
+Unique on `(bucket_start, server_id, kind)`. `kind` is `tool_call`, `tools_list` or `throttled`. Columns: `calls`, `errors`, `bytes_out`, `bytes_in`, `duration_ms_sum`. `server_id` is null for `tools_list`. A `throttled` row counts refusals in `calls` and leaves every other counter at zero; what that number means is the `kind`'s business, which is why it is read back as a series of its own rather than as traffic.
 
 ### `call_errors`
 
@@ -258,10 +262,11 @@ Built on the official `mcp` Python SDK's low-level `Server` plus `StreamableHTTP
 - **tools/call** →
   1. Look up the operation by effective tool name; unknown or newly-disabled names return an MCP error, not an exception.
   2. Validate arguments against the stored `input_schema` (`jsonschema`). Validation failures return `isError: true` with the validation message — a model can correct itself from that.
-  3. Build the request: substitute path params (URL-encoded), append query params, set header params, serialize `body` per the operation's media type, apply the server's credentials.
-  4. Call via a shared `httpx.AsyncClient` with the configured timeout.
-  5. Return the response body as text content. JSON is pretty-printed; non-text content types are described rather than dumped. `4xx`/`5xx` return `isError: true` with the status line and the body, since the model usually needs the upstream error detail.
-  6. Record metrics regardless of outcome.
+  3. If the server carries a rate limit and its window is full, refuse the call here — before anything is built or sent — with the `429`-shaped result described under `servers` in §4.
+  4. Build the request: substitute path params (URL-encoded), append query params, set header params, serialize `body` per the operation's media type, apply the server's credentials.
+  5. Call via a shared `httpx.AsyncClient` with the configured timeout.
+  6. Return the response body as text content. JSON is pretty-printed; non-text content types are described rather than dumped. `4xx`/`5xx` return `isError: true` with the status line and the body, since the model usually needs the upstream error detail.
+  7. Record metrics regardless of outcome.
 - **Auth**: when `mcp.auth_token` is set, a missing or wrong `Authorization: Bearer` header gets `401` with `WWW-Authenticate: Bearer` before the session manager sees the request.
 - Config changes made in the UI take effect on the next `tools/list`; connected sessions also get a `list_changed` notification.
 
@@ -274,7 +279,7 @@ Built on the official `mcp` Python SDK's low-level `Server` plus `StreamableHTTP
 - **`/ui/servers`** — table of registered servers: name, base URL, enabled toggle, operation counts (`selected / total`, with `new` badged), last refresh time and result, **Needs Attention** badge, Refresh / Edit / Delete actions. A server the gateway disabled itself wears its own badge instead, carrying the reason ("Disabled by the gateway: 3 authentication failures in a row.") so it cannot be mistaken for a refresh diff waiting to be reviewed; switching the server back on is what clears it.
 - **`/ui/servers/new`** — step 1: spec URL, display name, API auth type and credentials, optional base URL override, and a **spec fetch auth** selector (`none` / same as API / custom, with its own credential fields revealed when `custom` is picked). Submitting fetches and parses the spec **without saving**; a `401`/`403` returns to step 1 with the spec-auth selector highlighted rather than a generic error.
 - **Step 2 (operation picker)** — every discovered operation with method, path, summary, and the tool name it will get. Select-all / select-none / filter by tag, method, or text. Saving creates the server, its operations, and the spec snapshot in one transaction.
-- **`/ui/servers/{id}`** — detail page. Same operation table plus status filters (`new`, `changed`, `removed`), inline editing of tool name and description, per-operation select toggles, and the server's own settings (name, slug/prefix, base URL, API credentials, spec fetch auth, auto-refresh checkbox). Both credential sets are write-only in the UI: the current value is never rendered back, only "set" / "not set" with a Replace action.
+- **`/ui/servers/{id}`** — detail page. Same operation table plus status filters (`new`, `changed`, `removed`), inline editing of tool name and description, per-operation select toggles, and the server's own settings (name, slug/prefix, base URL, API credentials, spec fetch auth, auto-refresh checkbox, and the optional rate limit — two boxes that are one setting, both empty for no cap, taking effect on the next call with no restart). Both credential sets are write-only in the UI: the current value is never rendered back, only "set" / "not set" with a Replace action.
 
 HTMX drives the interactive fragments (operation filtering, bulk select, refresh diff, inline rename) against the same routes; no client-side router, no build step.
 
@@ -285,6 +290,7 @@ Time-range selector (1h / 24h / 7d / 30d) and:
 1. **Requests over time** — total tool calls, stacked per server. Errors overlaid.
 2. **Bytes transmitted over time** — bytes sent to upstreams and bytes received, total and per server.
 3. **`tools/list` calls over time** — separate chart, since discovery traffic has a completely different shape from tool traffic.
+4. **Throttled calls over time** — calls refused before they were sent, total and per server. Its own chart because it is the one number here that is the gateway's own decision rather than an upstream's behaviour; drawing it beside the call count would invite reading a rate limit as a failing server.
 
 Data comes from `metric_buckets` via `GET /api/v1/metrics?range=…&group_by=server|total`, re-bucketed server-side to a sensible resolution for the range (1m → 1h → 1d). Charts render with Chart.js vendored into `static/` — no CDN, works offline.
 
@@ -298,7 +304,7 @@ Session-authenticated, same permissions as the UI. Mirrors every UI action so th
 GET    /servers                     list
 POST   /servers                     create (spec_url, auth, spec_auth, selected op_keys)
 GET    /servers/{id}                detail incl. operations
-PATCH  /servers/{id}                name, slug, base_url, enabled, auto_refresh, credentials, spec_auth
+PATCH  /servers/{id}                name, slug, base_url, enabled, auto_refresh, rate limit, credentials, spec_auth
 DELETE /servers/{id}
 POST   /servers/{id}/refresh        run a refresh, returns the diff
 POST   /servers/{id}/acknowledge    clear needs_attention

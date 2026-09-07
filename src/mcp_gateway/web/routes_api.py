@@ -41,6 +41,7 @@ from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import Operation, OperationStatus, Server
 from mcp_gateway.db.session import request_session
+from mcp_gateway.limits import HALF_A_LIMIT, half_a_limit
 from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken
 from mcp_gateway.openapi.diagnostics import SpecError
@@ -259,6 +260,7 @@ def api_router() -> APIRouter:
         with answered():
             server = await repo.require_server(session, server_id)
             _spec_auth_is_coherent(body, server)
+            _rate_limit_is_coherent(body, server)
             await apply_patch(session, server, body.as_patch(), cipher=cipher)
             return await repo.server_detail(session, server_id)
 
@@ -442,6 +444,29 @@ def _spec_auth_is_coherent(body: ServerUpdate, server: Server) -> None:
         cleared = "spec_credential" in given and body.spec_credential is None
         if not supplied and (cleared or not stored):
             raise SettingsInvalid({"spec_credential": CUSTOM_NEEDS_CREDENTIAL})
+
+
+def _rate_limit_is_coherent(body: ServerUpdate, server: Server) -> None:
+    """Refuse a patch that would leave half a rate limit on the row (task 101).
+
+    Read against the row rather than against the body, because either half
+    may already be stored: a patch naming only ``rate_limit_seconds`` is a
+    caller widening a window that already exists, and refusing that would be
+    refusing the ordinary way to change a limit.
+
+    :func:`~mcp_gateway.db.repo.update_server` checks the same thing and
+    raises a ``ValueError``, which is true and would reach the caller as a
+    500. This is that rule said where it can be answered with a 422 and the
+    name of the field to fill in.
+    """
+    given = body.given
+    calls = body.rate_limit_calls if "rate_limit_calls" in given else server.rate_limit_calls
+    seconds = (
+        body.rate_limit_seconds if "rate_limit_seconds" in given else server.rate_limit_seconds
+    )
+    if half_a_limit(calls, seconds):
+        missing = "rate_limit_seconds" if seconds is None else "rate_limit_calls"
+        raise SettingsInvalid({missing: HALF_A_LIMIT})
 
 
 def mount_api(app: FastAPI) -> None:

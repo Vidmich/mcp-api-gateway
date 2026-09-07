@@ -1,10 +1,15 @@
-"""The monitoring page (spec §7.2): three charts, a status strip, recent failures.
+"""The monitoring page (spec §7.2): four charts, a status strip, recent failures.
 
 What an operator opens this page to find out is whether the gateway is busy,
-whether it is failing, and which upstream is responsible for either. The three
-charts answer the first two; the strip and the failures list under them answer
-the third, because a spike with no name on it is a reason to go and read the log
+whether it is failing, and which upstream is responsible for either. The charts
+answer the first two; the strip and the failures list under them answer the
+third, because a spike with no name on it is a reason to go and read the log
 rather than an answer.
+
+**The fourth chart counts what never left.** A throttled call is the gateway's
+own decision about its own configuration (task 101), so it is neither a call
+nor an error and is drawn on axes of its own. Bars on it next to a flat line
+on the first chart is a limit set too low; bars on both is a busy afternoon.
 
 **The charts are decided here, not in the browser.** The vendored script is
 handed a list of charts, each with its labels, its datasets and their colours
@@ -63,7 +68,7 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.models import utcnow
 from mcp_gateway.db.repo import CallErrorView, ServerSummary
 from mcp_gateway.db.session import request_session
-from mcp_gateway.metrics import TOOL_CALL
+from mcp_gateway.metrics import THROTTLED, TOOL_CALL
 from mcp_gateway.usage import (
     DELETED_LABEL,
     LISTING_ID,
@@ -138,6 +143,9 @@ PALETTE: Final[tuple[str, ...]] = (
 
 #: The errors line, in the same red the failure badges use.
 ERROR_COLOUR: Final = "#a32020"
+#: Refusals, in the amber the Needs Attention badge uses: something to look
+#: at, and deliberately not the red that means an upstream failed.
+THROTTLED_COLOUR: Final = "#8a5800"
 #: Discovery traffic, on its own chart and so free to reuse the accent.
 LISTING_COLOUR: Final = "#2f5fdb"
 #: Received bytes are the sent colour at reduced opacity, so that the two
@@ -157,10 +165,13 @@ SENT_STACK: Final = "sent"
 RECEIVED_STACK: Final = "received"
 #: The one stack of the requests chart, whose height is the total.
 CALLS_STACK: Final = "calls"
+#: The one stack of the throttling chart, for the same reason.
+THROTTLED_STACK: Final = "throttled"
 
 CHART_REQUESTS: Final = "requests"
 CHART_BYTES: Final = "bytes"
 CHART_LISTINGS: Final = "listings"
+CHART_THROTTLED: Final = "throttled"
 
 ERRORS_ID: Final = "errors"
 ERRORS_LABEL: Final = "Errors"
@@ -176,6 +187,9 @@ NOT_RECORDED: Final = "not recorded"
 NO_STATUS: Final = "no response"
 
 NO_TRAFFIC: Final = "No traffic in this window."
+#: What the throttling chart says instead, since a flat one there is the good
+#: news rather than the absence of any.
+NOTHING_THROTTLED: Final = "No calls were refused in this window."
 NO_FAILURES: Final = "No failed calls in this window."
 NO_SERVERS: Final = "No servers are registered yet."
 
@@ -289,6 +303,9 @@ class Chart:
     labels: tuple[str, ...]
     datasets: tuple[Dataset, ...]
     stacked: bool = False
+    #: What this chart says when there is nothing on it. Per chart, because
+    #: "no traffic" is the wrong thing for a chart of what was refused.
+    empty_note: str = NO_TRAFFIC
 
     @property
     def canvas_id(self) -> str:
@@ -416,6 +433,11 @@ def _tool_call_series(report: UsageReport) -> tuple[UsageSeries, ...]:
     return tuple(series for series in report.series if series.kind == TOOL_CALL)
 
 
+def _throttled_series(report: UsageReport) -> tuple[UsageSeries, ...]:
+    """The per-server refusal lines, in the order the report put them in."""
+    return tuple(series for series in report.series if series.kind == THROTTLED)
+
+
 def _errors_across(series: Sequence[UsageSeries], points: int) -> tuple[int, ...]:
     """Every server's errors added together, one number per point.
 
@@ -531,13 +553,45 @@ def listing_chart(report: UsageReport, labels: tuple[str, ...]) -> Chart:
     )
 
 
+def throttling_chart(report: UsageReport, labels: tuple[str, ...]) -> Chart:
+    """Calls the gateway refused, stacked per server (task 101).
+
+    Its own chart rather than a line on the first one, and for the opposite
+    reason to the listings chart: not that the shape is different, but that
+    the *subject* is. Every other number on this page is something an upstream
+    did; this is something the operator configured, and reading it against a
+    call count would invite the conclusion that the server is failing.
+    """
+    return Chart(
+        id=CHART_THROTTLED,
+        title="Throttled calls",
+        note="Calls refused before they were sent, because the server was over its "
+        "rate limit. Nothing reached the upstream, so none of these is a failure.",
+        unit="calls",
+        labels=labels,
+        datasets=tuple(
+            Dataset(
+                id=one.id,
+                label=one.label,
+                colour=colour_for(one.server_id),
+                values=one.throttled,
+                stack=THROTTLED_STACK,
+            )
+            for one in _throttled_series(report)
+        ),
+        stacked=True,
+        empty_note=NOTHING_THROTTLED,
+    )
+
+
 def charts_for(report: UsageReport) -> tuple[Chart, ...]:
-    """The three charts spec §7.2 asks for, in the order it asks for them."""
+    """The three charts spec §7.2 asks for, and task 101's fourth."""
     labels = tuple(axis_label(bucket, report.step_seconds) for bucket in report.buckets)
     return (
         requests_chart(report, labels),
         bytes_chart(report, labels),
         listing_chart(report, labels),
+        throttling_chart(report, labels),
     )
 
 
@@ -740,7 +794,6 @@ def context(view: Monitoring) -> dict[str, object]:
         # string with a test behind it.
         "stale": STALE,
         "no_charts": NO_CHARTS,
-        "no_traffic": NO_TRAFFIC,
         "no_failures": NO_FAILURES,
         "no_servers": NO_SERVERS,
         "not_recorded": NOT_RECORDED,
@@ -806,12 +859,14 @@ __all__ = [
     "CHART_DATA_ID",
     "CHART_LISTINGS",
     "CHART_REQUESTS",
+    "CHART_THROTTLED",
     "DEFAULT_PAGE_RANGE",
     "ERRORS_ID",
     "ERROR_COLOUR",
     "LINE",
     "LISTING_COLOUR",
     "MONITORING_TEMPLATE",
+    "NOTHING_THROTTLED",
     "NOT_RECORDED",
     "NO_CHARTS",
     "NO_FAILURES",
@@ -826,6 +881,8 @@ __all__ = [
     "RECEIVED_STACK",
     "SENT_STACK",
     "STALE",
+    "THROTTLED_COLOUR",
+    "THROTTLED_STACK",
     "USAGE_ID",
     "USAGE_PATH",
     "USAGE_TARGET",
@@ -850,4 +907,5 @@ __all__ = [
     "mount_monitoring",
     "requests_chart",
     "strip_for",
+    "throttling_chart",
 ]

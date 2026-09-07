@@ -16,6 +16,15 @@ is capped as it arrives rather than after; and the outcome is recorded whatever
 it was, because a tool that fails is exactly what an operator wants to see on
 the monitoring page.
 
+**A call may be refused before it is built.** A server carrying a rate
+limit spends one of its budget at the point the request would have left the
+gateway — after the tool is resolved, after the arguments are validated,
+after the credential is read, and before anything is sent, so nothing that
+was never going to reach the upstream spends the budget. A refusal comes
+back in the same shape an upstream's own error does, under the same
+:func:`status_line`, and says on the next line that it was the *gateway*
+that refused it: see :mod:`mcp_gateway.limits`.
+
 **Two kinds of failure, and they are not the same kind.** A name that is not a
 live tool is a protocol error — the client asked for something that does not
 exist, and :class:`~mcp.shared.exceptions.MCPError` is how JSON-RPC says so.
@@ -52,7 +61,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mcp_gateway.config import HttpSettings
 from mcp_gateway.crypto import Credential, CredentialCipher, CredentialUnreadable
 from mcp_gateway.db import repo
+from mcp_gateway.db.models import Server
 from mcp_gateway.db.repo import ToolRow
+from mcp_gateway.limits import Limit, Limiter, Refusal, RefusalRecorder, record_refusal
 from mcp_gateway.openapi.schema import BODY_ARGUMENT, EXTENSION, JSON_MEDIA_TYPE
 from mcp_gateway.outbound import credential_headers
 
@@ -103,6 +114,12 @@ INVALID_ARGUMENTS: Final = "invalid_arguments"
 CREDENTIAL_UNREADABLE: Final = "credential_unreadable"
 UNREACHABLE: Final = "unreachable"
 HTTP_ERROR: Final = "http_error"
+
+#: What a call refused by the gateway's own rate limit is answered with. Not
+#: one of the failures above, because it is not one: no request was made, so
+#: there is no :class:`CallOutcome` to record and nothing for the metrics or
+#: the health watch to count. See :class:`~mcp_gateway.limits.Refusal`.
+TOO_MANY_REQUESTS: Final = 429
 
 
 class UnknownTool(LookupError):  # noqa: N818 - it is a lookup, not a crash
@@ -178,6 +195,12 @@ class Upstream:
     #: Where the outcome of each call goes. The default only logs it, so a
     #: proxy exercised on its own counts nothing and needs nothing to count into.
     record: Recorder = record_call
+    #: The rate-limit windows, shared by every call this process makes.
+    #: ``None`` enforces no limits at all, which is what a proxy exercised on
+    #: its own wants: a limiter of its own would be one nobody had filled in.
+    limiter: Limiter | None = None
+    #: Where a refusal goes, mirroring ``record``. The default only logs it.
+    refuse: RefusalRecorder = record_refusal
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +276,9 @@ class _Attempt:
     request_bytes: int = 0
     response_bytes: int = 0
     failure: str | None = None
+    #: Set when the gateway refused the call itself. A refusal is not a call:
+    #: it is reported instead of one, never as well as one.
+    refusal: Refusal | None = None
 
 
 async def call_tool(
@@ -263,6 +289,12 @@ async def call_tool(
     Raises :class:`UnknownTool` for a name that is not live; every other failure
     comes back as a result with ``is_error`` set, because it is something the
     model or the operator can read and act on.
+
+    A call the gateway refused is reported down its own path and produces no
+    :class:`CallOutcome` at all. There is nothing to put in one: no request
+    was made, no bytes moved, no upstream was asked for an opinion — and a
+    refusal counted as a call would make the failure rate on the monitoring
+    page a number about the operator's own configuration (task 101).
     """
     row = await repo.get_tool(upstream.session, name)
     if row is None:
@@ -270,6 +302,9 @@ async def call_tool(
 
     started = time.perf_counter()
     attempt = await _attempt(upstream, row, dict(arguments or {}))
+    if attempt.refusal is not None:
+        upstream.refuse(attempt.refusal)
+        return attempt.result
     upstream.record(
         CallOutcome(
             tool_name=row.tool_name,
@@ -305,6 +340,10 @@ async def _attempt(upstream: Upstream, row: ToolRow, arguments: dict[str, Any]) 
             failure=CREDENTIAL_UNREADABLE,
         )
 
+    refusal = _refuse(upstream, row, server)
+    if refusal is not None:
+        return _Attempt(error_result(throttled_text(refusal)), refusal=refusal)
+
     request = build_request(row, arguments, credential=credential)
     sent = len(request.content or b"")
     try:
@@ -323,6 +362,34 @@ async def _attempt(upstream: Upstream, row: ToolRow, arguments: dict[str, Any]) 
         response_bytes=len(received.body),
         failure=None if received.ok else HTTP_ERROR,
     )
+
+
+def _refuse(upstream: Upstream, row: ToolRow, server: Server) -> Refusal | None:
+    """Spend one of this server's budget, or say why the call is not going.
+
+    The limit is read off the row on every call rather than cached, so an
+    operator who changes it sees the next call behave differently and does not
+    have to restart anything — the same rule ``tools/list`` already follows
+    about a server being enabled.
+    """
+    if upstream.limiter is None:
+        return None
+    limit = Limit.of(server.rate_limit_calls, server.rate_limit_seconds)
+    return upstream.limiter.check(
+        row.server_id, limit, server_name=row.server_name, tool_name=row.tool_name
+    )
+
+
+def throttled_text(refusal: Refusal) -> str:
+    """A refusal in the shape an upstream's own error comes back in.
+
+    The same status line, built by the same function, because a model that has
+    learned to read one should not have to learn to read the other. What
+    follows it is the difference: an upstream's ``429`` carries the upstream's
+    body, and this carries a sentence saying the gateway refused the call and
+    when there will be room.
+    """
+    return f"{status_line(TOO_MANY_REQUESTS)}{PARAGRAPH}{refusal.detail}"
 
 
 # --------------------------------------------------------------------------- #
@@ -653,6 +720,7 @@ __all__ = [
     "NO_BODY",
     "PARAGRAPH",
     "TEXTUAL",
+    "TOO_MANY_REQUESTS",
     "TRUNCATED",
     "UNREACHABLE",
     "Argument",
@@ -675,6 +743,7 @@ __all__ = [
     "serialize",
     "status_line",
     "target_url",
+    "throttled_text",
     "to_result",
     "wiring_of",
 ]

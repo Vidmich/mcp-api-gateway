@@ -45,13 +45,15 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.migrate import upgrade_to_head
 from mcp_gateway.db.repo import BucketDelta, MetricSlice, NewServer
 from mcp_gateway.db.session import database_service, open_database
-from mcp_gateway.metrics import EPOCH, TOOL_CALL, TOOLS_LIST
+from mcp_gateway.metrics import EPOCH, THROTTLED, TOOL_CALL, TOOLS_LIST
 from mcp_gateway.usage import (
     DEFAULT_GROUP_BY,
     DEFAULT_RANGE,
+    DELETED_LABEL,
     LISTING_ID,
     LISTING_LABEL,
     RANGES,
+    THROTTLED_TOTAL_ID,
     TOTAL_ID,
     TOTAL_LABEL,
     GroupBy,
@@ -739,6 +741,7 @@ def test_the_endpoint_answers_with_the_default_range_and_grouping(
         "bytes_out": 0,
         "bytes_in": 0,
         "duration_ms_sum": 0,
+        "throttled": 0,
     }
     assert {one["id"] for one in body["series"]} == {TOTAL_ID, LISTING_ID}
 
@@ -893,5 +896,110 @@ def test_the_body_is_the_report_the_builder_makes(settings: Settings, tmp_path: 
         "bytes_out",
         "bytes_in",
         "duration_ms_sum",
+        "throttled",
         "total",
     }
+
+
+# --------------------------------------------------------------------------- #
+# Calls that were refused before they were sent (task 101)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_refusal_is_its_own_series_and_not_a_call() -> None:
+    # The bucket stores the count in ``calls`` because that is the column it
+    # has. What the number means is the kind's business, and reading it into
+    # ``calls`` would make every failure rate on the page wrong.
+    report = build_report(
+        window_for("1h", 60, now=START),
+        [
+            a_slice(START, server_id=1, kind=TOOL_CALL, calls=4, errors=1),
+            a_slice(START, server_id=1, kind=THROTTLED, calls=6),
+        ],
+        {1: "Petstore"},
+        group_by="server",
+    )
+    by_id = {one.id: one for one in report.series}
+
+    assert by_id["server:1:tool_call"].total.calls == 4
+    assert by_id["server:1:tool_call"].total.throttled == 0
+    assert by_id["server:1:throttled"].total.throttled == 6
+    assert by_id["server:1:throttled"].total.calls == 0
+    assert by_id["server:1:throttled"].label == "Petstore"
+
+
+def test_the_report_totals_keep_calls_and_refusals_apart() -> None:
+    report = build_report(
+        window_for("1h", 60, now=START),
+        [
+            a_slice(START, server_id=1, kind=TOOL_CALL, calls=4, errors=1),
+            a_slice(START, server_id=2, kind=THROTTLED, calls=6),
+            a_slice(START, server_id=None, kind=TOOLS_LIST, calls=2),
+        ],
+        {},
+        group_by="server",
+    )
+
+    assert report.totals.calls == 6
+    assert report.totals.errors == 1
+    assert report.totals.throttled == 6
+
+
+def test_refusals_fold_into_one_series_under_group_by_total() -> None:
+    report = build_report(
+        window_for("1h", 60, now=START),
+        [
+            a_slice(START, server_id=1, kind=THROTTLED, calls=2),
+            a_slice(START, server_id=2, kind=THROTTLED, calls=3),
+        ],
+        {},
+        group_by="total",
+    )
+    by_id = {one.id: one for one in report.series}
+
+    assert THROTTLED_TOTAL_ID in by_id
+    assert by_id[THROTTLED_TOTAL_ID].total.throttled == 5
+    # And the tool-call series that always exists is untouched by them.
+    assert by_id[TOTAL_ID].total.calls == 0
+
+
+def test_a_refusal_lands_in_the_window_it_happened_in() -> None:
+    window = window_for("1h", 60, now=START)
+    report = build_report(
+        window,
+        [a_slice(START - MINUTE * 3, server_id=1, kind=THROTTLED, calls=4)],
+        {1: "Petstore"},
+        group_by="server",
+    )
+    series = next(one for one in report.series if one.kind == THROTTLED)
+
+    assert series.throttled[window.buckets.index(START - MINUTE * 3)] == 4
+    assert sum(series.throttled) == 4
+
+
+def test_the_legend_puts_calls_first_refusals_next_and_discovery_last() -> None:
+    report = build_report(
+        window_for("1h", 60, now=START),
+        [
+            a_slice(START, server_id=None, kind=TOOLS_LIST, calls=1),
+            a_slice(START, server_id=1, kind=THROTTLED, calls=1),
+            a_slice(START, server_id=1, kind=TOOL_CALL, calls=1),
+        ],
+        {1: "Petstore"},
+        group_by="server",
+    )
+
+    assert [one.kind for one in report.series] == [TOOL_CALL, THROTTLED, TOOLS_LIST]
+
+
+def test_a_deleted_servers_refusals_are_still_labelled() -> None:
+    report = build_report(
+        window_for("1h", 60, now=START),
+        [a_slice(START, server_id=9, kind=THROTTLED, calls=2)],
+        {},
+        group_by="server",
+    )
+    series = next(one for one in report.series if one.kind == THROTTLED)
+
+    assert series.deleted is True
+    assert series.label == DELETED_LABEL.format(server_id=9)

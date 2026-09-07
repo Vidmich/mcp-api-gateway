@@ -47,6 +47,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mcp_gateway.crypto import Credential, CredentialCipher, CredentialState
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import Operation, Server
+from mcp_gateway.limits import (
+    HALF_A_LIMIT,
+    MAX_RATE_CALLS,
+    MAX_WINDOW_SECONDS,
+    Limit,
+    half_a_limit,
+)
 from mcp_gateway.naming import (
     MAX_SLUG,
     PREFIX_REQUIRED,
@@ -83,6 +90,9 @@ PREFIX_FIELD: Final = "tool_prefix"
 BASE_URL_FIELD: Final = "base_url"
 ENABLED_FIELD: Final = "enabled"
 AUTO_REFRESH_FIELD: Final = "auto_refresh"
+#: The two boxes that are one setting. Both empty is no limit (task 101).
+RATE_CALLS_FIELD: Final = "rate_limit_calls"
+RATE_SECONDS_FIELD: Final = "rate_limit_seconds"
 AUTH_TYPE_FIELD: Final = "auth_type"
 SPEC_MODE_FIELD: Final = "spec_auth_mode"
 SPEC_TYPE_FIELD: Final = "spec_auth_type"
@@ -117,6 +127,8 @@ KEPT: Final = (
     BASE_URL_FIELD,
     ENABLED_FIELD,
     AUTO_REFRESH_FIELD,
+    RATE_CALLS_FIELD,
+    RATE_SECONDS_FIELD,
     AUTH_TYPE_FIELD,
     SPEC_MODE_FIELD,
     SPEC_TYPE_FIELD,
@@ -228,6 +240,27 @@ REVIEW_SETTLED: Final = (
     "Nothing is waiting for a decision. Mark this server reviewed to take the flag off."
 )
 
+#: What the two rate-limit boxes are answered with when what is in them is
+#: not a number the gateway could count with. One message per box, naming
+#: the range, because "invalid" tells an operator nothing they can act on.
+RATE_CALLS_RANGE: Final = (
+    f"The number of calls has to be a whole number between 1 and {MAX_RATE_CALLS:,}, "
+    "or empty for no limit."
+)
+RATE_SECONDS_RANGE: Final = (
+    f"The window has to be a whole number of seconds between 1 and {MAX_WINDOW_SECONDS:,}, "
+    "or empty for no limit."
+)
+
+#: Above the two boxes: what is in effect right now, in the same words the
+#: model is refused with, so an operator reading a complaint about a 429 can
+#: match the two up.
+NOT_LIMITED: Final = "Not capped. This server is called as fast as it is asked to be."
+IS_LIMITED: Final = (
+    "Limited to {limit}. Calls over that are refused immediately, never queued, "
+    "and are not counted as failures of this server."
+)
+
 PREFIX_UNCHANGED: Final = "That is the prefix this server already uses."
 NO_RENAMES: Final = "No tool name would change: every operation here has a name of its own."
 WOULD_RENAME: Final = "{count} of {total} tool names would change."
@@ -314,6 +347,17 @@ class SettingsView:
         return bool(self.fields.get(AUTO_REFRESH_FIELD))
 
     @property
+    def rate_limit_note(self) -> str:
+        """What cap is in force, read from the row rather than from the form.
+
+        The stored row, deliberately: a rejected form still has whatever was
+        typed in the boxes, and a note above them saying that is what the
+        server is limited to would be describing a save that did not happen.
+        """
+        limit = Limit.of(self.server.rate_limit_calls, self.server.rate_limit_seconds)
+        return NOT_LIMITED if limit is None else IS_LIMITED.format(limit=limit.words)
+
+    @property
     def replacing_credential(self) -> bool:
         """Whether the API credential panel is open, and why it might be.
 
@@ -348,10 +392,19 @@ def stored_fields(server: repo.ServerSummary) -> dict[str, str]:
         BASE_URL_FIELD: server.base_url,
         ENABLED_FIELD: ON if server.enabled else "",
         AUTO_REFRESH_FIELD: ON if server.auto_refresh else "",
+        # Empty rather than a zero, because empty is what no limit means and
+        # what the box's placeholder already says.
+        RATE_CALLS_FIELD: _number(server.rate_limit_calls),
+        RATE_SECONDS_FIELD: _number(server.rate_limit_seconds),
         AUTH_TYPE_FIELD: server.auth_type,
         SPEC_MODE_FIELD: server.spec_auth_mode,
         SPEC_TYPE_FIELD: server.spec_auth_type or "bearer",
     }
+
+
+def _number(value: int | None) -> str:
+    """One nullable number as the box holding it. ``None`` is an empty box."""
+    return "" if value is None else str(value)
 
 
 def credentials(which: str, state: CredentialState, auth_type: str | None) -> Credentials:
@@ -428,6 +481,7 @@ def parse_settings(fields: Mapping[str, str], server: Server) -> repo.ServerPatc
 
     values["enabled"] = _ticked(fields, ENABLED_FIELD)
     values["auto_refresh"] = _ticked(fields, AUTO_REFRESH_FIELD)
+    _rate_limit(fields, values, errors)
 
     replacing_api = _ticked(fields, REPLACE_API_FIELD)
     if replacing_api:
@@ -438,6 +492,54 @@ def parse_settings(fields: Mapping[str, str], server: Server) -> repo.ServerPatc
     if errors:
         raise SettingsInvalid(errors)
     return repo.ServerPatch(**values)
+
+
+def _rate_limit(fields: Mapping[str, str], values: dict[str, Any], errors: dict[str, str]) -> None:
+    """The optional cap on how fast this server may be called (task 101).
+
+    Two boxes that are one setting: both empty is no limit, both filled is a
+    limit, and one of each is a form to correct rather than a limit with the
+    other half quietly defaulted. Both are always written, so clearing the
+    boxes is how a cap is taken off — the same way clearing the tool-name box
+    is how an override goes back to the generated name.
+    """
+    calls = _whole(fields.get(RATE_CALLS_FIELD), RATE_CALLS_FIELD, errors, most=MAX_RATE_CALLS)
+    seconds = _whole(
+        fields.get(RATE_SECONDS_FIELD), RATE_SECONDS_FIELD, errors, most=MAX_WINDOW_SECONDS
+    )
+    if RATE_CALLS_FIELD in errors or RATE_SECONDS_FIELD in errors:
+        # A box that could not be read is already answered. Calling half of
+        # what is left half a limit would put a second message on a form the
+        # operator has not finished correcting.
+        return
+    if half_a_limit(calls, seconds):
+        errors[RATE_SECONDS_FIELD if seconds is None else RATE_CALLS_FIELD] = HALF_A_LIMIT
+        return
+    values["rate_limit_calls"] = calls
+    values["rate_limit_seconds"] = seconds
+
+
+def _whole(raw: str | None, name: str, errors: dict[str, str], *, most: int) -> int | None:
+    """One optional whole number out of a box, or an error beside it.
+
+    An empty box is ``None`` and not a mistake. Anything else has to be a
+    number in range: a box holding ``0`` or ``-1`` or ``lots`` is answered
+    rather than rounded into something, since every one of those means the
+    operator meant something this cannot work out.
+    """
+    text = _clean(raw)
+    if not text:
+        return None
+    message = RATE_CALLS_RANGE if name == RATE_CALLS_FIELD else RATE_SECONDS_RANGE
+    try:
+        value = int(text)
+    except ValueError:
+        errors[name] = message
+        return None
+    if not 1 <= value <= most:
+        errors[name] = message
+        return None
+    return value
 
 
 def _new_credential(fields: Mapping[str, str], errors: dict[str, str]) -> Credential | None:
@@ -1114,6 +1216,7 @@ __all__ = [
     "DESCRIPTION_FIELD",
     "ENABLED_FIELD",
     "ENABLED_HINT",
+    "IS_LIMITED",
     "KEPT",
     "MAX_NAME",
     "MAX_PREVIEW_ROWS",
@@ -1123,6 +1226,7 @@ __all__ = [
     "NAME_REQUIRED",
     "NAME_TOO_LONG",
     "NOTHING_MATCHES",
+    "NOT_LIMITED",
     "NO_OPERATIONS",
     "NO_RENAMES",
     "ON",
@@ -1131,6 +1235,10 @@ __all__ = [
     "PREFIX_TAKEN",
     "PREFIX_UNCHANGED",
     "QUERY_FIELD",
+    "RATE_CALLS_FIELD",
+    "RATE_CALLS_RANGE",
+    "RATE_SECONDS_FIELD",
+    "RATE_SECONDS_RANGE",
     "REPLACE_API_FIELD",
     "REPLACE_SPEC_FIELD",
     "REVIEW_SETTLED",

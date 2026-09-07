@@ -49,6 +49,7 @@ from mcp_gateway.config import Settings
 from mcp_gateway.crypto import Credential
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import SpecAuthMode
+from mcp_gateway.limits import MAX_RATE_CALLS, MAX_WINDOW_SECONDS
 from mcp_gateway.naming import sanitize, server_slug
 from mcp_gateway.openapi.diagnostics import SpecWarning
 from mcp_gateway.openapi.ingest import SpecPreview
@@ -452,6 +453,8 @@ _PATCHABLE: Final = frozenset(
         "base_url",
         "enabled",
         "auto_refresh",
+        "rate_limit_calls",
+        "rate_limit_seconds",
         "credential",
         "spec_auth_mode",
         "spec_credential",
@@ -481,6 +484,12 @@ class ServerUpdate(BaseModel):
     base_url: str | None = None
     enabled: bool | None = None
     auto_refresh: bool | None = None
+
+    #: The two halves of one setting (task 101). ``null`` in both is how a cap
+    #: is taken off; one of each is refused, since a row like that reads back
+    #: as no limit and the caller would have been told it had set one.
+    rate_limit_calls: int | None = Field(default=None, ge=1, le=MAX_RATE_CALLS)
+    rate_limit_seconds: int | None = Field(default=None, ge=1, le=MAX_WINDOW_SECONDS)
 
     credential: Credential | None = None
     spec_auth_mode: SpecAuthMode | None = None
