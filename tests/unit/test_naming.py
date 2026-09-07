@@ -23,6 +23,7 @@ from mcp_gateway.db.repo import NewServer, OperationInput, ServerNotFound
 from mcp_gateway.db.session import Database, open_database
 from mcp_gateway.naming import (
     DIGEST_LENGTH,
+    MAX_SLUG,
     MAX_TOOL_NAME,
     NameAssignment,
     NameConflict,
@@ -37,6 +38,7 @@ from mcp_gateway.naming import (
     plan_tool_names,
     rename_server,
     sanitize,
+    server_slug,
     tool_name,
 )
 from mcp_gateway.openapi.schema import extract_operations
@@ -820,3 +822,38 @@ async def test_a_rename_reaches_the_tool_list(session: Any, cipher: CredentialCi
     assert [row.tool_name for row in await repo.list_tools(session)] == ["whoami"]
     assert await repo.get_tool(session, "whoami") is not None
     assert await repo.get_tool(session, "petstore__getUser") is None
+
+
+# --------------------------------------------------------------------------- #
+# A server's own slug
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Petstore", "petstore"),
+        ("Pet Store", "pet_store"),
+        ("Pet  Store!!", "pet_store"),
+        ("ACME Billing (v2)", "acme_billing_v2"),
+        ("internal-api", "internal-api"),
+        ("???", ""),
+    ],
+)
+def test_a_display_name_becomes_an_identifier(name: str, expected: str) -> None:
+    # The default for both ``slug`` and ``tool_prefix`` (spec §4). Lower case,
+    # because a prefix differing from another only in case reads as the same
+    # server to the person scanning a tool list.
+    assert server_slug(name) == expected
+
+
+def test_a_very_long_name_is_cut_to_what_the_column_holds() -> None:
+    assert len(server_slug("a" * 300)) == MAX_SLUG
+
+
+def test_a_slug_leads_the_names_of_the_server_it_belongs_to() -> None:
+    # The point of having it here: what a server is called and what its tools
+    # are called are decided by the same rule.
+    assert default_tool_name(server_slug("Pet Store"), operation_id="listPets") == (
+        "pet_store__listPets"
+    )

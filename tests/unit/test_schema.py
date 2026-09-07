@@ -1090,3 +1090,39 @@ def test_a_field_the_document_did_not_really_write_reads_as_missing(value: Any) 
 
     assert operation.operation_id is None
     assert operation.summary is None
+
+
+# -- how the document groups its endpoints -------------------------------
+
+
+def test_an_operations_tags_are_kept_for_the_operator_to_filter_by() -> None:
+    # No column of its own (spec §4): tags are how somebody finds the twelve
+    # endpoints they came for in a spec with two hundred (task 022).
+    operation = one(spec({"/pets": {"get": {"operationId": "listPets", "tags": ["pets"]}}}))
+
+    assert operation.tags == ("pets",)
+
+
+def test_a_document_that_groups_nothing_leaves_the_tags_empty() -> None:
+    assert one(spec(GET_PETS)).tags == ()
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        (["pets", "pets"], ("pets",)),
+        (["pets", 7, None, "writes"], ("pets", "writes")),
+        ("pets", ()),
+        ([" pets "], ("pets",)),
+    ],
+)
+def test_untidy_tags_are_read_for_what_they_say_rather_than_reported(
+    declared: Any, expected: tuple[str, ...]
+) -> None:
+    # A repeated or malformed tag is a document being untidy, and the only thing
+    # that reads these is a filter on a form.
+    document = spec({"/pets": {"get": {"operationId": "listPets", "tags": declared}}})
+    extracted = extract_operations(document)
+
+    assert extracted.operations[0].tags == expected
+    assert extracted.warnings == ()

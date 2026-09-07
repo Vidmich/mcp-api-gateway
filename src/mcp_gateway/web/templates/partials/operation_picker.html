@@ -1,0 +1,66 @@
+{# The operation table of step 2, and the line that counts it (spec §7.1).
+
+   Returned on its own as the answer to a filter or a bulk button, which is why
+   it is a template rather than a macro and why it starts at the element htmx
+   replaces. Its context is ``picker``, ``picker_id`` and ``picker_target``,
+   which is what ``routes_ui._picker_context`` exists to build.
+
+   The filter controls are deliberately *outside* this region. Swapping an input
+   the operator is typing in would move the caret out from under them; swapping
+   only what the filter decides leaves the controls where they were put.
+
+   A filtered-out row is hidden, not dropped. Its checkbox is still in the form
+   and still carries what was ticked, so narrowing the table can never quietly
+   unselect anything. #}
+{% from "partials/status_badge.html" import status_badge %}
+<div id="{{ picker_id }}">
+  <p class="picker__summary" role="status">{{ picker.summary }}</p>
+  <table class="table">
+    <thead>
+      <tr>
+        <th scope="col" class="pick"><span class="visually-hidden">Expose</span></th>
+        <th scope="col">Method</th>
+        <th scope="col">Path</th>
+        <th scope="col">Summary</th>
+        <th scope="col">Tool name</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in picker.rows %}
+      <tr {% if not row.shown %}hidden{% endif %}>
+        <td class="pick">
+          <input
+            type="checkbox"
+            id="op-{{ loop.index }}"
+            name="op"
+            value="{{ row.op_key }}"
+            {% if row.selected %}checked{% endif %}
+          />
+          <label class="visually-hidden" for="op-{{ loop.index }}">
+            Expose {{ row.op_key }} as a tool
+          </label>
+        </td>
+        <td><code>{{ row.method }}</code></td>
+        <td>
+          <code>{{ row.path }}</code>
+          {% for tag in row.tags %}
+          <span class="badge badge--tag">{{ tag }}</span>
+          {% endfor %}
+        </td>
+        <td>{{ row.summary or row.operation_id or "" }}</td>
+        <td>
+          <code>{{ row.tool_name }}</code>
+          {% if row.conflict %}
+          {{ status_badge("error", label="Name taken", title=row.conflict) }}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not picker.shown %}
+      <tr>
+        <td colspan="5">Nothing here matches the filter. Everything ticked is still ticked.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>

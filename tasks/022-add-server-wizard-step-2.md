@@ -22,8 +22,8 @@ Let the operator pick operations, then create the server in one transaction.
 
 ## Acceptance
 
-- [ ] Saving creates the server and it appears in the list with the right counts.
-- [ ] Only ticked operations have `selected = true`; the rest are stored unselected.
-- [ ] A deliberate name conflict blocks the save and re-renders with selections intact.
-- [ ] A DB failure mid-save leaves no partial server behind.
-- [ ] Selected operations appear in `tools/list` immediately, with no restart.
+- [x] Saving creates the server and it appears in the list with the right counts.
+- [x] Only ticked operations have `selected = true`; the rest are stored unselected.
+- [x] A deliberate name conflict blocks the save and re-renders with selections intact.
+- [x] A DB failure mid-save leaves no partial server behind.
+- [x] Selected operations appear in `tools/list` immediately, with no restart.

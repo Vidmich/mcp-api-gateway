@@ -57,6 +57,8 @@ DIGEST_LENGTH: Final = 8
 FALLBACK_NAME: Final = "call"
 #: The path slug for ``/`` — an empty slug would be an illegal name.
 ROOT_SLUG: Final = "root"
+#: The width of ``servers.slug`` and ``servers.tool_prefix`` (spec §4).
+MAX_SLUG: Final = 100
 
 #: Everything outside the legal set becomes an underscore.
 ILLEGAL: Final = re.compile(r"[^A-Za-z0-9_-]")
@@ -89,6 +91,25 @@ def sanitize(raw: str) -> str:
     here treats that as "this fragment offered nothing" rather than as a name.
     """
     return ILLEGAL.sub("_", raw).strip("_")
+
+
+def server_slug(name: str) -> str:
+    """A server's display name as an identifier: ``Pet Store`` → ``pet_store``.
+
+    The default for both ``slug`` and ``tool_prefix`` (spec §4), which is why it
+    lives here rather than with the wizard: the prefix leads every tool name
+    this server publishes, so the rule that turns a name into one belongs beside
+    the rules that turn the rest of a name into the rest.
+
+    Lower case, because a prefix that differs from another only in case reads as
+    the same server to the person scanning a tool list. Empty for a name with
+    nothing usable in it — the caller decides what to do about that, since a
+    server has a name to fall back on and this function does not.
+    """
+    # Not :func:`_fit`: a slug that ran long is simply cut, because the digest
+    # that keeps a *tool* name unique has nothing to be unique against here —
+    # the database has the last word on a slug, and the wizard asks it.
+    return RUNS.sub("_", sanitize(name).lower())[:MAX_SLUG].strip("_")
 
 
 def path_slug(path: str) -> str:
@@ -518,6 +539,7 @@ __all__ = [
     "CHUNK",
     "DIGEST_LENGTH",
     "FALLBACK_NAME",
+    "MAX_SLUG",
     "MAX_TOOL_NAME",
     "PREFIX_SEPARATOR",
     "ROOT_SLUG",
@@ -534,5 +556,6 @@ __all__ = [
     "plan_tool_names",
     "rename_server",
     "sanitize",
+    "server_slug",
     "tool_name",
 ]

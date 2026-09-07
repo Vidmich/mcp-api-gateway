@@ -1,23 +1,35 @@
-{# Add a server, step 2: what the document turned out to contain.
+{# Add a server, step 2: what the document contains, and what to do with it.
 
-   Still nothing saved. This page is the whole point of previewing — an operator
-   who is about to expose somebody else's API as tools should see the list
-   before the row exists, warnings and all (spec §5.1).
+   Nothing is saved until the button at the bottom is pressed, and then all of
+   it is (spec §7.1). The operator sees the list before the row exists, warnings
+   and all, because exposing somebody else's API as tools is not a thing to find
+   out about afterwards.
 
-   Task 022 turns this table into the picker: a checkbox per row, the tool name
-   each operation will get, filters, and the save that writes all of it in one
-   transaction. What is here now is what that save would be made of. #}
+   One form around everything. The filter controls and the two bulk buttons post
+   to the picker route and swap the table back in; the submit button posts to
+   the same URL this page has and saves. Every control carries a ``formaction``
+   as well as its htmx attributes, so a browser with no JavaScript does the same
+   thing a page at a time. #}
 {% extends "base.html" %}
 {% from "partials/empty_state.html" import empty_state %}
+{% from "partials/field.html" import field %}
 
-{% block title %}{{ pending.name }} &middot; Add a server{% endblock %}
+{% block title %}{{ picker.name }} &middot; Add a server{% endblock %}
 
 {% block content %}
 <div class="toolbar">
-  <h1 class="toolbar__title">{{ pending.name }}</h1>
+  <h1 class="toolbar__title">{{ picker.name }}</h1>
 </div>
 
-{% if not pending.base_url %}
+{% if picker.alerts %}
+<ul class="flashes" role="alert">
+  {% for alert in picker.alerts %}
+  <li class="flash flash--error">{{ alert }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if not picker.base_url %}
 <p class="flash flash--warning" role="alert">
   This document does not say where its API lives, so tool calls would have
   nowhere to go. Go back and set a base URL.
@@ -55,34 +67,113 @@
   <div class="summary__pair">
     <dt class="summary__term">Base URL</dt>
     <dd class="summary__value">
-      {% if pending.base_url %}<code>{{ pending.base_url }}</code>{% else %}Not set{% endif %}
+      {% if picker.base_url %}<code>{{ picker.base_url }}</code>{% else %}Not set{% endif %}
     </dd>
-  </div>
-  <div class="summary__pair">
-    <dt class="summary__term">Operations</dt>
-    <dd class="summary__value">{{ preview.operation_count }}</dd>
   </div>
 </dl>
 
-{% if operations %}
-<table class="table">
-  <thead>
-    <tr>
-      <th scope="col">Method</th>
-      <th scope="col">Path</th>
-      <th scope="col">Summary</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for operation in operations %}
-    <tr>
-      <td><code>{{ operation.method }}</code></td>
-      <td><code>{{ operation.path }}</code></td>
-      <td>{{ operation.summary or operation.operation_id or "" }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+{% if picker.rows %}
+<form method="post" action="{{ save_path }}">
+  {{ field("tool_prefix", "Tool prefix", value=picker.prefix,
+           hint="Leads every tool name below. It is what keeps two services that
+                 both publish getUser apart.",
+           error=picker.errors.get("tool_prefix"),
+           required=true) }}
+
+  <div class="filters">
+    <label class="field">
+      <span class="field__label">Search</span>
+      <input
+        class="field__input"
+        type="search"
+        name="q"
+        value="{{ picker.filter.text }}"
+        autocomplete="off"
+        hx-post="{{ picker_path }}"
+        hx-target="{{ picker_target }}"
+        hx-swap="outerHTML"
+        hx-trigger="input changed delay:300ms, search"
+      />
+    </label>
+
+    {# First, so that Enter in the search box means "apply the filter" rather
+       than whatever submit button happens to come next. With a script this
+       button is not rendered at all and the filter has already run. #}
+    <noscript>
+      <button class="button" type="submit" formaction="{{ picker_path }}">Apply</button>
+    </noscript>
+
+    <label class="field">
+      <span class="field__label">Method</span>
+      <select
+        class="field__select"
+        name="method"
+        hx-post="{{ picker_path }}"
+        hx-target="{{ picker_target }}"
+        hx-swap="outerHTML"
+        hx-trigger="change"
+      >
+        <option value="">Any</option>
+        {% for method in picker.methods %}
+        <option value="{{ method }}"{% if method == picker.filter.method %} selected{% endif %}>
+          {{ method }}
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+
+    {% if picker.tags %}
+    <label class="field">
+      <span class="field__label">Tag</span>
+      <select
+        class="field__select"
+        name="tag"
+        hx-post="{{ picker_path }}"
+        hx-target="{{ picker_target }}"
+        hx-swap="outerHTML"
+        hx-trigger="change"
+      >
+        <option value="">Any</option>
+        {% for tag in picker.tags %}
+        <option value="{{ tag }}"{% if tag == picker.filter.tag %} selected{% endif %}>
+          {{ tag }}
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+    {% endif %}
+
+    {# Both bulk buttons act on the rows the filter is showing, which is the
+       only reading of "all" that makes a filter safe to use. #}
+    <button
+      class="button"
+      type="submit"
+      name="bulk"
+      value="all"
+      formaction="{{ picker_path }}"
+      hx-post="{{ picker_path }}"
+      hx-target="{{ picker_target }}"
+      hx-swap="outerHTML"
+    >Select all</button>
+    <button
+      class="button"
+      type="submit"
+      name="bulk"
+      value="none"
+      formaction="{{ picker_path }}"
+      hx-post="{{ picker_path }}"
+      hx-target="{{ picker_target }}"
+      hx-swap="outerHTML"
+    >Select none</button>
+  </div>
+
+  {% include "partials/operation_picker.html" %}
+
+  <div class="form-actions">
+    <a class="button" href="{{ new_server_path }}">Back</a>
+    <button class="button button--primary" type="submit">Save the server</button>
+  </div>
+</form>
 {% else %}
 {{ empty_state(
      "No operations",
@@ -90,8 +181,4 @@
      href=new_server_path,
      action="Try another spec") }}
 {% endif %}
-
-<div class="form-actions">
-  <a class="button" href="{{ new_server_path }}">Back</a>
-</div>
 {% endblock %}

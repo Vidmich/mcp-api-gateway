@@ -116,9 +116,9 @@ class NormalizedOperation:
     """One endpoint, ready to be stored as a row and served as a tool.
 
     Every field here has a column in ``operations`` (spec §4) except
-    :attr:`parameters` and :attr:`body`, which are the working detail behind
-    :attr:`input_schema` and are kept for the callers that want to show an
-    operator what an endpoint takes without reading a schema back apart.
+    :attr:`parameters`, :attr:`body` and :attr:`tags`, which are kept for the
+    callers that want to show an operator what an endpoint is and takes without
+    reading a schema back apart.
     """
 
     #: Stable identity across refreshes: ``"<METHOD> <path>"``.
@@ -139,6 +139,11 @@ class NormalizedOperation:
     input_schema: dict[str, Any]
     #: sha256 of :attr:`input_schema`; what a refresh compares (spec §5.4).
     input_schema_hash: str
+    #: The document's own grouping of its endpoints. No column of its own: it is
+    #: how an operator finds the twelve operations they care about in a spec
+    #: with two hundred, which is a question asked while choosing (task 022),
+    #: not one asked of a stored row.
+    tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +246,7 @@ class _Extractor:
             body=body,
             input_schema=input_schema,
             input_schema_hash=schema_hash(input_schema),
+            tags=_tags(operation.get("tags")),
         )
 
     # -- parameters -------------------------------------------------------
@@ -521,6 +527,21 @@ def _template_names(path: str) -> list[str]:
 def _text(value: Any) -> str | None:
     """A string the document actually wrote, or ``None``."""
     return value if isinstance(value, str) and value else None
+
+
+def _tags(value: Any) -> tuple[str, ...]:
+    """The operation's tags, in document order and without the nonsense.
+
+    Duplicates and non-strings are dropped rather than reported: a repeated tag
+    is a document being untidy, and the only thing that reads these is a filter
+    on a form.
+    """
+    seen: dict[str, None] = {}
+    for entry in _entries(value):
+        text = _text(entry)
+        if text is not None:
+            seen.setdefault(text.strip(), None)
+    return tuple(tag for tag in seen if tag)
 
 
 def _entries(value: Any) -> list[Any]:

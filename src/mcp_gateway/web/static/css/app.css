@@ -240,6 +240,27 @@ pre {
   margin-top: 1.5rem;
 }
 
+/* The row of controls above the operation picker. The fields keep their own
+ * labels and lose their stacking margin, so a filter reads as one strip
+ * rather than as four more form fields. */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem;
+  margin: 1.25rem 0 0.75rem;
+}
+
+.filters .field {
+  flex: 1 1 10rem;
+  margin-bottom: 0;
+}
+
+.filters .button {
+  /* Level with the inputs beside them, which sit under their own labels. */
+  margin-bottom: 1px;
+}
+
 .field {
   display: block;
   margin-bottom: 1rem;
@@ -293,6 +314,36 @@ pre {
 textarea.field__input {
   font-family: ui-monospace, "Cascadia Mono", "Consolas", monospace;
   resize: vertical;
+}
+
+/* --- the operation picker ------------------------------------------------- */
+
+.picker__summary {
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+/* The checkbox column: as narrow as a checkbox, and centred over it. */
+.table th.pick,
+.table td.pick {
+  width: 2.5rem;
+  text-align: center;
+}
+
+/* Present to a screen reader, absent to everyone else: the labels that say
+ * what each checkbox in the picker is for, which a sighted operator reads
+ * from the row it sits in. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 0;
+  clip-path: inset(50%);
 }
 
 /* --- buttons -------------------------------------------------------------- */
@@ -437,6 +488,14 @@ textarea.field__input {
   color: var(--accent-dark);
   background: var(--info-soft);
   border-color: #c3d2f6;
+}
+
+/* A document's own grouping of its endpoints, beside the path it groups. */
+.badge--tag {
+  font-weight: 400;
+  color: var(--ink-soft);
+  background: var(--page);
+  border-color: var(--line);
 }
 
 /* --- summaries ------------------------------------------------------------ */

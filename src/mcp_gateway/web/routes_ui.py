@@ -27,8 +27,14 @@ nothing, and what comes back is a redirect to a page that shows what was found
 what may be echoed back, where a failure's message belongs — are
 :mod:`mcp_gateway.web.wizard`; the routes here only carry them.
 
-Neither wizard route takes a database session. That is the plainest way to say
+Neither step 1 route takes a database session. That is the plainest way to say
 that a preview writes nothing: there is nothing for it to write with.
+
+**Step 2 is where the wizard writes, once.** The picker's filters and its bulk
+buttons post back and re-render the same table — a fragment for htmx, the whole
+page for a browser without it — and none of that touches the database either.
+Only the save does, and it does the whole thing in one transaction or none of
+it (:mod:`mcp_gateway.web.picker`).
 """
 
 from __future__ import annotations
@@ -44,6 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import RedirectResponse, Response
 
 from mcp_gateway.config import Settings
+from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import utcnow
 from mcp_gateway.db.repo import ServerSummary
@@ -51,6 +58,17 @@ from mcp_gateway.db.session import request_session
 from mcp_gateway.openapi.diagnostics import SpecError
 from mcp_gateway.openapi.ingest import preview_spec
 from mcp_gateway.web.auth import HTMX_REQUEST, UI_PREFIX, require_session
+from mcp_gateway.web.picker import (
+    NO_BASE_URL,
+    PREFIX_FIELD,
+    PREFIX_REQUIRED,
+    SAVED,
+    SELECTION_FIELD,
+    NamesTaken,
+    Picker,
+    register,
+)
+from mcp_gateway.web.picker import build as build_picker
 from mcp_gateway.web.shell import Shell
 from mcp_gateway.web.wizard import (
     AUTH_LABELS,
@@ -77,10 +95,16 @@ NEW_SERVER_PATH: Final = f"{SERVERS_PATH}/new"
 #: task 023's ``/ui/servers/{server_id}``, because the first route to match a
 #: path wins and ``new`` would otherwise be read as a server id.
 PREVIEW_PATH: Final = f"{NEW_SERVER_PATH}/{{token}}"
+#: The picker's own table, re-rendered as the operator filters and ticks. A
+#: route of its own so that the fragment htmx swaps and the page a browser
+#: without it reloads are the same answer built the same way.
+PICKER_PATH: Final = f"{PREVIEW_PATH}/operations"
 
 SERVERS_TEMPLATE: Final = "servers.html"
 NEW_SERVER_TEMPLATE: Final = "server_new.html"
 PREVIEW_TEMPLATE: Final = "server_preview.html"
+#: The operation table and everything that counts it, on its own.
+PICKER_TEMPLATE: Final = "partials/operation_picker.html"
 #: The table and the empty state together, so that either can replace the other.
 LIST_TEMPLATE: Final = "partials/server_list.html"
 ROW_TEMPLATE: Final = "partials/server_row.html"
@@ -106,6 +130,14 @@ MAX_ERROR_IN_TITLE: Final = 200
 PREVIEW_GONE: Final = (
     "That preview is no longer held. Fetch the spec again to carry on adding the server."
 )
+
+#: A save with no cipher to encrypt credentials with (spec §3.2). Only reachable
+#: in an app built without keys, which is a test or a half-built process.
+NO_CIPHER: Final = "The gateway has no encryption key, so a server cannot be saved."
+
+#: Where the picker's id lands, for the fragment htmx swaps in.
+PICKER_ID: Final = "operation-picker"
+PICKER_TARGET: Final = f"#{PICKER_ID}"
 
 
 def _plural(count: int, unit: str) -> str:
@@ -316,14 +348,36 @@ def _wizard_context(
     }
 
 
-def _preview_context(token: str, pending: PendingServer) -> dict[str, object]:
-    """Step 2's page: what was found, and what would be saved."""
+async def _step_two(request: Request) -> tuple[dict[str, str], list[str]]:
+    """The picker as it was submitted: its fields, and every box that was ticked.
+
+    Two readings of one form, because the selection is the one field that
+    arrives many times over — once per ticked operation — and a mapping keeps
+    only the last of those.
+    """
+    posted = await request.form()
+    fields = {name: value for name, value in posted.multi_items() if isinstance(value, str)}
+    picked = [value for value in posted.getlist(SELECTION_FIELD) if isinstance(value, str)]
+    return fields, picked
+
+
+def _picker_context(picker: Picker) -> dict[str, object]:
+    """Step 2's page, and the fragment inside it, from one object.
+
+    One context for both, so that the table an operator filters is built by the
+    code that built the table they arrived at.
+    """
+    preview_path = f"{NEW_SERVER_PATH}/{picker.token}"
     return {
-        "token": token,
-        "pending": pending,
-        "preview": pending.preview,
-        "operations": pending.preview.operations,
-        "warnings": pending.preview.warnings,
+        "picker": picker,
+        "preview": picker.pending.preview,
+        "warnings": picker.pending.preview.warnings,
+        "picker_id": PICKER_ID,
+        "picker_target": PICKER_TARGET,
+        # Where the save posts.
+        "save_path": preview_path,
+        # Where filtering and the bulk buttons post.
+        "picker_path": f"{preview_path}/operations",
         "servers_path": SERVERS_PATH,
         "new_server_path": NEW_SERVER_PATH,
     }
@@ -341,6 +395,26 @@ def _start_again(request: Request, message: str) -> Response:
     response = RedirectResponse(NEW_SERVER_PATH, status_code=303)
     _shell(request).flash(request, response, message, level="warning")
     return response
+
+
+def _refused(request: Request, picker: Picker, *, status_code: int) -> Response:
+    """Step 2 again, with the selections the operator made still made.
+
+    A save that could not go through re-renders the whole page rather than a
+    fragment: the form was submitted the ordinary way, and the answer to an
+    ordinary submission is a page.
+    """
+    return _shell(request).render(
+        request, PREVIEW_TEMPLATE, _picker_context(picker), status_code=status_code
+    )
+
+
+def _cipher(request: Request) -> CredentialCipher:
+    """The credential cipher, or a 503 saying why there is none (spec §3.2)."""
+    cipher: CredentialCipher | None = request.app.state.cipher
+    if cipher is None:
+        raise HTTPException(status_code=503, detail=NO_CIPHER)
+    return cipher
 
 
 def ui_router() -> APIRouter:
@@ -400,16 +474,92 @@ def ui_router() -> APIRouter:
 
     @router.get(PREVIEW_PATH)
     async def preview_page(request: Request, token: str) -> Response:
-        """Step 2's page: everything the document turned out to contain.
+        """Step 2: everything the document turned out to contain, ready to pick.
 
-        Task 022 turns this table into the picker and adds the save. What it
-        shows now is what a save would be made of, which is the half worth
-        seeing before there is a row.
+        Everything arrives ticked. This is a page for registering a service, and
+        an operator who wants a handful of its endpoints unticks the rest — the
+        rule that nothing is exposed without being chosen is about a *refresh*,
+        and it is kept where a refresh happens (spec §5.4).
         """
         pending = _previews(request).get(token)
         if pending is None:
             return _start_again(request, PREVIEW_GONE)
-        return _shell(request).render(request, PREVIEW_TEMPLATE, _preview_context(token, pending))
+        return _shell(request).render(
+            request, PREVIEW_TEMPLATE, _picker_context(build_picker(token, pending))
+        )
+
+    @router.post(PICKER_PATH)
+    async def filter_operations(request: Request, token: str) -> Response:
+        """The table again, narrowed or ticked. Nothing is written here either.
+
+        htmx gets the table on its own; a browser without it gets the whole
+        page, because the same button has to work either way and a fragment
+        rendered into a window is not a page.
+        """
+        pending = _previews(request).get(token)
+        if pending is None:
+            return _start_again(request, PREVIEW_GONE)
+        fields, picked = await _step_two(request)
+        context = _picker_context(build_picker(token, pending, fields, picked))
+        if HTMX_REQUEST not in request.headers:
+            return _shell(request).render(request, PREVIEW_TEMPLATE, context)
+        return _shell(request).render(request, PICKER_TEMPLATE, context)
+
+    @router.post(PREVIEW_PATH)
+    async def save_server(request: Request, token: str, session: Session) -> Response:
+        """Create the server and everything that belongs to it, or none of it.
+
+        The three ways this is refused all come back as the same page with the
+        same ticks: a prefix that is not a prefix, a document that never said
+        where its API lives, and a tool name another server already publishes.
+        """
+        pending = _previews(request).get(token)
+        if pending is None:
+            return _start_again(request, PREVIEW_GONE)
+        cipher = _cipher(request)
+        fields, picked = await _step_two(request)
+        picker = build_picker(token, pending, fields, picked)
+
+        if not picker.prefix:
+            return _refused(
+                request,
+                build_picker(
+                    token, pending, fields, picked, errors={PREFIX_FIELD: PREFIX_REQUIRED}
+                ),
+                status_code=422,
+            )
+        if not pending.base_url:
+            return _refused(
+                request,
+                build_picker(token, pending, fields, picked, alerts=(NO_BASE_URL,)),
+                status_code=422,
+            )
+
+        try:
+            server = await register(
+                session,
+                pending,
+                prefix=picker.prefix,
+                selection=picker.selected,
+                cipher=cipher,
+            )
+        except NamesTaken as taken:
+            logger.info("Save of %r was refused: %s", pending.name, taken)
+            # 409 rather than 422: the submission is fine, it is the world it
+            # would land in that says no.
+            return _refused(
+                request,
+                build_picker(token, pending, fields, picked, conflicts=taken.conflicts),
+                status_code=409,
+            )
+
+        # Only now: a preview that has become a server is a set of credentials
+        # with nothing left to do.
+        _previews(request).pop(token)
+        return _back_to_the_list(
+            request,
+            SAVED.format(name=server.name, selected=len(picker.selected), total=picker.total),
+        )
 
     @router.post(f"{SERVERS_PATH}/{{server_id}}/enabled")
     async def set_enabled(
@@ -478,6 +628,11 @@ __all__ = [
     "NEVER_REFRESHED",
     "NEW_SERVER_PATH",
     "NEW_SERVER_TEMPLATE",
+    "NO_CIPHER",
+    "PICKER_ID",
+    "PICKER_PATH",
+    "PICKER_TARGET",
+    "PICKER_TEMPLATE",
     "PREVIEW_GONE",
     "PREVIEW_PATH",
     "PREVIEW_TEMPLATE",
