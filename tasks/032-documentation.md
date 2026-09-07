@@ -23,6 +23,6 @@ Write the docs someone needs to install, run, and secure this thing.
 
 ## Acceptance
 
-- [ ] The quickstart followed verbatim on a clean machine yields a working `/mcp` with one registered server.
-- [ ] Every key in spec §3.2 appears in `docs/configuration.md`.
-- [ ] Each service recipe has been run at least once on its platform, or is marked untested.
+- [x] The quickstart followed verbatim on a clean machine yields a working `/mcp` with one registered server.
+- [x] Every key in spec §3.2 appears in `docs/configuration.md`.
+- [x] Each service recipe has been run at least once on its platform, or is marked untested.
