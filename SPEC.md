@@ -64,6 +64,7 @@ Basic hygiene that is *not* a feature and is included regardless: every outbound
 mcp-gateway [--config PATH] [--host HOST] [--port PORT]
             [--data-dir PATH]
             [--admin-user USER] [--admin-password PASS]
+            [--reset-admin]
             [--log-level LEVEL] [--version]
 ```
 
@@ -72,6 +73,8 @@ Precedence: **CLI flag > environment variable (`MCP_GATEWAY_*`) > config file > 
 `--config` defaults to `./config.toml`, then the platform config dir (`%APPDATA%\mcp-gateway\config.toml`, `~/.config/mcp-gateway/config.toml`). **The config file is created on first run.** If nothing exists at the resolved path, the app writes a minimal commented `config.toml` there (creating parent directories), loads it, and logs the path. It carries only the settings worth changing — host, port, data dir, and commented-out `[admin]` and `[mcp].auth_token` blocks — with everything else omitted so defaults stay defaults and later releases can move them.
 
 A generated config never enables admin login or `/mcp` auth: the app starts open and logs a warning saying exactly that, so the operator has to make a deliberate choice to lock it down. If the path is not writable, that is not fatal either — the app logs the reason and runs on defaults.
+
+`--reset-admin` is the one flag that does not start the gateway. It clears the admin account stored in the database (§3.3), prints what it did, and exits 0; afterwards the config file's `[admin]` applies again, or the pages are open if it has none. It sets no password of its own — it is the way back from one nobody remembers, and it is reached by somebody who already has the machine.
 
 The process runs in the foreground and terminates on SIGINT/SIGTERM after draining in-flight MCP requests. It never forks or writes a PID file; supervision is systemd / launchd / NSSM / Docker.
 
@@ -123,7 +126,9 @@ user_agent = "mcp-gateway/<version>"
 
 If `[admin]` is configured (via file or `--admin-user`/`--admin-password`), all `/ui/**` and `/api/v1/**` routes require a session. `/ui/login` posts credentials, compared in constant time against a PBKDF2-SHA256 hash derived at startup. Success sets a signed, `HttpOnly`, `SameSite=Lax` session cookie (itsdangerous, 7-day lifetime). No session table.
 
-If `[admin]` is absent, the login page is not mounted and all routes are open.
+**The account may instead live in the database.** The Configuration page (§7.1) writes `admin.enabled`, `admin.username` and `admin.password_hash` into `settings`, and a stored account overrides `[admin]` entirely: the file is not consulted for either half, and `admin.enabled = false` means the pages are open whatever the file says. Without those rows the file decides, exactly as above. Only the PBKDF2 hash is stored, never the password. Resolution happens once the database is open, so the startup banner reports the account actually in force and says when it came from the page; saving a new one re-issues the saving operator's own cookie, since the signing salt is bound to the credentials and would otherwise sign them out of the page they are standing on. `--reset-admin` (§3.1) drops the stored rows.
+
+If neither the file nor the database names an account, `/ui/login` answers 404 and all routes are open. The route exists in both modes — an account created from the browser has to be usable without a restart — but there is nothing behind it to attack while the gateway is open.
 
 `/mcp` and `/healthz` are never behind the admin session — `/mcp` is governed solely by `mcp.auth_token`.
 
@@ -197,7 +202,7 @@ Small ring of recent failures for troubleshooting: timestamp, server, tool, HTTP
 
 ### `settings`
 
-Key/value for anything the UI can change at runtime (global auto-refresh interval override, etc.).
+Key/value for anything the UI can change at runtime. Today: `refresh.auto_refresh_interval_minutes` (the global interval override) and `admin.enabled` / `admin.username` / `admin.password_hash` (§3.3). Each is spelled like the config key it overrides, so the file and the page cannot end up calling one setting two things.
 
 ---
 
@@ -285,6 +290,8 @@ Built on the official `mcp` Python SDK's low-level `Server` plus `StreamableHTTP
 - **`/ui/servers/new`** — step 1: spec URL, display name, API auth type and credentials, optional base URL override, and a **spec fetch auth** selector (`none` / same as API / custom, with its own credential fields revealed when `custom` is picked). Submitting fetches and parses the spec **without saving**; a `401`/`403` returns to step 1 with the spec-auth selector highlighted rather than a generic error.
 - **Step 2 (operation picker)** — every discovered operation with method, path, summary, and the tool name it will get. Select-all / select-none / filter by tag, method, or text. Saving creates the server, its operations, and the spec snapshot in one transaction.
 - **`/ui/servers/{id}`** — detail page. Same operation table plus status filters (`new`, `changed`, `removed`), inline editing of tool name and description, per-operation select toggles, and the server's own settings (name, slug/prefix, base URL, API credentials, spec fetch auth, auto-refresh checkbox, and the optional rate limit — two boxes that are one setting, both empty for no cap, taking effect on the next call with no restart). Both credential sets are write-only in the UI: the current value is never rendered back, only "set" / "not set" with a Replace action.
+
+- **`/ui/configuration`** — the gateway's own settings, as opposed to any one server's. Two forms for the two things that can change without a restart: the global auto-refresh interval (an override of `refresh.auto_refresh_interval_minutes`, emptied to go back to the file) and the admin account — username, password, and a switch that turns login on or off, warning in the words the startup log uses at the moment it is switched off. Below them, everything else in force, read only, each value with the layer it came from: the config file, an environment variable, a flag, or the default. No secret appears there — the bearer token is reported as set or not set, and the signing and encryption keys are not reported at all. Nothing that would need a restart is offered as a form.
 
 HTMX drives the interactive fragments (operation filtering, bulk select, refresh diff, inline rename) against the same routes; no client-side router, no build step.
 

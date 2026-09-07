@@ -56,4 +56,5 @@ names its dependencies; none of them is needed for v1 to ship.
 | 102 | [The built-in gateway server](102-builtin-gateway-server.md) | 10 · Self-service |
 | 103 | [The server list, in the words an operator uses](103-server-list-wording-and-actions.md) | 11 · UI polish |
 | 104 | [The Configuration page](104-configuration-page.md) | 11 · UI polish |
+| 105 | [One name: mcp-api-gateway](105-rename-to-mcp-api-gateway.md) | 12 · Naming |
 

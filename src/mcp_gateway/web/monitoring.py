@@ -701,7 +701,7 @@ class Monitoring:
 
         Read as "one point per {resolution}", so a single unit drops its count:
         "per minute", not "per 1 minute". The same trim
-        :func:`~mcp_gateway.web.routes_ui.how_often` makes for the same reason.
+        :func:`~mcp_gateway.web.configuration.how_often` makes for the same reason.
         """
         step = self.report.step_seconds
         if step >= DAY:

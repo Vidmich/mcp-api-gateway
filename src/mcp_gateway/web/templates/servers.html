@@ -1,30 +1,16 @@
-{# The Configuration landing page (spec §7.1).
+{# The API Servers page, and where the UI starts (spec §7.1).
 
    Almost nothing of its own: the table is a partial because htmx swaps it in
    after a delete, and a fragment that is also part of a page is the only way
    the two can be guaranteed to look the same. #}
 {% extends "base.html" %}
-{% from "partials/field.html" import field %}
 
-{% block title %}Servers · mcp-gateway{% endblock %}
+{% block title %}API Servers · mcp-gateway{% endblock %}
 
 {% block content %}
 <div class="toolbar">
-  <h1 class="toolbar__title">Servers</h1>
+  <h1 class="toolbar__title">API Servers</h1>
   <a class="button button--primary" href="{{ new_server_path }}">Add a server</a>
 </div>
 {% include "partials/server_list.html" %}
-
-{# The one setting that belongs to the section rather than to a server: how
-   often the ones that opted in are re-read (spec §8). Below the table, because
-   it is read far less often than anything above it. #}
-<form class="card card--below form" method="post" action="{{ auto_refresh.path }}">
-  <h2 class="card__title">Automatic refresh</h2>
-  {{ field(auto_refresh.field, "Minutes between refreshes", value=auto_refresh.typed,
-           type="number", placeholder=auto_refresh.configured, hint=auto_refresh.hint,
-           error=auto_refresh.error) }}
-  <div class="form-actions">
-    <button class="button" type="submit">Save</button>
-  </div>
-</form>
 {% endblock %}

@@ -17,6 +17,9 @@ live on the next `tools/list`.
   changed.
 - **Monitoring page** — calls, bytes in and out, failures and throttled calls
   over time, total and per server.
+- **Configuration page** — the gateway's own settings: how often specs are
+  re-read, who has to sign in, and everything else in force with the layer it
+  came from.
 - **A built-in server, off by default** — switch it on and an MCP client can
   preview a spec, register an upstream and choose its operations without a
   human opening the UI. It cannot delete a server or read a stored credential.
@@ -185,6 +188,10 @@ password = "something-better-than-this"
 [mcp]
 auth_token = "a-long-random-string"
 ```
+
+The login half can also be set from `/ui/configuration` without a restart, and
+without the password ever reaching a file; `mcp-gateway --reset-admin` is the way
+back if it is forgotten.
 
 Now `/ui` asks for a login and `/mcp` requires `Authorization: Bearer …`. See
 [docs/security.md](docs/security.md) for what is still not protected — the SSRF

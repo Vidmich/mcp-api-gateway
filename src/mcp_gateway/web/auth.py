@@ -5,14 +5,18 @@ nothing with the second: the bearer token of :mod:`mcp_gateway.mcpsrv.auth`
 governs ``/mcp`` and only ``/mcp``, no cookie has any effect there, and
 ``/healthz`` is behind neither.
 
-Login is optional. With ``[admin]`` absent there is no login route at all —
-not a route that always succeeds — so an open gateway has no login surface to
-attack and no cookie worth forging, and the startup log (task 003) says out loud
-that the pages are open.
+Login is optional, and an open gateway has no login to attack: ``/ui/login``
+answers 404 when there is no account, rather than being a login that always
+succeeds, and the startup log (:mod:`mcp_gateway.web.account`) says out loud
+that the pages are open. The routes exist in both modes because the account can
+now be created from the Configuration page, and a route that only came into
+being at startup could not be reached by the operator who had just made one
+(task 104).
 
 One account, one password, no session table. The password is verified against a
-PBKDF2-SHA256 hash (:mod:`mcp_gateway.web.passwords`) derived once at startup,
-and a signed cookie carries the fact of the login afterwards. The signature is
+PBKDF2-SHA256 hash (:mod:`mcp_gateway.web.passwords`), derived at startup from
+the config file or read back from the ``settings`` table, and a signed cookie
+carries the fact of the login afterwards. The signature is
 what makes a session table unnecessary — the cookie is worth exactly as much as
 the key that signed it — and the signing salt is bound to the credentials, so
 changing the username or the password ends every session opened under the old
@@ -30,10 +34,10 @@ import hashlib
 import hmac
 import logging
 import secrets
-from typing import TYPE_CHECKING, Annotated, Final
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, FastAPI, Form, Query, Request
+from fastapi import APIRouter, FastAPI, Form, HTTPException, Query, Request
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from starlette.responses import RedirectResponse, Response
 
@@ -81,6 +85,18 @@ SESSION_SALT: Final = "mcp-gateway.admin-session"
 #: a wrong password.
 BAD_CREDENTIALS: Final = "Incorrect username or password."
 
+#: Which layer the account in force came from. The two are not interchangeable
+#: to a reader: one is a file the operator edits and restarts, the other is a
+#: row they wrote from the browser, and a page reporting the wrong one would
+#: send them to edit a file that is being ignored (task 104).
+Source = Literal["config", "database"]
+FROM_CONFIG: Final[Source] = "config"
+FROM_DATABASE: Final[Source] = "database"
+
+#: What the login routes answer when the gateway is open. A 404 rather than a
+#: redirect: there is genuinely nothing here to sign in to.
+NO_LOGIN: Final = "This gateway has no admin login."
+
 #: The body of an unauthenticated API request's 401.
 SIGN_IN_REQUIRED: Final = "Sign in to use this API."
 
@@ -110,10 +126,21 @@ def _digest(value: str) -> bytes:
 class AdminAuth:
     """The configured admin account, and the cookie that stands for a login."""
 
-    __slots__ = ("_hash", "_signer", "username")
+    __slots__ = ("_hash", "_signer", "source", "username")
 
-    def __init__(self, username: str, password_hash: PasswordHash, secret_key: str) -> None:
+    def __init__(
+        self,
+        username: str,
+        password_hash: PasswordHash,
+        secret_key: str,
+        *,
+        source: Source = FROM_CONFIG,
+    ) -> None:
         self.username = username
+        #: Which layer this account was read from, for the banner and the page
+        #: that reports what is in force. It changes nothing about how the
+        #: account behaves.
+        self.source = source
         self._hash = password_hash
         # The salt binds the signature to the credentials it was issued under.
         # Change either, and every cookie already out there stops verifying —
@@ -124,7 +151,7 @@ class AdminAuth:
         )
 
     def __repr__(self) -> str:
-        return f"{type(self).__name__}(username={self.username!r})"
+        return f"{type(self).__name__}(username={self.username!r}, source={self.source!r})"
 
     def authenticate(self, username: str, password: str) -> bool:
         """Whether these credentials are the configured ones.
@@ -296,11 +323,27 @@ def unauthenticated(request: Request, exc: Exception) -> Response:
     return RedirectResponse(target, status_code=303)
 
 
-def login_router(admin: AdminAuth, shell: Shell) -> APIRouter:
-    """The login and logout routes, mounted only when there is an account.
+def account_of(request: Request) -> AdminAuth:
+    """The account in force, or a 404 because this gateway has none.
+
+    Read per request rather than closed over, because the Configuration page can
+    create an account, change it, or take it away while the process runs
+    (task 104), and a router holding the one it was built with would be
+    answering for an account nobody has any more.
+    """
+    admin: AdminAuth | None = request.app.state.admin
+    if admin is None:
+        raise HTTPException(status_code=404, detail=NO_LOGIN)
+    return admin
+
+
+def login_router(shell: Shell) -> APIRouter:
+    """The login and logout routes.
 
     These three are the exception to the guard: a session cannot be required to
-    reach the page that creates one.
+    reach the page that creates one. They are mounted in both modes and answer
+    404 while the gateway is open, so that turning login on from the browser
+    does not need a restart to be signed in with.
     """
     router = APIRouter(tags=["admin"], include_in_schema=False)
 
@@ -328,6 +371,7 @@ def login_router(admin: AdminAuth, shell: Shell) -> APIRouter:
         request: Request,
         next_path: Annotated[str, Query(alias="next")] = "",
     ) -> Response:
+        admin = account_of(request)
         if admin.session_user(request.cookies.get(SESSION_COOKIE)) is not None:
             return RedirectResponse(safe_next(next_path), status_code=303)
         return page(request, next_path=next_path)
@@ -339,6 +383,7 @@ def login_router(admin: AdminAuth, shell: Shell) -> APIRouter:
         password: Annotated[str, Form()],
         next_path: Annotated[str, Form(alias="next")] = "",
     ) -> Response:
+        admin = account_of(request)
         if not admin.authenticate(username, password):
             logger.warning("Failed admin login attempt for %r", username)
             return page(
@@ -359,6 +404,7 @@ def login_router(admin: AdminAuth, shell: Shell) -> APIRouter:
     async def logout(request: Request) -> Response:
         # Open to anyone: signing out while not signed in is not an error, and
         # requiring a session here would leave a stale cookie stuck in place.
+        admin = account_of(request)
         response = RedirectResponse(login_url(), status_code=303)
         admin.revoke(response)
         return response
@@ -371,23 +417,30 @@ def mount_admin(
 ) -> AdminAuth | None:
     """Wire admin authentication into ``app`` and return the account, if any.
 
-    The handler for :class:`NotAuthenticated` is registered in both modes: the
-    guard cannot raise in open mode, but a route is free to depend on it either
-    way, and an unhandled exception would be a 500 where a 401 was meant.
+    Both the handler for :class:`NotAuthenticated` and the login routes are
+    registered in both modes. The guard cannot raise in open mode, but a route
+    is free to depend on it either way and an unhandled exception would be a 500
+    where a 401 was meant; the login routes answer 404 until there is an account
+    to sign in to, which there may be by the next request (task 104).
+
+    The account returned is the config file's. A gateway with a database reads
+    the stored one over the top of it as it starts
+    (:func:`mcp_gateway.web.account.admin_service`).
     """
     app.add_exception_handler(NotAuthenticated, unauthenticated)
-    admin = build_admin(settings, secret_key=secret_key)
-    if admin is not None:
-        app.include_router(login_router(admin, shell))
-    return admin
+    app.include_router(login_router(shell))
+    return build_admin(settings, secret_key=secret_key)
 
 
 __all__ = [
     "API_PREFIX",
     "BAD_CREDENTIALS",
+    "FROM_CONFIG",
+    "FROM_DATABASE",
     "HOME_PATH",
     "LOGIN_PATH",
     "LOGOUT_PATH",
+    "NO_LOGIN",
     "OPEN_PATHS",
     "PROTECTED_PREFIXES",
     "SESSION_COOKIE",
@@ -396,6 +449,8 @@ __all__ = [
     "UI_PREFIX",
     "AdminAuth",
     "NotAuthenticated",
+    "Source",
+    "account_of",
     "build_admin",
     "login_router",
     "login_url",

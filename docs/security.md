@@ -22,7 +22,7 @@ are unlocked by default:
 | Door | Guarded by | Default |
 |---|---|---|
 | `/mcp` | `mcp.auth_token` — a bearer token | **open** |
-| `/ui/**` and `/api/v1/**` | `[admin]` — one username and password | **open** |
+| `/ui/**` and `/api/v1/**` | `[admin]`, or an account saved on the Configuration page — one username and password either way | **open** |
 | `/healthz` | nothing, by design | open |
 
 Neither substitutes for the other. A logged-in admin session does not open
@@ -107,7 +107,25 @@ session table, so signing out one browser cannot invalidate a cookie already
 issued to another; changing `security.secret_key` invalidates all of them at
 once.
 
-### 6. No rate limiting or quotas
+### 6. The way back in
+
+The admin account can be set from the browser, which means it can be locked
+behind a password nobody remembers. `mcp-gateway --reset-admin` clears the saved
+account and exits; afterwards `[admin]` in the config file applies again, or the
+pages are open if there is none.
+
+That is a deliberate trapdoor, and it is worth being plain about what it costs:
+**anybody who can run the gateway's own command against its data directory can
+open the pages.** It is not a privilege escalation — the same person can already
+read `keys.json` and decrypt every stored credential (gap 3), and could edit the
+`settings` table with `sqlite3` if the flag did not exist — but it does mean the
+admin password protects the pages from the network, not from the machine. Give
+the data directory to the service account and nobody else.
+
+The flag sets no password of its own, and there is no way to trigger it over
+HTTP.
+
+### 7. No rate limiting or quotas
 
 Nothing bounds how fast a client may call tools, or how much traffic the gateway
 will generate against an upstream on their behalf.
@@ -166,9 +184,16 @@ page) takes all of its tools out of `tools/list` at once.
 Not gaps, and worth knowing so they are not re-litigated:
 
 - **The admin password is never stored in plaintext by the app** — it is
-  PBKDF2-SHA256 with 600,000 iterations, compared in constant time. Writing it
+  PBKDF2-SHA256 with 600,000 iterations, compared in constant time. That holds
+  for an account saved from the Configuration page too: what goes into the
+  database is the hash, and the page never renders it back. Writing the password
   in plaintext in your own config file is your choice; `password_hash` exists so
   you do not have to.
+- **Changing the account ends every session opened under the old one.** The
+  cookie signature is salted with the username and the password hash, so there is
+  nothing to revoke and nothing to remember: old cookies simply stop verifying.
+  The browser that made the change is re-issued a session on the same response,
+  so a password change does not read as a mysterious logout.
 - **Upstream credentials are never rendered back.** Neither the pages nor the
   API will show you a stored credential — only `set` / `not set` and the auth
   type. There is no response body anywhere that can carry one.

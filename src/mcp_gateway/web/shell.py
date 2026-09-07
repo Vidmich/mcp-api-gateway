@@ -1,9 +1,9 @@
 """The UI shell: the page every other page is rendered into (spec §7.1).
 
 Tasks 020 to 023 add the pages; this adds what they render *into*. One Jinja
-environment with autoescaping on, one layout with the API Servers / Monitoring
-navigation, one stylesheet, one copy of htmx, and the error pages a request
-lands on when there is no page to show it.
+environment with autoescaping on, one layout with the API Servers / Monitoring /
+Configuration navigation, one stylesheet, one copy of htmx, and the error pages a
+request lands on when there is no page to show it.
 
 Everything the browser loads is served from this package. There is no CDN
 reference anywhere in the templates, because a gateway in front of an internal
@@ -68,6 +68,9 @@ STATIC_PREFIX: Final = "/static"
 
 MONITORING_PATH: Final = f"{UI_PREFIX}/monitoring"
 
+#: The gateway's own settings, as opposed to any one server's (task 104).
+CONFIGURATION_PATH: Final = f"{UI_PREFIX}/configuration"
+
 #: What every rendered page and fragment carries, for the reason in the module
 #: docstring. The login page sets the same thing for its own reasons
 #: (:mod:`mcp_gateway.web.auth`); this is the rule for the rest.
@@ -120,11 +123,14 @@ class NavItem:
 
 
 #: The sections, in the order they are read. "API Servers" rather than
-#: "Configuration" because it is what the page lists, and because the word is
-#: about to belong to the page that holds the gateway's own settings (task 104).
+#: "Configuration" because it is what the page lists, and because the word
+#: belongs to the page holding the gateway's own settings (task 104). That page
+#: comes last: it is the one an operator opens least often, and the two before
+#: it are what they came here to look at.
 NAV: Final = (
     NavItem("API Servers", HOME_PATH, f"{UI_PREFIX}/servers"),
     NavItem("Monitoring", MONITORING_PATH, MONITORING_PATH),
+    NavItem("Configuration", CONFIGURATION_PATH, CONFIGURATION_PATH),
 )
 
 
@@ -225,6 +231,7 @@ class Shell:
             ui_prefix=UI_PREFIX,
             home_path=HOME_PATH,
             monitoring_path=MONITORING_PATH,
+            configuration_path=CONFIGURATION_PATH,
             login_path=f"{UI_PREFIX}/login",
             logout_path=f"{UI_PREFIX}/logout",
         )
@@ -378,6 +385,7 @@ def mount_shell(app: FastAPI, secret_key: str) -> Shell:
 
 
 __all__ = [
+    "CONFIGURATION_PATH",
     "ERROR_PAGES",
     "ERROR_TEMPLATE",
     "FLASH_COOKIE",

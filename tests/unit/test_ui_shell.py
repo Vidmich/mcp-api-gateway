@@ -22,6 +22,7 @@ from mcp_gateway.app import HEALTH_PATH, create_app
 from mcp_gateway.config import Settings, load_settings
 from mcp_gateway.web.auth import API_PREFIX, HOME_PATH, LOGIN_PATH, UI_PREFIX
 from mcp_gateway.web.shell import (
+    CONFIGURATION_PATH,
     ERROR_PAGES,
     FLASH_COOKIE,
     FLASH_MAX_AGE,
@@ -197,7 +198,7 @@ def test_an_error_page_is_not_stored_either(tmp_path: Path) -> None:
 # --- the navigation ----------------------------------------------------------
 
 
-def test_the_nav_names_both_sections(tmp_path: Path) -> None:
+def test_the_nav_names_every_section(tmp_path: Path) -> None:
     with client(settings_for(tmp_path)) as http:
         body = http.get(LAYOUT_PAGE, headers=HTML).text
 
@@ -214,6 +215,8 @@ def test_the_nav_names_both_sections(tmp_path: Path) -> None:
         (f"{HOME_PATH}/7", "API Servers"),
         (MONITORING_PATH, "Monitoring"),
         (f"{MONITORING_PATH}/anything", "Monitoring"),
+        (CONFIGURATION_PATH, "Configuration"),
+        (f"{CONFIGURATION_PATH}/admin", "Configuration"),
     ],
 )
 def test_a_path_belongs_to_its_section(path: str, expected: str) -> None:

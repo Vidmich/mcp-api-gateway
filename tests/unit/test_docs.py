@@ -155,11 +155,10 @@ def test_every_flag_that_sets_something_is_documented(flag: str) -> None:
     assert flag in read(CONFIGURATION)
 
 
-def test_the_two_flags_that_set_nothing_are_documented_too() -> None:
-    """``--config`` and ``--version`` set no key, so the table cannot carry them."""
-    body = read(CONFIGURATION)
-    assert "--config" in body
-    assert "--version" in body
+@pytest.mark.parametrize("flag", ["--config", "--version", "--reset-admin"])
+def test_the_flags_that_set_nothing_are_documented_too(flag: str) -> None:
+    """These set no key, so the table of settings cannot carry them."""
+    assert flag in read(CONFIGURATION)
 
 
 @pytest.mark.parametrize("page", PAGES, ids=lambda page: page.name)

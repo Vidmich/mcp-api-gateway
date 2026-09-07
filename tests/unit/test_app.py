@@ -17,6 +17,8 @@ from mcp_gateway.app import HEALTH_PATH, create_app, startup_banner, uvicorn_con
 from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import ConfigError, Settings, load_settings
 from mcp_gateway.crypto import CredentialCipher, generate_key
+from mcp_gateway.web.auth import FROM_DATABASE, AdminAuth, build_admin
+from mcp_gateway.web.passwords import derive
 
 
 def settings_for(tmp_path: Path, body: str = "") -> Settings:
@@ -156,7 +158,7 @@ def test_the_banner_is_logged_at_info_on_startup(
 def test_the_banner_names_what_is_open(tmp_path: Path) -> None:
     keys = Keys("SIGNING-KEY", "ENCRYPTION-KEY", path=tmp_path / "keys.json")
 
-    banner = startup_banner(settings_for(tmp_path), keys)
+    banner = startup_banner(settings_for(tmp_path), keys, admin=None)
 
     assert mcp_gateway.__version__ in banner
     assert str(tmp_path / "keys.json") in banner
@@ -173,12 +175,23 @@ def test_the_banner_names_what_is_locked_down(tmp_path: Path) -> None:
         '[admin]\nusername = "root"\npassword = "hunter2"\n\n[mcp]\nauth_token = "t"\n',
     )
 
-    banner = startup_banner(settings, Keys("SIGNING-KEY", "ENCRYPTION-KEY", path=None))
+    admin = build_admin(settings, secret_key="k")
+
+    banner = startup_banner(settings, Keys("SIGNING-KEY", "ENCRYPTION-KEY", path=None), admin=admin)
 
     assert "/mcp (bearer token required)" in banner
     assert "admin login:  enabled as root" in banner
     assert "hunter2" not in banner
     assert "keys come from the config" in banner
+
+
+def test_the_banner_says_when_the_account_came_from_the_page(tmp_path: Path) -> None:
+    """The one thing reading the config file could not tell an operator (task 104)."""
+    stored = AdminAuth("root", derive("hunter2", iterations=1), "k", source=FROM_DATABASE)
+
+    banner = startup_banner(settings_for(tmp_path), admin=stored)
+
+    assert "admin login:  enabled as root (set on the Configuration page)" in banner
 
 
 def test_the_interactive_docs_are_not_exposed(tmp_path: Path) -> None:

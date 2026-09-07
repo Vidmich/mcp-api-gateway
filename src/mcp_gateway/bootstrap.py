@@ -240,15 +240,13 @@ def log_startup_notices(settings: Settings, keys: Keys) -> None:
 
     An unauthenticated gateway is a legitimate way to run this, but it has to be
     an obvious state rather than a quiet one (spec §3.1).
+
+    Whether the *pages* are open is not decided here. This runs before the
+    database is open, and the admin account may be stored there rather than in
+    the config file (task 104), so that warning belongs to the one thing that
+    knows: :func:`mcp_gateway.web.account.warn_if_open`, at the moment the
+    account is resolved.
     """
-    if settings.admin is None:
-        logger.warning(
-            "Admin login is disabled: the configuration and monitoring pages are open to "
-            "anyone who can reach %s:%s. Set [admin] in %s to require a login.",
-            settings.server.host,
-            settings.server.port,
-            settings.config_path or "the config file",
-        )
     if not settings.mcp.auth_required:
         logger.warning(
             "%s requires no token: anyone who can reach it can call every enabled "

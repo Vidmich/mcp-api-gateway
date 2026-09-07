@@ -40,6 +40,12 @@ NESTING_SEPARATOR = "__"
 CONFIG_FILENAME = "config.toml"
 APP_DIRNAME = "mcp-gateway"
 
+#: How :attr:`Settings.sources` names an environment variable, followed by the
+#: variable itself. A constant because the Configuration page reads these
+#: strings back to say where a value came from (task 104), and a page that
+#: matched a prefix spelled out twice would be one refactor from lying.
+ENV_SOURCE = "environment variable "
+
 LogLevel = Literal["critical", "error", "warning", "info", "debug", "trace"]
 
 #: Maps argparse destination names to the ``(section, key)`` each flag sets.
@@ -195,9 +201,21 @@ class Settings(BaseModel):
     #: The config file that was actually read, or ``None`` when none existed.
     config_path: Path | None = None
 
+    #: Where each ``section.key`` that was set came from, in the loader's own
+    #: words: the config file's path, ``environment variable NAME``, or the
+    #: flag. A key nothing set is absent, which is what "the default" means.
+    #: Carried rather than discarded because precedence is the one thing about
+    #: a layered configuration an operator cannot work out by looking at it,
+    #: and the Configuration page is where they look instead (task 104).
+    sources: dict[str, str] = Field(default_factory=dict)
+
     @property
     def admin_enabled(self) -> bool:
         return self.admin is not None
+
+    def source_of(self, dotted: str) -> str | None:
+        """Where ``section.key`` came from, or ``None`` when nothing set it."""
+        return self.sources.get(dotted)
 
 
 def platform_config_dir(environ: Mapping[str, str] | None = None) -> Path:
@@ -284,7 +302,7 @@ def _env_layer(environ: Mapping[str, str]) -> tuple[Layer, Sources]:
             continue
         section, key = section.lower(), key.lower()
         layer.setdefault(section, {})[key] = value
-        sources[f"{section}.{key}"] = f"environment variable {name}"
+        sources[f"{section}.{key}"] = f"{ENV_SOURCE}{name}"
     return layer, sources
 
 
@@ -365,8 +383,12 @@ def load_settings(
 
     _warn_about_unknown(layer, sources)
 
+    # Only the sections; ``config_path`` and ``sources`` are worked out here
+    # rather than configured, and a file naming either of them should not be
+    # able to reach the model.
+    sections = {name: values for name, values in layer.items() if name in SECTION_MODELS}
     try:
-        settings = Settings.model_validate(layer)
+        settings = Settings.model_validate(sections)
     except ValidationError as exc:
         raise ConfigError(_describe(exc, sources)) from exc
 
@@ -379,6 +401,7 @@ def load_settings(
     return settings.model_copy(
         update={
             "config_path": loaded_path,
+            "sources": sources,
             "server": settings.server.model_copy(
                 update={"data_dir": Path(os.path.normpath(resolved))}
             ),

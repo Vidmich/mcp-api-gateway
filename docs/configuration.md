@@ -108,9 +108,31 @@ This is the layer to reach for when a secret should not sit in a file — see
 | `http.max_response_bytes` | `5242880` | `MCP_GATEWAY_HTTP__MAX_RESPONSE_BYTES` | — |
 | `http.user_agent` | `"mcp-gateway/<version>"` | `MCP_GATEWAY_HTTP__USER_AGENT` | — |
 
-Two flags are not settings and so are not in the table: `--config`, which
-chooses the file the other layers are merged onto, and `--version`, which prints
-and exits.
+Three flags are not settings and so are not in the table: `--config`, which
+chooses the file the other layers are merged onto; `--version`, which prints and
+exits; and `--reset-admin`, which clears the admin account saved from the
+[Configuration page](#the-configuration-page) and exits without starting the
+gateway.
+
+## The Configuration page
+
+`/ui/configuration` shows every value on this page as it is actually in force,
+each with the layer it came from — the config file, an environment variable, a
+flag, or the default. It is the quickest answer to "why is this not what my file
+says", and nothing secret appears on it: the bearer token is reported as *set* or
+*not set*, and the two keys in `[security]` are not reported at all.
+
+Two of those values can also be *changed* there, without a restart, because both
+are stored in the database and read where they are used:
+
+| Setting | Stored as | What the file's value becomes |
+|---|---|---|
+| The auto-refresh interval | `refresh.auto_refresh_interval_minutes` | the value in force again once the box is emptied |
+| The admin account | `admin.enabled`, `admin.username`, `admin.password_hash` | ignored entirely while an account is saved |
+
+Nothing else on the page is a form. A setting that could not take effect until
+the next restart is shown and not offered, because a box that quietly does
+nothing for an hour is worse than no box.
 
 ### `[server]`
 
@@ -148,9 +170,9 @@ password = "changeme"
 ```
 
 **The section's presence is the switch.** With it, `/ui/**` and `/api/v1/**`
-require a login; without it, the login page is not even mounted and both are
-open to anyone who can reach the port. `--admin-user` and `--admin-password`
-turn it on without a file.
+require a login; without it, `/ui/login` answers `404` and both are open to
+anyone who can reach the port. `--admin-user` and `--admin-password` turn it on
+without a file.
 
 `username` on its own is a configuration error: one of `password` and
 `password_hash` has to be there too.
@@ -169,6 +191,25 @@ pbkdf2_sha256$600000$56b1a85596474b6c6ad86af7c9228def$61a9999faae82183af9b...
 
 Either form is verified in constant time. The encoding is self-describing, so a
 hash written today keeps working when a later release raises the default cost.
+
+**An account saved on the Configuration page overrides this section entirely.**
+The username and the hash are stored in the database, `[admin]` is not consulted
+for either half, and a login switched *off* there leaves the pages open whatever
+this file says. Only the hash is ever stored, never the password. The startup
+banner reports the account actually in force and says when it came from the
+page.
+
+That leaves one way back from a password nobody remembers, and it is not a
+reinstall:
+
+```bash
+mcp-gateway --reset-admin
+```
+
+It clears the saved account, prints what it did, and exits without starting the
+gateway. Afterwards this section applies again — or the pages are open, if there
+is no section. It sets no password of its own; see
+[security.md](security.md#6-the-way-back-in) for what that means and who can do it.
 
 Note what this section is *not*: one account, guarding the configuration and
 monitoring pages. It has nothing to do with `/mcp`, which is governed by
@@ -237,10 +278,10 @@ and refreshes whatever is due, and a server whose refresh keeps failing backs
 off — a minute, then doubling, up to six hours — instead of being retried every
 tick.
 
-Auto-refresh itself is per server, on its detail page. This is the one setting
-here the UI can override at runtime: the box on the API Servers page writes
-the same key into the database, and the stored value wins for as long as it is
-there.
+Auto-refresh itself is per server, on its detail page. This setting the UI can
+override at runtime: the box on the [Configuration page](#the-configuration-page)
+writes the same key into the database, and the stored value wins for as long as
+it is there.
 
 ### `[metrics]`
 
@@ -332,6 +373,7 @@ cannot take the gateway down with it.
 | How fast one server may be called | the database, on that server's detail page |
 | Whether agents may configure this gateway over MCP | the database, the built-in Gateway server's toggle on the server list |
 | The auto-refresh interval, once changed in the UI | the database, overriding `refresh.auto_refresh_interval_minutes` |
+| The admin account, once saved in the UI | the database, overriding `[admin]`; cleared with `--reset-admin` |
 | Whether a server is enabled, including after the gateway disabled it | the database, toggled at `/ui/servers` |
 
 There is no reload: the file is read once, at startup, so changing it means

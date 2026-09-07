@@ -45,6 +45,7 @@ from mcp_gateway.db.session import Database
 from mcp_gateway.mcpsrv.server import SERVER_NAME, app_announcer
 from mcp_gateway.openapi.schema import EXTENSION
 from mcp_gateway.refresh import refresh_server
+from mcp_gateway.web.account import PAGES_OPEN_TO_ANYONE
 
 #: Uvicorn's note for a connection torn down while its response was still
 #: streaming. ``sse-starlette`` drains open SSE streams when the server starts
@@ -52,6 +53,11 @@ from mcp_gateway.refresh import refresh_server
 #: unterminated — what every MCP server on uvicorn does to a live stream, and
 #: nothing the gateway's own session manager has a say in.
 DRAINED_STREAM = "ASGI callable returned without completing response."
+
+#: The gateway announcing at startup that its pages have no login (task 104).
+#: A deliberate notice about how this test's own gateway is configured, not a
+#: complaint about anything that happened to it.
+OPEN_PAGES = PAGES_OPEN_TO_ANYONE.split("{")[0]
 
 
 def free_port() -> int:
@@ -498,10 +504,12 @@ async def test_shutting_down_with_a_live_session_is_clean(
 ) -> None:
     """Nothing is left pending when a connected client is cut off mid-session.
 
-    Two of the voices in the log are not the gateway's. ``mcp.client`` is this
-    test's own client noticing the server has gone, which is the situation
-    under test rather than a defect in it; :data:`DRAINED_STREAM` is uvicorn
-    describing the SSE stream that ``sse-starlette`` cut short on the way down.
+    Three of the voices in the log are not this test's business. ``mcp.client``
+    is its own client noticing the server has gone, which is the situation under
+    test rather than a defect in it; :data:`DRAINED_STREAM` is uvicorn describing
+    the SSE stream that ``sse-starlette`` cut short on the way down; and
+    :data:`OPEN_PAGES` is the gateway saying at startup that it has no admin
+    login, which is how this test configured it.
     """
     async with AsyncExitStack() as client:
         gateway_stack = AsyncExitStack()
@@ -526,6 +534,7 @@ async def test_shutting_down_with_a_live_session_is_clean(
         if record.levelno >= logging.WARNING
         and not record.name.startswith("mcp.client")
         and record.getMessage() != DRAINED_STREAM
+        and not record.getMessage().startswith(OPEN_PAGES)
     ]
     assert complaints == [], [record.getMessage() for record in complaints]
 

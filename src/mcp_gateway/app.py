@@ -41,8 +41,10 @@ from mcp_gateway.outbound import outbound_service
 from mcp_gateway.refresh import RefreshLocks
 from mcp_gateway.retention import retention_service
 from mcp_gateway.scheduler import refresh_service
+from mcp_gateway.web.account import admin_service
 from mcp_gateway.web.api import Health, health_report
-from mcp_gateway.web.auth import mount_admin, signing_key
+from mcp_gateway.web.auth import FROM_DATABASE, AdminAuth, mount_admin, signing_key
+from mcp_gateway.web.configuration import mount_configuration
 from mcp_gateway.web.monitoring import mount_monitoring
 from mcp_gateway.web.routes_api import mount_api
 from mcp_gateway.web.routes_ui import mount_ui
@@ -69,8 +71,15 @@ async def healthz(request: Request) -> Health:
     return health_report(request.app.state.settings, request.app.state.started_at)
 
 
-def startup_banner(settings: Settings, keys: Keys | None = None) -> str:
-    """Summarise the resolved configuration for the operator, without secrets."""
+def startup_banner(settings: Settings, keys: Keys | None = None, *, admin: AdminAuth | None) -> str:
+    """Summarise the resolved configuration for the operator, without secrets.
+
+    ``admin`` is passed rather than read off ``settings`` because the account can
+    come from the database instead (task 104), and a banner describing the config
+    file would be telling an operator to change the wrong thing. Keyword-only and
+    without a default, so that no caller can leave it out and quietly report an
+    open gateway.
+    """
     stored = None if keys is None else keys.path
     key_file = stored or "none (keys come from the config)"
     return "\n".join(
@@ -82,10 +91,18 @@ def startup_banner(settings: Settings, keys: Keys | None = None) -> str:
             f"key file:     {key_file}",
             f"mcp endpoint: {settings.mcp.path}"
             + (" (bearer token required)" if settings.mcp.auth_required else " (open)"),
-            "admin login:  "
-            + (f"enabled as {settings.admin.username}" if settings.admin else "disabled"),
+            "admin login:  " + _admin_line(admin),
         ]
     )
+
+
+def _admin_line(admin: AdminAuth | None) -> str:
+    """Who may sign in, and — when it is not the obvious place — where from."""
+    if admin is None:
+        return "disabled"
+    if admin.source == FROM_DATABASE:
+        return f"enabled as {admin.username} (set on the Configuration page)"
+    return f"enabled as {admin.username}"
 
 
 class RequestLog:
@@ -139,12 +156,16 @@ def _build_lifespan(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.started_at = time.monotonic()
-        logger.info("%s", startup_banner(app.state.settings, keys))
         async with AsyncExitStack() as stack:
             for service in services:
                 # Exiting the stack unwinds in reverse, so a service can rely on
                 # the ones registered before it still being up while it stops.
                 await stack.enter_async_context(service(app))
+            # After the services rather than before them, because one of them is
+            # what reads the stored admin account (task 104): a banner logged
+            # first would describe the config file rather than what is actually
+            # in force, which is the one thing it is for.
+            logger.info("%s", startup_banner(app.state.settings, keys, admin=app.state.admin))
             logger.debug("Startup complete: %d background service(s)", len(services))
             yield
             logger.info("Shutting down")
@@ -234,6 +255,9 @@ def create_app(
     #: The monitoring page (spec §7.2), on a router of its own because it is the
     #: other half of the navigation rather than another configuration page.
     mount_monitoring(app)
+    #: The gateway's own settings (spec §7.1): the refresh interval, the admin
+    #: account, and a read-only account of everything else in force (task 104).
+    mount_configuration(app)
     #: The JSON API the pages mirror (spec §7.3). Behind the same guard, and
     #: mounted after the pages so that the two prefixes are added in the order
     #: they are read about.
@@ -253,6 +277,12 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     the endpoint which uses it to proxy tool calls cannot start before it exists.
     The scheduler comes last, since a sweep uses all three, and it is the first
     thing stopped on the way out for the same reason.
+
+    The admin account is resolved straight after the database, before anything
+    can answer a request: it may live in the ``settings`` table rather than in
+    the config file (task 104), and a page served under the file's account
+    while the stored one was still being read would be one request answered by
+    the wrong door.
 
     The built-in server is seeded straight after the database and before
     anything that could serve a tool list, so that no client ever sees its
@@ -277,6 +307,7 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     """
     return (
         database_service(settings),
+        admin_service,
         builtin_service,
         outbound_service(settings.http),
         metrics_service,

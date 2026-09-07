@@ -1,0 +1,73 @@
+{# The Configuration page (spec §7.1, task 104).
+
+   Two forms and a table, in that order: the things that can be changed while
+   the gateway runs, then everything that cannot. The table is last because it
+   is read once, when something is not behaving the way the file says it should.
+
+   The username and password boxes sit in a reveal panel governed by the switch,
+   so a gateway meant to stay open does not show two boxes nobody will fill in.
+   With no script the panel is simply visible and the form submits the same
+   fields — see static/js/forms.js. #}
+{% extends "base.html" %}
+{% from "partials/field.html" import field, secret, switch %}
+
+{% block title %}Configuration · mcp-gateway{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/forms.js') }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <h1 class="toolbar__title">Configuration</h1>
+</div>
+
+<form class="card form" method="post" action="{{ admin.path }}">
+  <h2 class="card__title">Admin login</h2>
+  <p class="form__lead">{{ admin.lead }}</p>
+  {{ switch(admin.enabled_field, "Require a login for the configuration and monitoring pages",
+            checked=admin.enabled, reveal=admin.group) }}
+  <div class="reveal" data-reveal-for="{{ admin.group }}" data-reveal-when="on">
+    {{ field(admin.username_field, "Username", value=admin.username,
+             error=admin.errors.get(admin.username_field)) }}
+    {{ secret(admin.password_field, "Password", hint=admin.password_hint,
+              error=admin.errors.get(admin.password_field)) }}
+  </div>
+  <div class="form-actions">
+    <button class="button" type="submit">Save</button>
+  </div>
+</form>
+
+<form class="card card--below form" method="post" action="{{ auto_refresh.path }}">
+  <h2 class="card__title">Automatic refresh</h2>
+  {{ field(auto_refresh.field, "Minutes between refreshes", value=auto_refresh.typed,
+           type="number", placeholder=auto_refresh.configured, hint=auto_refresh.hint,
+           error=auto_refresh.error) }}
+  <div class="form-actions">
+    <button class="button" type="submit">Save</button>
+  </div>
+</form>
+
+<section class="card card--below">
+  <h2 class="card__title">Everything else in force</h2>
+  <p class="form__lead">{{ config_note }} These take a restart to change.</p>
+  <table class="table">
+    <thead>
+      <tr>
+        <th scope="col">Setting</th>
+        <th scope="col">Value</th>
+        <th scope="col">Where it came from</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for fact in facts %}
+      <tr>
+        <th scope="row"><code>{{ fact.key }}</code></th>
+        <td>{{ fact.value }}</td>
+        <td>{{ fact.source }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

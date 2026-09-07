@@ -101,10 +101,11 @@ where each thing went:
 ```
 INFO     mcp_gateway.bootstrap: Wrote a starter config file at /srv/gateway/config.toml
 INFO     mcp_gateway.bootstrap: Generated encryption_key and secret_key in /srv/gateway/data/keys.json
-WARNING  mcp_gateway.bootstrap: Admin login is disabled: the configuration and monitoring
-         pages are open to anyone who can reach 127.0.0.1:8080. ...
 WARNING  mcp_gateway.bootstrap: /mcp requires no token: anyone who can reach it can call
          every enabled operation. ...
+INFO     mcp_gateway.db.migrate: Migrating database schema: empty -> 0001_baseline
+WARNING  mcp_gateway.web.account: Admin login is disabled: the configuration and monitoring
+         pages are open to anyone who can reach 127.0.0.1:8080. ...
 INFO     mcp_gateway.app: mcp-gateway 0.1.0
 config file:  /srv/gateway/config.toml
 listening on: http://127.0.0.1:8080
@@ -112,7 +113,6 @@ data dir:     /srv/gateway/data
 key file:     /srv/gateway/data/keys.json
 mcp endpoint: /mcp (open)
 admin login:  disabled
-INFO     mcp_gateway.db.migrate: Migrating database schema: empty -> 0001_baseline
 INFO     uvicorn.error: Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
 ```
 

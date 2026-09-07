@@ -73,19 +73,19 @@ setting being the thing that guards the page editing it.
 
 ## Acceptance
 
-- [ ] `/ui/configuration` exists, is in the navigation, and is behind admin auth when admin auth is on.
-- [ ] The auto-refresh interval is set from this page, is gone from the server list, and the scheduler
+- [x] `/ui/configuration` exists, is in the navigation, and is behind admin auth when admin auth is on.
+- [x] The auto-refresh interval is set from this page, is gone from the server list, and the scheduler
       picks up the new value.
-- [ ] Setting a password from the page signs the operator in with it afterwards, and the config file's
+- [x] Setting a password from the page signs the operator in with it afterwards, and the config file's
       password no longer works.
-- [ ] Changing the current account's password leaves the operator signed in, and every cookie issued
+- [x] Changing the current account's password leaves the operator signed in, and every cookie issued
       under the old one stops verifying.
-- [ ] Turning login on from an open gateway leaves the operator signed in on the same response, and
+- [x] Turning login on from an open gateway leaves the operator signed in on the same response, and
       the pages ask for credentials afterwards.
-- [ ] Turning login off warns first, in the same words the startup banner uses, and the pages are open
+- [x] Turning login off warns first, in the same words the startup banner uses, and the pages are open
       afterwards.
-- [ ] The CLI flag clears the stored account, and the gateway then behaves as the config file says.
-- [ ] The startup banner reports the account in force, whether it came from the file or the database.
-- [ ] The read-only section names the source of every value it shows, and no secret appears in the
+- [x] The CLI flag clears the stored account, and the gateway then behaves as the config file says.
+- [x] The startup banner reports the account in force, whether it came from the file or the database.
+- [x] The read-only section names the source of every value it shows, and no secret appears in the
       page or its source.
-- [ ] A restart changes nothing an operator set here.
+- [x] A restart changes nothing an operator set here.

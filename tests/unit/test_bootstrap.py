@@ -224,8 +224,11 @@ def test_open_access_is_announced_loudly(tmp_path: Path, caplog: pytest.LogCaptu
         keys = bootstrap(settings)
 
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("Admin login is disabled" in message for message in warnings)
     assert any("requires no token" in message for message in warnings)
+    # Whether the *pages* are open is not decided here: the account may be in
+    # the database, which is not open yet (task 104). That warning belongs to
+    # ``web.account``, and is tested there.
+    assert not any("Admin login" in message for message in warnings)
     assert str(keys.path) in caplog.text
     assert "entered again" in caplog.text
 
