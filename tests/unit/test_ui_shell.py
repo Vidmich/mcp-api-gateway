@@ -39,10 +39,11 @@ from mcp_gateway.web.shell import (
     under,
 )
 
-#: A page that renders nothing but the layout. Task 020 owns ``/ui/servers``
-#: itself now, so the stand-in moved down one level, to where task 023's
-#: detail page will be.
-LAYOUT_PAGE = f"{UI_PREFIX}/servers/7"
+#: A page that renders nothing but the layout. Task 020 owns ``/ui/servers`` and
+#: task 023 owns ``/ui/servers/{id}``, so the stand-in has moved down again — it
+#: only has to be somewhere under ``/ui/servers``, which is what makes the
+#: masthead light Configuration up.
+LAYOUT_PAGE = f"{UI_PREFIX}/servers/7/layout"
 BOOM_PAGE = f"{UI_PREFIX}/boom"
 FLASH_PAGE = f"{UI_PREFIX}/flash"
 
@@ -73,7 +74,7 @@ def locked(tmp_path: Path) -> Settings:
 
 
 def shelled_app(settings: Settings, **kwargs: Any) -> FastAPI:
-    """An app with the pages tasks 020 to 023 will add, standing in for them now.
+    """An app with a page of its own that renders nothing but the layout.
 
     They render ``base.html`` directly: the shell is what is under test, and a
     page with nothing in its content block is exactly the layout.
@@ -81,7 +82,7 @@ def shelled_app(settings: Settings, **kwargs: Any) -> FastAPI:
     app = create_app(settings, **kwargs)
     router = APIRouter()
 
-    @router.get(f"{UI_PREFIX}/servers/{{server_id}}")
+    @router.get(f"{UI_PREFIX}/servers/{{server_id}}/layout")
     @router.get(MONITORING_PATH)
     async def page(request: Request) -> Response:
         shell: Shell = request.app.state.shell
@@ -132,6 +133,9 @@ def test_the_layout_loads_the_stylesheet_and_htmx(tmp_path: Path) -> None:
 
     assert static_url("css/app.css") in body
     assert static_url("js/htmx.min.js") in body
+    # And how this gateway answers htmx, which every page that uses it needs.
+    assert static_url("js/gateway.js") in body
+    assert body.index("htmx.min.js") < body.index("gateway.js")
 
 
 def test_an_asset_url_carries_the_release_that_shipped_it() -> None:

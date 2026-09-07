@@ -18,9 +18,10 @@ browser with no JavaScript at all, since the answer is the same table either way
 
 **Every name is planned before anything is written.** :func:`register` asks
 :mod:`mcp_gateway.naming` what each operation would be called and whether
-another server has taken it, and refuses the whole save if anything collides
-(spec §5.3): renaming the newcomer quietly would break the prompts that had
-learned the older name, and half a server is worse than none.
+another server has taken it, and refuses the whole save with that module's
+:class:`~mcp_gateway.naming.NamesTaken` if anything collides (spec §5.3):
+renaming the newcomer quietly would break the prompts that had learned the older
+name, and half a server is worse than none.
 
 **What is saved is one transaction and one review.** The server, its operations,
 the snapshot and the hash go in together, because a server whose operations
@@ -42,10 +43,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
 from mcp_gateway.naming import (
+    MAX_CONFLICTS_SHOWN,
     MAX_SLUG,
+    MORE_CONFLICTS,
+    PREFIX_REQUIRED,
     NameConflict,
     NamedOperation,
     NamePlan,
+    NamesTaken,
+    conflict_alerts,
     plan_names,
     plan_tool_names,
     sanitize,
@@ -77,11 +83,6 @@ BULK_NONE: Final = "none"
 #: display name of ``???`` is legal and its slug is empty.
 FALLBACK_SLUG: Final = "server"
 
-PREFIX_REQUIRED: Final = (
-    "A tool prefix is needed. It leads every tool name this server publishes, "
-    "and letters, digits, hyphens and underscores are what it may be made of."
-)
-
 #: Refused at the save rather than at the form: a document can perfectly well
 #: parse and still not say where the API it describes lives.
 NO_BASE_URL: Final = (
@@ -91,26 +92,6 @@ NO_BASE_URL: Final = (
 
 #: What is said once the row exists, on the page that now lists it.
 SAVED: Final = "{name} was added: {selected} of {total} operations are exposed as tools."
-
-#: How many collisions are spelled out above the table. A clash is nearly always
-#: wholesale — one prefix against another server's — so the first few say
-#: everything the rest would, and every row carries its own on the badge.
-MAX_CONFLICTS_SHOWN: Final = 5
-MORE_CONFLICTS: Final = "{count} more names are taken as well; the rows below are marked."
-
-
-# Spelled as a state rather than as an error, like the exceptions in ``crypto``
-# and ``wizard``: it reads as the condition a caller is reacting to.
-class NamesTaken(Exception):  # noqa: N818
-    """The save was refused because tool names collided (spec §5.3).
-
-    Carries every conflict, so the page can name both sides of each one rather
-    than reporting that something, somewhere, was a duplicate.
-    """
-
-    def __init__(self, conflicts: Sequence[NameConflict]) -> None:
-        self.conflicts = tuple(conflicts)
-        super().__init__("; ".join(conflict.message for conflict in self.conflicts))
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,21 +290,6 @@ def build(
         alerts=conflict_alerts(collisions) + tuple(alerts),
         errors=dict(errors or {}),
     )
-
-
-def conflict_alerts(conflicts: Sequence[NameConflict]) -> tuple[str, ...]:
-    """The collisions, as sentences above the table.
-
-    Named in full rather than counted, because "duplicate" is not something an
-    operator can act on and "``x__getUser`` is already taken by ``GET /users``
-    on Billing" is. Capped, because a prefix that clashes clashes for every
-    operation at once and two hundred identical sentences say no more than five.
-    """
-    shown = tuple(conflict.message for conflict in conflicts[:MAX_CONFLICTS_SHOWN])
-    left = len(conflicts) - len(shown)
-    if left > 0:
-        return (*shown, MORE_CONFLICTS.format(count=left))
-    return shown
 
 
 def chosen_prefix(fields: Mapping[str, str], pending: PendingServer) -> str:

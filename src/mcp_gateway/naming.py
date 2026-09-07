@@ -25,6 +25,12 @@ writes nothing at all while the plan has conflicts, and ``dry_run=True`` turns
 it into the preview the settings page shows before an operator commits to a new
 prefix.
 
+**How a refusal is worded is part of naming, not part of a page.** A clash is
+refused with :class:`NamesTaken` and explained by :func:`conflict_alerts`, both
+here, because the add-server wizard and the settings page refuse for the same
+reason and an operator who has seen one of those sentences should recognise the
+other.
+
 **Sanitising is not the same as resolving.** ``[a-zA-Z0-9_-]{1,128}`` is the
 legal character set, so a name built from a path (``/pets/{petId}``) or typed by
 an operator (``get pets``) is mapped into it. That mapping is deterministic and
@@ -70,6 +76,19 @@ LEGAL: Final = re.compile(rf"\A[A-Za-z0-9_-]{{1,{MAX_TOOL_NAME}}}\Z")
 #: SQLite's older parameter ceiling is 999; stay well under it when checking
 #: a large server's names against every other server in one statement.
 CHUNK: Final = 400
+
+#: How many collisions a page spells out. A clash is nearly always wholesale —
+#: one prefix against another server's — so the first few say everything the
+#: rest would, and every row still carries its own beside the name.
+MAX_CONFLICTS_SHOWN: Final = 5
+MORE_CONFLICTS: Final = "{count} more names are taken as well; the rows below are marked."
+
+#: What a page says about a prefix that is not one. Here rather than on either
+#: of the two forms that ask for a prefix, because it states the rule above.
+PREFIX_REQUIRED: Final = (
+    "A tool prefix is needed. It leads every tool name this server publishes, "
+    "and letters, digits, hyphens and underscores are what it may be made of."
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -258,6 +277,38 @@ class NameConflict:
 
     def __str__(self) -> str:
         return self.message
+
+
+# Spelled as a state rather than as an error, like the exceptions in ``crypto``
+# and ``wizard``: it reads as the condition a caller is reacting to.
+class NamesTaken(Exception):  # noqa: N818
+    """A write was refused because tool names collided (spec §5.3).
+
+    Raised by the two places that write a name an operator chose — the
+    add-server wizard and the settings page — and carrying every conflict, so
+    the page can name both sides of each one rather than reporting that
+    something, somewhere, was a duplicate.
+    """
+
+    def __init__(self, conflicts: Sequence[NameConflict]) -> None:
+        self.conflicts = tuple(conflicts)
+        super().__init__("; ".join(conflict.message for conflict in self.conflicts))
+
+
+def conflict_alerts(conflicts: Sequence[NameConflict]) -> tuple[str, ...]:
+    """The collisions, as sentences a page can put above a table.
+
+    Named in full rather than counted, because "duplicate" is not something an
+    operator can act on and "``x__getUser`` is already taken by ``GET /users``
+    on Billing" is. Capped at :data:`MAX_CONFLICTS_SHOWN`, because a prefix that
+    clashes clashes for every operation at once and two hundred identical
+    sentences say no more than five.
+    """
+    shown = tuple(conflict.message for conflict in conflicts[:MAX_CONFLICTS_SHOWN])
+    left = len(conflicts) - len(shown)
+    if left > 0:
+        return (*shown, MORE_CONFLICTS.format(count=left))
+    return shown
 
 
 @dataclass(frozen=True, slots=True)
@@ -539,16 +590,21 @@ __all__ = [
     "CHUNK",
     "DIGEST_LENGTH",
     "FALLBACK_NAME",
+    "MAX_CONFLICTS_SHOWN",
     "MAX_SLUG",
     "MAX_TOOL_NAME",
+    "MORE_CONFLICTS",
+    "PREFIX_REQUIRED",
     "PREFIX_SEPARATOR",
     "ROOT_SLUG",
     "NameAssignment",
     "NameConflict",
     "NamePlan",
     "NamedOperation",
+    "NamesTaken",
     "ToolOwner",
     "check_conflicts",
+    "conflict_alerts",
     "default_tool_name",
     "is_legal_tool_name",
     "path_slug",

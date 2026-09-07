@@ -1,0 +1,266 @@
+{# One registered server: what it is, what can be changed, and every operation
+   it has (spec §7.1).
+
+   Two forms with nothing between them but a heading, because they write at
+   different sizes. The settings form is one button and one write — every field
+   on it changes how the whole server behaves, so nothing on it posts as you
+   type. The table below is one button per row.
+
+   Neither credential is ever rendered. What is shown is ``Set`` or ``Not set``
+   and a box to tick; with the box unticked the route does not read the
+   credential fields at all (spec §7.3). #}
+{% extends "base.html" %}
+{% from "partials/field.html" import field, choice, switch %}
+{% from "partials/credential_fields.html" import credential_fields %}
+{% from "partials/status_badge.html" import status_badge %}
+{% from "partials/empty_state.html" import empty_state %}
+
+{% block title %}{{ settings.server.name }} &middot; mcp-gateway{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/forms.js') }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <h1 class="toolbar__title">{{ settings.server.name }}</h1>
+  {{ status_badge("enabled" if settings.server.enabled else "disabled") }}
+  {% if settings.server.needs_attention %}
+  {{ status_badge("attention", title="A refresh found changes nobody has reviewed yet.") }}
+  {% endif %}
+  <a class="button" href="{{ servers_path }}">All servers</a>
+</div>
+
+{% if settings.alerts %}
+<ul class="flashes" role="alert">
+  {% for alert in settings.alerts %}
+  <li class="flash flash--error">{{ alert }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<dl class="summary">
+  <div class="summary__pair">
+    <dt class="summary__term">Spec URL</dt>
+    <dd class="summary__value"><code>{{ settings.server.spec_url }}</code></dd>
+  </div>
+  <div class="summary__pair">
+    <dt class="summary__term">Format</dt>
+    <dd class="summary__value">{{ settings.server.spec_format }}</dd>
+  </div>
+  <div class="summary__pair">
+    <dt class="summary__term">Last refresh</dt>
+    <dd class="summary__value">
+      {{ status_badge(overview.state, label=overview.refreshed, title=overview.refresh_title) }}
+    </dd>
+  </div>
+  <div class="summary__pair">
+    <dt class="summary__term">Exposed</dt>
+    <dd class="summary__value" title="{{ overview.counts_title }}">
+      {{ settings.server.counts.selected }} of {{ settings.server.counts.total }} operations
+    </dd>
+  </div>
+</dl>
+
+<form class="card form" method="post" action="{{ detail_path }}">
+  <h2 class="card__title">Settings</h2>
+
+  {{ field("name", "Display name", value=settings.fields.name, required=true,
+           hint="What this server is called on every page and in every message.",
+           error=settings.errors.get("name")) }}
+
+  {{ field("slug", "Slug", value=settings.fields.slug, required=true,
+           hint="Its identifier in URLs. Derived from the name, and unique across servers.",
+           error=settings.errors.get("slug")) }}
+
+  {# Written out rather than passed through the field macro: it is the one box
+     on this form that asks the gateway a question while it is being typed. #}
+  <label class="field{% if settings.errors.get('tool_prefix') %} field--invalid{% endif %}">
+    <span class="field__label">Tool prefix</span>
+    <input
+      class="field__input"
+      type="text"
+      name="tool_prefix"
+      value="{{ settings.fields.tool_prefix }}"
+      autocomplete="off"
+      spellcheck="false"
+      required
+      hx-get="{{ prefix_path }}"
+      hx-target="{{ rename_target }}"
+      hx-swap="outerHTML"
+      hx-trigger="input changed delay:400ms"
+      {% if settings.errors.get("tool_prefix") %}
+      aria-invalid="true" aria-describedby="tool_prefix-error"
+      {% endif %}
+    />
+    <span class="field__hint">
+      Leads every tool name this server publishes. Changing it renames all of them at once.
+    </span>
+    {% if settings.errors.get("tool_prefix") %}
+    <span class="field__error" id="tool_prefix-error" role="alert">
+      {{ settings.errors.get("tool_prefix") }}
+    </span>
+    {% endif %}
+  </label>
+  {% include "partials/rename_preview.html" %}
+
+  {{ field("base_url", "Base URL", value=settings.fields.base_url, required=true,
+           hint="Where every tool call this server exposes goes.",
+           error=settings.errors.get("base_url")) }}
+
+  {{ switch("enabled", "Enabled", checked=settings.enabled,
+            hint="A disabled server contributes no tools and is never refreshed.") }}
+
+  {{ switch("auto_refresh", "Refresh automatically", checked=settings.auto_refresh,
+            hint="Re-read the spec on the gateway's schedule. Changes are flagged, never applied.") }}
+
+  <fieldset class="fieldset">
+    <legend class="fieldset__legend">API authentication</legend>
+    <p class="fieldset__note">How the gateway authenticates the tool calls it proxies.</p>
+    <dl class="summary summary--inline">
+      <div class="summary__pair">
+        <dt class="summary__term">Credential</dt>
+        <dd class="summary__value">
+          <strong>{{ settings.credential.label }}</strong>
+          {% if settings.credential.auth_type %}
+          &middot; {{ settings.credential.auth_type }}
+          {% endif %}
+          <span class="cell-note">{{ settings.credential.note }}</span>
+        </dd>
+      </div>
+    </dl>
+    {{ switch("replace_credential", "Replace the API credential",
+              checked=settings.replacing_credential, reveal="api_replace",
+              hint="Leave this alone and the stored credential is not touched.") }}
+    <div class="reveal" data-reveal-for="api_replace" data-reveal-when="on">
+      {{ choice("auth_type", "Type", auth_options, settings.fields.auth_type, reveal="api",
+                error=settings.errors.get("auth_type")) }}
+      {{ credential_fields("api", errors=settings.errors) }}
+    </div>
+  </fieldset>
+
+  <fieldset class="fieldset">
+    <legend class="fieldset__legend">Spec download</legend>
+    <p class="fieldset__note">How the document itself is fetched on every refresh.</p>
+    <dl class="summary summary--inline">
+      <div class="summary__pair">
+        <dt class="summary__term">Mode</dt>
+        <dd class="summary__value">{{ mode_labels[settings.server.spec_auth_mode] }}</dd>
+      </div>
+      <div class="summary__pair">
+        <dt class="summary__term">Credential</dt>
+        <dd class="summary__value">
+          <strong>{{ settings.spec_credential.label }}</strong>
+          {% if settings.spec_credential.auth_type %}
+          &middot; {{ settings.spec_credential.auth_type }}
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+    {{ switch("replace_spec_credential", "Change how the spec is downloaded",
+              checked=settings.replacing_spec_credential, reveal="spec_replace",
+              hint="Leave this alone and the stored spec credential is not touched.") }}
+    <div class="reveal" data-reveal-for="spec_replace" data-reveal-when="on">
+      {{ choice("spec_auth_mode", "Authentication", mode_options, settings.fields.spec_auth_mode,
+                reveal="spec_mode", error=settings.errors.get("spec_auth_mode")) }}
+      <div class="reveal" data-reveal-for="spec_mode" data-reveal-when="custom">
+        {{ choice("spec_auth_type", "Type", spec_auth_options, settings.fields.spec_auth_type,
+                  reveal="spec_type", error=settings.errors.get("spec_auth_type")) }}
+        {{ credential_fields("spec_type", prefix="spec_", errors=settings.errors) }}
+      </div>
+    </div>
+  </fieldset>
+
+  <p class="form__note">
+    A stored credential is never shown again, so the boxes above come back empty
+    after a correction. Fill in the ones the type you chose needs.
+  </p>
+
+  <div class="form-actions">
+    <a class="button" href="{{ servers_path }}">Cancel</a>
+    <button class="button button--primary" type="submit">Save settings</button>
+  </div>
+</form>
+
+<div class="toolbar">
+  <h2 class="toolbar__title">Operations</h2>
+</div>
+
+{# Said once here rather than on every row, which is where it would be noise. #}
+<p class="form__note">
+  A name or description left empty is the generated one, shown in grey. Each row
+  is saved on its own, tick and all, by the button beside it.
+</p>
+
+{% if operations.rows %}
+{# A GET form: filtering reads and nothing else, and the filter it produces is
+   in the URL, which is what every row's Save carries back with it. #}
+<form class="filters" method="get" action="{{ detail_path }}">
+  <label class="field">
+    <span class="field__label">Search</span>
+    <input
+      class="field__input"
+      type="search"
+      name="q"
+      value="{{ operations.filter.text }}"
+      autocomplete="off"
+      hx-get="{{ operations.table_path }}"
+      hx-target="{{ operations_target }}"
+      hx-swap="outerHTML"
+      hx-include="closest form"
+      hx-trigger="input changed delay:300ms, search"
+    />
+  </label>
+
+  <noscript>
+    <button class="button" type="submit">Apply</button>
+  </noscript>
+
+  <label class="field">
+    <span class="field__label">Status</span>
+    <select
+      class="field__select"
+      name="status"
+      hx-get="{{ operations.table_path }}"
+      hx-target="{{ operations_target }}"
+      hx-swap="outerHTML"
+      hx-include="closest form"
+      hx-trigger="change"
+    >
+      <option value="">Any</option>
+      {% for status, label in operations.statuses %}
+      <option value="{{ status }}"{% if status == operations.filter.status %} selected{% endif %}>
+        {{ label }}
+      </option>
+      {% endfor %}
+    </select>
+  </label>
+
+  <label class="field">
+    <span class="field__label">Method</span>
+    <select
+      class="field__select"
+      name="method"
+      hx-get="{{ operations.table_path }}"
+      hx-target="{{ operations_target }}"
+      hx-swap="outerHTML"
+      hx-include="closest form"
+      hx-trigger="change"
+    >
+      <option value="">Any</option>
+      {% for method in operations.methods %}
+      <option value="{{ method }}"{% if method == operations.filter.method %} selected{% endif %}>
+        {{ method }}
+      </option>
+      {% endfor %}
+    </select>
+  </label>
+</form>
+
+{% include "partials/operation_table.html" %}
+{% else %}
+{{ empty_state(
+     "No operations",
+     "This server has no stored operations. Refresh it to read its spec again.") }}
+{% endif %}
+{% endblock %}

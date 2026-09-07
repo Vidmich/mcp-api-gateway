@@ -213,7 +213,7 @@ def parse_form(fields: Mapping[str, str]) -> WizardForm:
     if auth_type is None:
         errors["auth_type"] = "Choose one of the authentication types offered."
         auth_type = "none"
-    credential = _credential(fields, auth_type, prefix="", errors=errors)
+    credential = read_credential(fields, auth_type, prefix="", errors=errors)
 
     mode = _one_of(fields.get("spec_auth_mode"), SPEC_AUTH_MODES, "none")
     if mode is None:
@@ -231,7 +231,7 @@ def parse_form(fields: Mapping[str, str]) -> WizardForm:
         # different things, not a spec fetched anonymously.
         errors["spec_auth_mode"] = NOTHING_TO_REUSE
     elif mode == "custom":
-        spec_credential = _credential(fields, spec_auth_type, prefix="spec_", errors=errors)
+        spec_credential = read_credential(fields, spec_auth_type, prefix="spec_", errors=errors)
 
     if errors:
         raise FormInvalid(errors)
@@ -355,7 +355,7 @@ class PreviewStore:
             del self._entries[token]
 
 
-def _credential(
+def read_credential(
     fields: Mapping[str, str],
     auth_type: str,
     *,
@@ -368,6 +368,10 @@ def _credential(
     so one submission reports everything wrong with both credentials at once —
     and so the API credential's faults and the spec credential's arrive
     together, which is how an operator who got both wrong finds out.
+
+    Public because the settings page (task 023) replaces a credential through
+    the same four shapes and the same field names. Two readings of "what an API
+    key is" is exactly the disagreement this saves.
     """
 
     def value(name: str) -> str:
@@ -477,4 +481,5 @@ __all__ = [
     "options",
     "parse_form",
     "parse_headers",
+    "read_credential",
 ]

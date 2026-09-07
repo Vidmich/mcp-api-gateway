@@ -430,6 +430,17 @@ async def get_server_by_slug(session: AsyncSession, slug: str) -> Server | None:
     return (await session.scalars(select(Server).where(Server.slug == slug))).first()
 
 
+async def get_server_by_prefix(session: AsyncSession, tool_prefix: str) -> Server | None:
+    """Used by the settings page to answer "is this prefix taken" before writing.
+
+    Separate from the name-conflict check in :mod:`mcp_gateway.naming`, which
+    only sees prefixes that have produced a tool name: a server with no
+    operations holds its prefix all the same, and the unique index on the column
+    is what would say so, far too late.
+    """
+    return (await session.scalars(select(Server).where(Server.tool_prefix == tool_prefix))).first()
+
+
 async def create_server(
     session: AsyncSession, new: NewServer, *, cipher: CredentialCipher
 ) -> Server:
@@ -936,6 +947,7 @@ __all__ = [
     "delete_setting",
     "get_operation",
     "get_server",
+    "get_server_by_prefix",
     "get_server_by_slug",
     "get_setting",
     "get_tool",

@@ -1,0 +1,33 @@
+{# What changing the tool prefix would do, rendered while it is being typed.
+
+   The one field on the settings form whose consequence is invisible from the
+   field itself: a new prefix moves every generated name this server publishes
+   at once, and a client holding one of those names finds out by getting an
+   error. So this asks, as the operator types, and writes nothing.
+
+   Empty until something has been typed, and empty again when the prefix is the
+   one already stored. There is no fallback for a browser with no script and
+   there does not need to be: the save runs the same check and refuses on the
+   same grounds. #}
+<div id="{{ rename_id }}" class="rename">
+  {% if rename.prefix %}
+  <p class="field__hint">{{ rename.summary }}</p>
+  {% if rename.conflicts %}
+  <ul class="flashes" role="alert">
+    {% for conflict in rename.conflicts %}
+    <li class="flash flash--error">{{ conflict }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if rename.changes %}
+  <ul class="rename__list">
+    {% for before, after in rename.changes %}
+    <li><code>{{ before }}</code> &rarr; <code>{{ after }}</code></li>
+    {% endfor %}
+    {% if rename.more %}
+    <li class="rename__more">{{ rename.more }}</li>
+    {% endif %}
+  </ul>
+  {% endif %}
+  {% endif %}
+</div>

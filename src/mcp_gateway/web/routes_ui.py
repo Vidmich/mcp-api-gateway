@@ -35,6 +35,18 @@ buttons post back and re-render the same table — a fragment for htmx, the whol
 page for a browser without it — and none of that touches the database either.
 Only the save does, and it does the whole thing in one transaction or none of
 it (:mod:`mcp_gateway.web.picker`).
+
+**The detail page writes in two sizes.** The settings form is one button and one
+write; the operation table is one button per row and one write per row. What
+each of those means — which credential is left alone, what a new prefix would
+do, what clearing a name restores — is :mod:`mcp_gateway.web.detail`. The routes
+here read the form, hand it over, and choose between a fragment, a redirect and
+a re-rendered page.
+
+**The operation table's filter lives in the query string.** Every control on it
+posts to a URL that already carries the filter, so a row saved while the table
+was narrowed comes back to the same narrowed table, with no hidden field in each
+of two hundred rows and no state held anywhere between requests.
 """
 
 from __future__ import annotations
@@ -43,7 +55,7 @@ import datetime as dt
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated, Final
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,16 +67,30 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.models import utcnow
 from mcp_gateway.db.repo import ServerSummary
 from mcp_gateway.db.session import request_session
+from mcp_gateway.naming import NamesTaken, conflict_alerts
 from mcp_gateway.openapi.diagnostics import SpecError
 from mcp_gateway.openapi.ingest import preview_spec
 from mcp_gateway.web.auth import HTMX_REQUEST, UI_PREFIX, require_session
+from mcp_gateway.web.detail import (
+    TOOL_NAME_FIELD,
+    Operations,
+    Rename,
+    RowSaved,
+    SettingsInvalid,
+    SettingsView,
+    build_operations,
+    preview_prefix,
+    refused_row,
+    save_operation,
+    save_settings,
+    settings_view,
+)
 from mcp_gateway.web.picker import (
     NO_BASE_URL,
     PREFIX_FIELD,
     PREFIX_REQUIRED,
     SAVED,
     SELECTION_FIELD,
-    NamesTaken,
     Picker,
     register,
 )
@@ -100,11 +126,27 @@ PREVIEW_PATH: Final = f"{NEW_SERVER_PATH}/{{token}}"
 #: without it reloads are the same answer built the same way.
 PICKER_PATH: Final = f"{PREVIEW_PATH}/operations"
 
+#: One registered server, and everything about it that can be changed.
+#: Registered *after* every ``new`` route, since the first route to match a path
+#: wins and ``new`` would otherwise be read as a server id.
+DETAIL_PATH: Final = f"{SERVERS_PATH}/{{server_id}}"
+#: Its operation table, re-rendered as the operator filters it.
+OPERATIONS_PATH: Final = f"{DETAIL_PATH}/operations"
+#: One row of that table, which is one write.
+OPERATION_PATH: Final = f"{OPERATIONS_PATH}/{{operation_id}}"
+#: What a new tool prefix would do. A GET, because it does nothing.
+PREFIX_PATH: Final = f"{DETAIL_PATH}/prefix"
+
 SERVERS_TEMPLATE: Final = "servers.html"
 NEW_SERVER_TEMPLATE: Final = "server_new.html"
 PREVIEW_TEMPLATE: Final = "server_preview.html"
 #: The operation table and everything that counts it, on its own.
 PICKER_TEMPLATE: Final = "partials/operation_picker.html"
+DETAIL_TEMPLATE: Final = "server_detail.html"
+#: The stored operations of one server, as a region htmx can replace.
+OPERATIONS_TEMPLATE: Final = "partials/operation_table.html"
+#: What changing the tool prefix would do, rendered while it is being typed.
+RENAME_TEMPLATE: Final = "partials/rename_preview.html"
 #: The table and the empty state together, so that either can replace the other.
 LIST_TEMPLATE: Final = "partials/server_list.html"
 ROW_TEMPLATE: Final = "partials/server_row.html"
@@ -138,6 +180,12 @@ NO_CIPHER: Final = "The gateway has no encryption key, so a server cannot be sav
 #: Where the picker's id lands, for the fragment htmx swaps in.
 PICKER_ID: Final = "operation-picker"
 PICKER_TARGET: Final = f"#{PICKER_ID}"
+
+#: The detail page's two swappable regions.
+OPERATIONS_ID: Final = "operations"
+OPERATIONS_TARGET: Final = f"#{OPERATIONS_ID}"
+RENAME_ID: Final = "rename-preview"
+RENAME_TARGET: Final = f"#{RENAME_ID}"
 
 
 def _plural(count: int, unit: str) -> str:
@@ -294,6 +342,16 @@ def _gone(request: Request, server_id: int) -> HTTPException:
     return HTTPException(status_code=404, detail=f"No server with id {server_id}.", headers=headers)
 
 
+def _no_operation(request: Request, operation_id: int) -> HTTPException:
+    """404 for a row that is not there any more. Same reasoning as :func:`_gone`."""
+    headers = {"HX-Refresh": "true"} if HTMX_REQUEST in request.headers else None
+    return HTTPException(
+        status_code=404,
+        detail=f"No operation with id {operation_id} on this server.",
+        headers=headers,
+    )
+
+
 def _back_to_the_list(request: Request, message: str) -> Response:
     """Answer a non-htmx action the way a form submission expects to be answered.
 
@@ -407,6 +465,97 @@ def _refused(request: Request, picker: Picker, *, status_code: int) -> Response:
     return _shell(request).render(
         request, PREVIEW_TEMPLATE, _picker_context(picker), status_code=status_code
     )
+
+
+# --------------------------------------------------------------------------- #
+# One server, after it exists
+# --------------------------------------------------------------------------- #
+
+
+async def _server(request: Request, session: AsyncSession, server_id: int) -> repo.ServerDetail:
+    """One server and its operations, or a 404 the operator can act on."""
+    try:
+        return await repo.server_detail(session, server_id)
+    except repo.ServerNotFound:
+        raise _gone(request, server_id) from None
+
+
+def _operations_context(operations: Operations) -> dict[str, object]:
+    """The operation region, whether it is a page's table or htmx's answer."""
+    return {
+        "operations": operations,
+        "operations_id": OPERATIONS_ID,
+        "operations_target": OPERATIONS_TARGET,
+    }
+
+
+def _detail_context(
+    server: repo.ServerDetail, settings: SettingsView, operations: Operations
+) -> dict[str, object]:
+    """The whole detail page: the summary, the settings form, and the table."""
+    path = f"{SERVERS_PATH}/{server.id}"
+    return {
+        **_operations_context(operations),
+        "overview": to_row(server),
+        "settings": settings,
+        # An empty preview, so the region htmx replaces is already there and the
+        # template is not reading an undefined name to find that out.
+        "rename": Rename(prefix=""),
+        "detail_path": path,
+        "prefix_path": f"{path}/prefix",
+        "rename_id": RENAME_ID,
+        "rename_target": RENAME_TARGET,
+        "servers_path": SERVERS_PATH,
+        "auth_options": options(AUTH_TYPES, AUTH_LABELS),
+        "spec_auth_options": options(CREDENTIAL_TYPES, AUTH_LABELS),
+        "mode_options": options(SPEC_AUTH_MODES, MODE_LABELS),
+        "mode_labels": MODE_LABELS,
+    }
+
+
+def _operation(server: repo.ServerDetail, operation_id: int) -> repo.OperationView:
+    """One of a server's operations, by row id."""
+    for operation in server.operations:
+        if operation.id == operation_id:
+            return operation
+    raise repo.OperationNotFound(operation_id)
+
+
+def _operations_of(
+    server: repo.ServerDetail, params: Mapping[str, str], **extra: Any
+) -> Operations:
+    """This server's operations, narrowed by whatever the URL asked for."""
+    return build_operations(server, params, path=f"{SERVERS_PATH}/{server.id}", **extra)
+
+
+def _region(request: Request, operations: Operations, *, status_code: int = 200) -> Response:
+    """The operation table on its own — htmx's answer to every control on it."""
+    return _shell(request).render(
+        request, OPERATIONS_TEMPLATE, _operations_context(operations), status_code=status_code
+    )
+
+
+def _detail_page(
+    request: Request,
+    server: repo.ServerDetail,
+    settings: SettingsView,
+    operations: Operations,
+    *,
+    status_code: int = 200,
+) -> Response:
+    return _shell(request).render(
+        request,
+        DETAIL_TEMPLATE,
+        _detail_context(server, settings, operations),
+        status_code=status_code,
+    )
+
+
+def _back_to_the_page(request: Request, path: str, message: str) -> Response:
+    """303 back to where the operator was, with a line saying what happened."""
+    response = RedirectResponse(path, status_code=303)
+    _shell(request).flash(request, response, message, level="success")
+    return response
 
 
 def _cipher(request: Request) -> CredentialCipher:
@@ -561,6 +710,126 @@ def ui_router() -> APIRouter:
             SAVED.format(name=server.name, selected=len(picker.selected), total=picker.total),
         )
 
+    @router.get(DETAIL_PATH)
+    async def server_page(request: Request, server_id: int, session: Session) -> Response:
+        """One server: what it is, what can be changed, and every operation it has."""
+        server = await _server(request, session, server_id)
+        return _detail_page(
+            request,
+            server,
+            settings_view(server),
+            _operations_of(server, request.query_params),
+        )
+
+    @router.post(DETAIL_PATH)
+    async def save_settings_form(request: Request, server_id: int, session: Session) -> Response:
+        """Apply the settings form, all of it or none of it.
+
+        Both refusals happen before anything is written — a field that cannot be
+        read, and a prefix whose names another server already publishes — so the
+        page that comes back is describing the server as it still is.
+        """
+        server = await _server(request, session, server_id)
+        cipher = _cipher(request)
+        fields = await _submitted(request)
+        try:
+            saved = await save_settings(session, server_id, fields, cipher=cipher)
+        except SettingsInvalid as invalid:
+            return _detail_page(
+                request,
+                server,
+                settings_view(server, fields, errors=invalid.errors),
+                _operations_of(server, request.query_params),
+                status_code=422,
+            )
+        except NamesTaken as taken:
+            logger.info("Prefix change on %r was refused: %s", server.name, taken)
+            # 409 rather than 422, like the wizard's: the form is fine, it is the
+            # world it would land in that says no.
+            return _detail_page(
+                request,
+                server,
+                settings_view(server, fields, alerts=conflict_alerts(taken.conflicts)),
+                _operations_of(server, request.query_params),
+                status_code=409,
+            )
+        return _back_to_the_page(request, f"{SERVERS_PATH}/{server_id}", saved.message)
+
+    @router.get(PREFIX_PATH)
+    async def prefix_preview(request: Request, server_id: int, session: Session) -> Response:
+        """What a new tool prefix would do. A GET, because it does nothing.
+
+        There is no fallback for a browser with no script, and there does not
+        need to be: this is a preview of an answer the save gives anyway, and
+        the save gives it whether or not anything was previewed.
+        """
+        try:
+            rename = await preview_prefix(
+                session, server_id, request.query_params.get(PREFIX_FIELD, "")
+            )
+        except repo.ServerNotFound:
+            raise _gone(request, server_id) from None
+        return _shell(request).render(
+            request, RENAME_TEMPLATE, {"rename": rename, "rename_id": RENAME_ID}
+        )
+
+    @router.get(OPERATIONS_PATH)
+    async def filter_stored_operations(
+        request: Request, server_id: int, session: Session
+    ) -> Response:
+        """The operation table again, narrowed. Nothing is written here.
+
+        htmx gets the table on its own; a browser without it gets the whole
+        page, because the same control has to work either way and a fragment
+        rendered into a window is not a page.
+        """
+        server = await _server(request, session, server_id)
+        operations = _operations_of(server, request.query_params)
+        if HTMX_REQUEST not in request.headers:
+            return _detail_page(request, server, settings_view(server), operations)
+        return _region(request, operations)
+
+    @router.post(OPERATION_PATH)
+    async def save_operation_row(
+        request: Request, server_id: int, operation_id: int, session: Session
+    ) -> Response:
+        """One row: its tick, its tool name and its description, written together.
+
+        A refusal comes back as the same table with that row showing what was
+        typed and why it was refused — shown whatever the filter says, because a
+        row carrying a message is not a row to narrow away.
+        """
+        fields = await _submitted(request)
+        saved: RowSaved | None = None
+        error, status = "", 200
+        try:
+            saved = await save_operation(session, server_id, operation_id, fields)
+        except repo.OperationNotFound:
+            raise _no_operation(request, operation_id) from None
+        except SettingsInvalid as invalid:
+            error, status = invalid.errors[TOOL_NAME_FIELD], 422
+        except NamesTaken as taken:
+            logger.info("Rename of operation %d was refused: %s", operation_id, taken)
+            error, status = taken.conflicts[0].message, 409
+
+        # Read back rather than dressing the table from what was written: the
+        # counts line and every effective name are what a query knows.
+        server = await _server(request, session, server_id)
+        edited = (
+            None
+            if saved is not None
+            else refused_row(_operation(server, operation_id), server.tool_prefix, fields, error)
+        )
+        operations = _operations_of(server, request.query_params, edited=edited)
+
+        if HTMX_REQUEST in request.headers:
+            return _region(request, operations, status_code=status)
+        if saved is None:
+            return _detail_page(
+                request, server, settings_view(server), operations, status_code=status
+            )
+        return _back_to_the_page(request, operations.page_path, saved.message)
+
     @router.post(f"{SERVERS_PATH}/{{server_id}}/enabled")
     async def set_enabled(
         request: Request,
@@ -621,6 +890,8 @@ def mount_ui(app: FastAPI) -> None:
 
 
 __all__ = [
+    "DETAIL_PATH",
+    "DETAIL_TEMPLATE",
     "LIST_ID",
     "LIST_TARGET",
     "LIST_TEMPLATE",
@@ -629,13 +900,22 @@ __all__ = [
     "NEW_SERVER_PATH",
     "NEW_SERVER_TEMPLATE",
     "NO_CIPHER",
+    "OPERATIONS_ID",
+    "OPERATIONS_PATH",
+    "OPERATIONS_TARGET",
+    "OPERATIONS_TEMPLATE",
+    "OPERATION_PATH",
     "PICKER_ID",
     "PICKER_PATH",
     "PICKER_TARGET",
     "PICKER_TEMPLATE",
+    "PREFIX_PATH",
     "PREVIEW_GONE",
     "PREVIEW_PATH",
     "PREVIEW_TEMPLATE",
+    "RENAME_ID",
+    "RENAME_TARGET",
+    "RENAME_TEMPLATE",
     "ROW_TEMPLATE",
     "SERVERS_PATH",
     "SERVERS_TEMPLATE",

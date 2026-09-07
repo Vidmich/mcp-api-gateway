@@ -22,8 +22,8 @@ Edit a registered server and its operations after the fact.
 
 ## Acceptance
 
-- [ ] Editing settings persists and is reflected on the list page.
-- [ ] Replacing a credential works; leaving it untouched preserves the stored one.
-- [ ] No response body or rendered page contains a stored credential value.
-- [ ] A prefix change that would collide is refused before any write.
-- [ ] Renaming a tool changes the next `tools/list`; clearing the override restores the default name.
+- [x] Editing settings persists and is reflected on the list page.
+- [x] Replacing a credential works; leaving it untouched preserves the stored one.
+- [x] No response body or rendered page contains a stored credential value.
+- [x] A prefix change that would collide is refused before any write.
+- [x] Renaming a tool changes the next `tools/list`; clearing the override restores the default name.

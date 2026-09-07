@@ -1,0 +1,133 @@
+{# One server's stored operations, and the line that counts them (spec §7.1).
+
+   Returned on its own as the answer to a filter and to every row's Save, which
+   is why it is a template rather than a macro and why it starts at the element
+   htmx replaces. Its context is ``operations``, ``operations_id`` and
+   ``operations_target``, which is what ``routes_ui._operations_context`` builds.
+
+   The filter controls are deliberately *outside* this region, as on the picker:
+   swapping an input the operator is typing in would move the caret out from
+   under them.
+
+   A row is a form. The Save button sits in the last cell and the inputs sit in
+   the cells they belong to, tied together by ``form="op-form-N"`` — HTML's own
+   way of saying that a control belongs to a form it is not inside. htmx is also
+   told to include the row, which sends the same values twice and reads the
+   same either way; it is there so that the row posts everything whatever htmx
+   makes of a form whose controls live outside it.
+
+   A filtered-out row is hidden rather than dropped, so that nothing an operator
+   cannot see is quietly left out of the page they are working on. #}
+{% from "partials/status_badge.html" import status_badge %}
+<div id="{{ operations_id }}">
+  {% if operations.alerts %}
+  <ul class="flashes" role="alert">
+    {% for alert in operations.alerts %}
+    <li class="flash flash--error">{{ alert }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <p class="picker__summary" role="status">{{ operations.summary }}</p>
+
+  <table class="table table--editable">
+    <thead>
+      <tr>
+        <th scope="col" class="pick"><span class="visually-hidden">Expose</span></th>
+        <th scope="col">Method</th>
+        <th scope="col">Path</th>
+        <th scope="col">Tool name</th>
+        <th scope="col">Description</th>
+        <th scope="col">Status</th>
+        <th scope="col"><span class="visually-hidden">Save</span></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in operations.rows %}
+      {% set form_id = "op-form-%d"|format(row.id) %}
+      <tr
+        {% if not row.shown %}hidden{% endif %}
+        class="{% if row.error %}row--invalid{% endif %}"
+      >
+        <td class="pick">
+          <input
+            type="checkbox"
+            id="selected-{{ row.id }}"
+            name="selected"
+            value="true"
+            form="{{ form_id }}"
+            {% if row.operation.selected %}checked{% endif %}
+          />
+          <label class="visually-hidden" for="selected-{{ row.id }}">
+            Expose {{ row.operation.op_key }} as a tool
+          </label>
+        </td>
+        <td><code>{{ row.operation.method }}</code></td>
+        <td>
+          <code>{{ row.operation.path }}</code>
+          {% if row.operation.summary %}
+          <span class="cell-note">{{ row.operation.summary }}</span>
+          {% endif %}
+        </td>
+        <td>
+          <input
+            class="field__input"
+            type="text"
+            name="tool_name"
+            form="{{ form_id }}"
+            value="{{ row.typed_name }}"
+            {# The generated default, so that clearing the box shows what
+               clearing it means before the operator does it. #}
+            placeholder="{{ row.default_name }}"
+            aria-label="Tool name for {{ row.operation.op_key }}"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          {# Only when the box says something else, which is a save that was
+             refused: otherwise the box or its placeholder is already the name,
+             and repeating it under every row of two hundred says nothing. #}
+          {% if row.typed_name and row.typed_name != row.operation.effective_tool_name %}
+          <span class="cell-note">
+            Still published as <code>{{ row.operation.effective_tool_name }}</code>
+          </span>
+          {% endif %}
+          {% if row.error %}
+          <span class="field__error" role="alert">{{ row.error }}</span>
+          {% endif %}
+        </td>
+        <td>
+          <input
+            class="field__input"
+            type="text"
+            name="description"
+            form="{{ form_id }}"
+            value="{{ row.typed_description }}"
+            placeholder="{{ row.operation.description or row.operation.summary or '' }}"
+            aria-label="Description for {{ row.operation.op_key }}"
+            autocomplete="off"
+          />
+        </td>
+        <td>{{ status_badge(row.operation.status) }}</td>
+        <td class="row-actions">
+          <form
+            id="{{ form_id }}"
+            method="post"
+            action="{{ operations.row_path(row) }}"
+            hx-post="{{ operations.row_path(row) }}"
+            hx-include="closest tr"
+            hx-target="{{ operations_target }}"
+            hx-swap="outerHTML"
+          >
+            <button class="button" type="submit">Save</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not operations.shown %}
+      <tr>
+        <td colspan="7">Nothing here matches the filter. Everything else is untouched.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>

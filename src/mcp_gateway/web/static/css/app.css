@@ -346,6 +346,80 @@ textarea.field__input {
   clip-path: inset(50%);
 }
 
+/* A checkbox and its label on one line, since a switch reads as a sentence
+ * rather than as a box under a heading. */
+.switch {
+  display: block;
+  margin-bottom: 1rem;
+}
+
+.switch__input {
+  margin-right: 0.4rem;
+}
+
+.switch__label {
+  font-size: 0.9375rem;
+}
+
+.switch .field__hint,
+.switch .field__error {
+  margin-left: 1.4rem;
+}
+
+/* --- the detail page ------------------------------------------------------ */
+
+/* What a new tool prefix would do, under the box it is being typed into. */
+.rename {
+  margin: -0.5rem 0 1rem;
+}
+
+.rename__list {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
+.rename__more {
+  list-style: none;
+  margin-left: -1.25rem;
+}
+
+/* A summary used inside a fieldset, where the surrounding card has already
+ * supplied the background and the border. */
+.summary--inline {
+  margin-bottom: 0.75rem;
+  padding: 0;
+  background: none;
+  border: 0;
+}
+
+/* A table whose cells hold controls needs its rows to breathe less than a
+ * reading table and its inputs to be smaller than a form's. */
+.table--editable td {
+  vertical-align: top;
+}
+
+.table--editable .field__input {
+  min-width: 9rem;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.875rem;
+}
+
+/* The row a save was refused on. */
+.table .row--invalid td {
+  background: var(--bad-soft);
+}
+
+/* The second line in a cell: what an operation is for, what its tool is
+ * called. Quieter than the thing it belongs to, never louder. */
+.cell-note {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.8125rem;
+  color: var(--ink-soft);
+}
+
 /* --- buttons -------------------------------------------------------------- */
 
 .button {
@@ -482,6 +556,11 @@ textarea.field__input {
   color: var(--bad);
   background: var(--bad-soft);
   border-color: #f0b4b4;
+}
+
+.badge--active {
+  color: var(--ink-soft);
+  background: var(--line-soft);
 }
 
 .badge--new {

@@ -67,6 +67,26 @@
 </label>
 {%- endmacro %}
 
+{# A checkbox, which is the one control whose value is its presence: unticked,
+   it is simply not in the submitted form. ``reveal`` works on it exactly as it
+   does on a select — see static/js/forms.js — which is how "Replace the
+   credential" opens the panel holding the credential. #}
+{% macro switch(name, label, checked=false, hint=none, error=none, reveal=none) -%}
+<label class="switch{% if error %} switch--invalid{% endif %}">
+  <input
+    class="switch__input"
+    type="checkbox"
+    name="{{ name }}"
+    value="true"
+    {% if checked %}checked{% endif %}
+    {% if reveal %}data-reveal="{{ reveal }}"{% endif %}
+    {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+  />
+  <span class="switch__label">{{ label }}</span>
+  {{ _messages(name, hint, error) }}
+</label>
+{%- endmacro %}
+
 {# ``options`` is a list of (value, label) pairs. ``reveal`` names the group of
    panels this control shows and hides; see static/js/forms.js. #}
 {% macro choice(name, label, options, value="", hint=none, error=none, reveal=none) -%}
