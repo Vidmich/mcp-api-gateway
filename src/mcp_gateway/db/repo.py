@@ -719,6 +719,44 @@ async def set_selected(
     return changed
 
 
+async def settle_operation(
+    session: AsyncSession, operation_id: int, *, selected: bool | None = None
+) -> Operation:
+    """Mark one reviewed operation ``active``, ticking or unticking it if asked.
+
+    The operator's half of spec §5.4. ``status`` is deliberately not part of
+    :class:`OperationPatch`: it is a refresh's word for what happened to an
+    operation, not an edit anybody makes to one. The single thing an operator
+    does to a status is declare it reviewed, and this is that — with the tick
+    written in the same call, because "add this new operation" is one decision
+    and settling it in two writes would leave a half-reviewed row behind a
+    failure.
+    """
+    operation = await session.get(Operation, operation_id)
+    if operation is None:
+        raise OperationNotFound(operation_id)
+    if selected is not None:
+        operation.selected = selected
+    operation.status = "active"
+    await session.flush()
+    return operation
+
+
+async def count_unreviewed(session: AsyncSession, server_id: int) -> int:
+    """How many of a server's operations are still ``new`` or ``changed``.
+
+    What the review screen asks after settling a row, to find out whether
+    anything is left to look at. Counted rather than listed: the answer is used
+    as a yes or no, and a server can have hundreds of rows.
+    """
+    total = await session.scalar(
+        select(func.count())
+        .select_from(Operation)
+        .where(Operation.server_id == server_id, Operation.status.in_(UNREVIEWED))
+    )
+    return int(total or 0)
+
+
 async def delete_operation(session: AsyncSession, operation_id: int) -> None:
     """Delete one operation — the review screen's way of retiring a ``removed`` row."""
     operation = await session.get(Operation, operation_id)
@@ -940,6 +978,7 @@ __all__ = [
     "ToolRow",
     "acknowledge_server",
     "all_settings",
+    "count_unreviewed",
     "create_server",
     "credential_for",
     "delete_operation",
@@ -961,6 +1000,7 @@ __all__ = [
     "set_selected",
     "set_server_enabled",
     "set_setting",
+    "settle_operation",
     "spec_credential_for",
     "to_summary",
     "to_view",

@@ -36,6 +36,7 @@ restores the generated default, which the box shows as its placeholder — so wh
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -59,6 +60,7 @@ from mcp_gateway.naming import (
 from mcp_gateway.naming import (
     rename_server as recompute_names,
 )
+from mcp_gateway.web.review import Decision, decisions_for
 from mcp_gateway.web.wizard import (
     AUTH_TYPES,
     BASE_URL_SCHEME,
@@ -126,9 +128,13 @@ KEPT: Final = (
 #: this is the one the stored row writes so the two paths look the same.
 ON: Final = "true"
 
-#: The statuses spec §5.4 gives an operation, in the order the selector offers
-#: them. ``active`` last: it is the one nobody comes here looking for.
-STATUSES: Final[tuple[str, ...]] = ("new", "changed", "removed", "active")
+#: The three statuses a refresh leaves behind, in the order the review strip
+#: counts them: what appeared, what moved, what went away (spec §5.4).
+REVIEW_STATUSES: Final[tuple[str, ...]] = ("new", "changed", "removed")
+
+#: Every status an operation can have, in the order the selector offers them.
+#: ``active`` last: it is the one nobody comes here looking for.
+STATUSES: Final[tuple[str, ...]] = (*REVIEW_STATUSES, "active")
 
 STATUS_LABELS: Final[dict[str, str]] = {
     "new": "New",
@@ -194,6 +200,27 @@ CREDENTIAL_NOTES: Final[dict[str, str]] = {
 #: How many renames a prefix preview spells out before it starts counting.
 MAX_PREVIEW_ROWS: Final = 8
 MORE_RENAMES: Final = "…and {count} more."
+
+#: What stands in for a row when there is none to show. Two sentences rather
+#: than one, because "nothing here" means very different things when the filter
+#: is narrow and when the server has never been read.
+NOTHING_MATCHES: Final = "Nothing here matches the filter. Everything else is untouched."
+NO_OPERATIONS: Final = "This server has no stored operations. Refresh it to read its spec again."
+
+#: What the browser asks before a ``removed`` row is retired. It names the tool
+#: name that comes free, since reusing it is very often the reason.
+DELETE_OPERATION: Final = (
+    "Delete {op_key}? The upstream no longer has it, and the name {name} becomes free."
+)
+
+#: The line above the review strip, when a refresh has left something to decide.
+REVIEW_WAITING: Final = "{count} operations are waiting for a decision."
+REVIEW_WAITING_ONE: Final = "One operation is waiting for a decision."
+#: Said when the badge is up but every row has been settled — the server was
+#: flagged for endpoints that went away, and nothing is left but to say so.
+REVIEW_SETTLED: Final = (
+    "Nothing is waiting for a decision. Mark this server reviewed to take the flag off."
+)
 
 PREFIX_UNCHANGED: Final = "That is the prefix this server already uses."
 NO_RENAMES: Final = "No tool name would change: every operation here has a name of its own."
@@ -710,6 +737,47 @@ class OperationRow:
         """Whether this name was chosen by the operator rather than generated."""
         return self.operation.tool_name_override is not None
 
+    @property
+    def decisions(self) -> tuple[Decision, ...]:
+        """The review buttons this row offers, if it is waiting on one.
+
+        Asked of :mod:`mcp_gateway.web.review` rather than worked out here, so
+        that the buttons a row shows and the decisions the route will accept for
+        it are the same list read twice.
+        """
+        return decisions_for(self.operation.status)
+
+    @property
+    def deletable(self) -> bool:
+        """Whether this row is one the upstream dropped, and may be deleted."""
+        return self.operation.status == "removed"
+
+    @property
+    def delete_question(self) -> str:
+        """The sentence the browser asks before this row is retired."""
+        return DELETE_OPERATION.format(
+            op_key=self.operation.op_key, name=self.operation.effective_tool_name
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCount:
+    """One status a refresh left behind, and the way to see only those rows.
+
+    A link rather than a badge, because the number and the filter answer the
+    same question: an operator who reads "3 new" wants to see those three.
+    """
+
+    status: str
+    label: str
+    count: int
+    path: str
+
+    @property
+    def summary(self) -> str:
+        """``3 new`` — the label lowercased, since it reads as prose here."""
+        return f"{self.count} {self.label.lower()}"
+
 
 @dataclass(frozen=True, slots=True)
 class Operations:
@@ -742,6 +810,72 @@ class Operations:
     def row_path(self, row: OperationRow) -> str:
         """Where one row's Save goes — filter and all, so it comes back here."""
         return f"{self.path}/operations/{row.id}{self.suffix}"
+
+    def review_path(self, row: OperationRow) -> str:
+        """Where one row's review decision goes. Carries the filter, like Save."""
+        return f"{self.path}/operations/{row.id}/review{self.suffix}"
+
+    @property
+    def acknowledge_path(self) -> str:
+        """Where "mark everything reviewed" posts."""
+        return f"{self.path}/acknowledge"
+
+    @property
+    def review(self) -> tuple[ReviewCount, ...]:
+        """What the last refresh left behind, as filters carrying their counts.
+
+        Only the statuses that have rows in them, because this strip is the
+        answer to "is there anything to do here" and three zeroes are not an
+        answer anybody reads. The selector above the table still offers every
+        status, for the operator who wants to ask a question the strip is not
+        already answering.
+        """
+        tallies = Counter(row.operation.status for row in self.rows)
+        return tuple(
+            ReviewCount(
+                status=status,
+                label=STATUS_LABELS[status],
+                count=tallies[status],
+                path=f"{self.path}?{urlencode({STATUS_FIELD: status})}",
+            )
+            for status in REVIEW_STATUSES
+            if tallies[status]
+        )
+
+    @property
+    def nothing_here(self) -> str:
+        """What stands in for the rows when there are none to show."""
+        return NOTHING_MATCHES if self.rows else NO_OPERATIONS
+
+    @property
+    def flagged(self) -> bool:
+        """Whether this server is currently wearing **Needs Attention**.
+
+        Read from the row rather than inferred from the statuses below it: the
+        flag and the operations are two facts, and a page that computed one from
+        the other could never show a server that is flagged with nothing on it.
+        """
+        return self.server.needs_attention
+
+    @property
+    def review_note(self) -> str:
+        """The sentence above the review strip."""
+        waiting = self.outstanding
+        if waiting == 1:
+            return REVIEW_WAITING_ONE
+        if waiting:
+            return REVIEW_WAITING.format(count=waiting)
+        return REVIEW_SETTLED if self.flagged else ""
+
+    @property
+    def outstanding(self) -> int:
+        """How many rows are still waiting on a decision (spec §5.4).
+
+        ``removed`` rows are not counted: acknowledging leaves them alone, so a
+        server whose only news is an endpoint that went away has nothing holding
+        its flag up once the strip has been read.
+        """
+        return sum(1 for row in self.rows if row.operation.status in repo.UNREVIEWED)
 
     @property
     def total(self) -> int:
@@ -958,6 +1092,7 @@ __all__ = [
     "CREDENTIAL_LABELS",
     "CREDENTIAL_NOTES",
     "CUSTOM_NEEDS_CREDENTIAL",
+    "DELETE_OPERATION",
     "DESCRIPTION_FIELD",
     "ENABLED_FIELD",
     "KEPT",
@@ -968,6 +1103,8 @@ __all__ = [
     "NAME_ILLEGAL",
     "NAME_REQUIRED",
     "NAME_TOO_LONG",
+    "NOTHING_MATCHES",
+    "NO_OPERATIONS",
     "NO_RENAMES",
     "ON",
     "PREFIX_FIELD",
@@ -977,6 +1114,10 @@ __all__ = [
     "QUERY_FIELD",
     "REPLACE_API_FIELD",
     "REPLACE_SPEC_FIELD",
+    "REVIEW_SETTLED",
+    "REVIEW_STATUSES",
+    "REVIEW_WAITING",
+    "REVIEW_WAITING_ONE",
     "ROW_RENAMED",
     "ROW_SAVED",
     "SAVED",
@@ -999,6 +1140,7 @@ __all__ = [
     "OperationRow",
     "Operations",
     "Rename",
+    "ReviewCount",
     "RowSaved",
     "Saved",
     "SettingsInvalid",

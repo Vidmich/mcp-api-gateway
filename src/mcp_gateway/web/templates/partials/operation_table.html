@@ -19,6 +19,7 @@
    A filtered-out row is hidden rather than dropped, so that nothing an operator
    cannot see is quietly left out of the page they are working on. #}
 {% from "partials/status_badge.html" import status_badge %}
+{% from "partials/confirm.html" import confirm %}
 <div id="{{ operations_id }}">
   {% if operations.alerts %}
   <ul class="flashes" role="alert">
@@ -26,6 +27,38 @@
     <li class="flash flash--error">{{ alert }}</li>
     {% endfor %}
   </ul>
+  {% endif %}
+
+  {% if operations.review or operations.flagged %}
+  {# Inside the swapped region on purpose: every decision below moves these
+     counts, and one of them takes the flag off. A strip that lived in the page
+     chrome would go on saying "3 new" after the third one was added. #}
+  <div class="review">
+    <p class="review__note">
+      {% if operations.flagged %}
+      {{ status_badge("attention", title="A refresh found changes nobody has reviewed yet.") }}
+      {% endif %}
+      {{ operations.review_note }}
+    </p>
+    <p class="review__counts">
+      {% for count in operations.review %}
+      {# A link rather than a badge: the number and the filter answer the same
+         question, and an operator who reads "3 new" wants to see those three. #}
+      <a class="badge badge--{{ count.status }}" href="{{ count.path }}">{{ count.summary }}</a>
+      {% endfor %}
+      {% if operations.filter.status %}
+      <a class="badge badge--active" href="{{ operations.path }}">Show all</a>
+      {% endif %}
+    </p>
+    {% if operations.flagged %}
+    <form method="post" action="{{ operations.acknowledge_path }}"
+          hx-post="{{ operations.acknowledge_path }}"
+          hx-target="{{ operations_target }}"
+          hx-swap="outerHTML">
+      <button class="button" type="submit">Mark all reviewed</button>
+    </form>
+    {% endif %}
+  </div>
   {% endif %}
 
   <p class="picker__summary" role="status">{{ operations.summary }}</p>
@@ -120,12 +153,38 @@
           >
             <button class="button" type="submit">Save</button>
           </form>
+          {# What spec §5.4 says can be done with this row, if it is waiting on
+             a decision. A form each, so a browser with no script reviews a
+             server the same way — the answer is then the page rather than the
+             table, and it lands back on the same filter. #}
+          {% for decision in row.decisions %}
+          <form
+            method="post"
+            action="{{ operations.review_path(row) }}"
+            hx-post="{{ operations.review_path(row) }}"
+            hx-target="{{ operations_target }}"
+            hx-swap="outerHTML"
+          >
+            <input type="hidden" name="decision" value="{{ decision.value }}" />
+            <button class="button button--quiet" type="submit" title="{{ decision.hint }}">
+              {{ decision.label }}
+            </button>
+          </form>
+          {% endfor %}
+          {% if row.deletable %}
+          {{ confirm(
+               operations.row_path(row),
+               "Delete",
+               row.delete_question,
+               target=operations_target,
+               swap="outerHTML") }}
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
       {% if not operations.shown %}
       <tr>
-        <td colspan="7">Nothing here matches the filter. Everything else is untouched.</td>
+        <td colspan="7">{{ operations.nothing_here }}</td>
       </tr>
       {% endif %}
     </tbody>

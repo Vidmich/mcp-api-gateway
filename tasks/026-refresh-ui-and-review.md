@@ -22,7 +22,7 @@ Give the operator the review flow that clears Needs Attention.
 
 ## Acceptance
 
-- [ ] A refresh that finds changes flags the server and shows the diff.
-- [ ] Reviewing and acknowledging clears the flag; a second refresh with no changes leaves it clear.
-- [ ] Selecting a `new` operation adds it to `tools/list`; dismissing it does not.
-- [ ] Deleting a `removed` operation frees its tool name for reuse.
+- [x] A refresh that finds changes flags the server and shows the diff.
+- [x] Reviewing and acknowledging clears the flag; a second refresh with no changes leaves it clear.
+- [x] Selecting a `new` operation adds it to `tools/list`; dismissing it does not.
+- [x] Deleting a `removed` operation frees its tool name for reuse.

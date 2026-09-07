@@ -47,6 +47,16 @@ a re-rendered page.
 posts to a URL that already carries the filter, so a row saved while the table
 was narrowed comes back to the same narrowed table, with no hidden field in each
 of two hundred rows and no state held anywhere between requests.
+
+**Refreshing is a whole page; reviewing is a fragment.** A refresh moves the
+summary, every row's status, the counts and the flag at once, so both pages that
+offer the button get a redirect and a line saying what was found — a swap that
+left any of those showing the world as it was would be worse than a reload. The
+decisions that follow move only the region they are made in, so they answer with
+it. That is also why **Needs Attention** is rendered inside that region rather
+than in the page heading: settling the last row has to take the badge off the
+page it was settled on, and a second copy in the chrome could only disagree.
+What each decision means is :mod:`mcp_gateway.web.review`.
 """
 
 from __future__ import annotations
@@ -67,9 +77,11 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.models import utcnow
 from mcp_gateway.db.repo import ServerSummary
 from mcp_gateway.db.session import request_session
+from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken, conflict_alerts
 from mcp_gateway.openapi.diagnostics import SpecError
 from mcp_gateway.openapi.ingest import preview_spec
+from mcp_gateway.refresh import RefreshReport, refresh_server
 from mcp_gateway.web.auth import HTMX_REQUEST, UI_PREFIX, require_session
 from mcp_gateway.web.detail import (
     TOOL_NAME_FIELD,
@@ -95,7 +107,14 @@ from mcp_gateway.web.picker import (
     register,
 )
 from mcp_gateway.web.picker import build as build_picker
-from mcp_gateway.web.shell import Shell
+from mcp_gateway.web.review import (
+    DECISION_FIELD,
+    ReviewRefused,
+    acknowledge,
+    drop_operation,
+    review_operation,
+)
+from mcp_gateway.web.shell import FlashLevel, Shell
 from mcp_gateway.web.wizard import (
     AUTH_LABELS,
     AUTH_TYPES,
@@ -134,8 +153,15 @@ DETAIL_PATH: Final = f"{SERVERS_PATH}/{{server_id}}"
 OPERATIONS_PATH: Final = f"{DETAIL_PATH}/operations"
 #: One row of that table, which is one write.
 OPERATION_PATH: Final = f"{OPERATIONS_PATH}/{{operation_id}}"
+#: One row's review decision, which is one write and one question about the flag.
+REVIEW_PATH: Final = f"{OPERATION_PATH}/review"
 #: What a new tool prefix would do. A GET, because it does nothing.
 PREFIX_PATH: Final = f"{DETAIL_PATH}/prefix"
+#: Re-read this server's spec (spec §5.4). Posted from both pages, which is why
+#: it is told where it was pressed.
+REFRESH_PATH: Final = f"{DETAIL_PATH}/refresh"
+#: "I have seen all of this" — the one thing that clears Needs Attention.
+ACKNOWLEDGE_PATH: Final = f"{DETAIL_PATH}/acknowledge"
 
 SERVERS_TEMPLATE: Final = "servers.html"
 NEW_SERVER_TEMPLATE: Final = "server_new.html"
@@ -238,6 +264,27 @@ def refresh_state(status: str | None) -> str:
     return "ok" if status == "ok" else "error"
 
 
+#: Which page the Refresh button was pressed on. A choice of two literals
+#: rather than a path, because a redirect target taken from a form is a redirect
+#: target an attacker can write.
+BACK_FIELD: Final = "back"
+BACK_TO_LIST: Final = "list"
+
+
+def report_level(report: RefreshReport) -> FlashLevel:
+    """How loudly a finished refresh is announced.
+
+    A refresh that found something is a warning rather than a success: it
+    succeeded, but the news is that the operator now has work to do, and a green
+    line saying so would be read as "nothing to see here".
+    """
+    if not report.ok:
+        return "error"
+    if report.needs_attention:
+        return "warning"
+    return "success" if report.outcome == "updated" else "info"
+
+
 @dataclass(frozen=True)
 class ServerRow:
     """One line of the table: the stored server, and everything shown about it.
@@ -266,6 +313,10 @@ class ServerRow:
     @property
     def delete_path(self) -> str:
         return f"{SERVERS_PATH}/{self.server.id}"
+
+    @property
+    def refresh_path(self) -> str:
+        return f"{SERVERS_PATH}/{self.server.id}/refresh"
 
     @property
     def counts_title(self) -> str:
@@ -503,6 +554,7 @@ def _detail_context(
         "rename": Rename(prefix=""),
         "detail_path": path,
         "prefix_path": f"{path}/prefix",
+        "refresh_path": f"{path}/refresh",
         "rename_id": RENAME_ID,
         "rename_target": RENAME_TARGET,
         "servers_path": SERVERS_PATH,
@@ -556,6 +608,38 @@ def _back_to_the_page(request: Request, path: str, message: str) -> Response:
     response = RedirectResponse(path, status_code=303)
     _shell(request).flash(request, response, message, level="success")
     return response
+
+
+async def _reviewed(
+    request: Request, session: AsyncSession, server_id: int, message: str
+) -> Response:
+    """Answer a review decision: the table again for htmx, the page for anybody else.
+
+    Read back rather than patched from what was written, because a decision
+    changes the counts, the review strip and possibly the flag, and only a query
+    knows all three.
+    """
+    server = await _server(request, session, server_id)
+    operations = _operations_of(server, request.query_params)
+    if HTMX_REQUEST in request.headers:
+        return _region(request, operations)
+    return _back_to_the_page(request, operations.page_path, message)
+
+
+async def _refused_review(
+    request: Request, session: AsyncSession, server_id: int, refused: ReviewRefused
+) -> Response:
+    """A decision the row cannot be answered with, shown above the table it names.
+
+    409 rather than 422: the request was well formed, and it is the row having
+    moved on — almost always because the same server was reviewed in another
+    tab — that says no.
+    """
+    server = await _server(request, session, server_id)
+    operations = _operations_of(server, request.query_params, alerts=(refused.message,))
+    if HTMX_REQUEST in request.headers:
+        return _region(request, operations, status_code=409)
+    return _detail_page(request, server, settings_view(server), operations, status_code=409)
 
 
 def _cipher(request: Request) -> CredentialCipher:
@@ -830,6 +914,101 @@ def ui_router() -> APIRouter:
             )
         return _back_to_the_page(request, operations.page_path, saved.message)
 
+    @router.post(REVIEW_PATH)
+    async def review_operation_row(
+        request: Request,
+        server_id: int,
+        operation_id: int,
+        session: Session,
+        #: One of the values the row's own status offers; anything else is
+        #: refused by :mod:`~mcp_gateway.web.review` rather than parsed here.
+        decision: Annotated[str, Form(alias=DECISION_FIELD)] = "",
+    ) -> Response:
+        """Settle one ``new`` or ``changed`` row the way the operator decided.
+
+        The whole region comes back rather than the row, because a decision
+        moves more than the row it was made on: the counts above the table, the
+        review strip, and — when it was the last one outstanding — the flag
+        itself (spec §5.4).
+        """
+        try:
+            reviewed = await review_operation(session, server_id, operation_id, decision)
+        except repo.OperationNotFound:
+            raise _no_operation(request, operation_id) from None
+        except ReviewRefused as refused:
+            return await _refused_review(request, session, server_id, refused)
+        return await _reviewed(request, session, server_id, reviewed.flash)
+
+    @router.delete(OPERATION_PATH)
+    async def delete_operation_row(
+        request: Request, server_id: int, operation_id: int, session: Session
+    ) -> Response:
+        """Delete an operation the upstream dropped, freeing its tool name.
+
+        htmx-only, like the server list's delete and for the same reason: a
+        browser cannot issue a ``DELETE`` from a form. Every other review action
+        is a real form, so a page with no script can still be reviewed — it just
+        cannot retire a row, which is the one decision that can wait.
+        """
+        try:
+            dropped = await drop_operation(session, server_id, operation_id)
+        except repo.OperationNotFound:
+            raise _no_operation(request, operation_id) from None
+        except ReviewRefused as refused:
+            return await _refused_review(request, session, server_id, refused)
+        return await _reviewed(request, session, server_id, dropped.flash)
+
+    @router.post(ACKNOWLEDGE_PATH)
+    async def acknowledge_server(request: Request, server_id: int, session: Session) -> Response:
+        """Mark everything on this server reviewed, and take the flag off.
+
+        The same act as deciding every row, for the upstream that shipped a
+        release. ``removed`` rows are left where they are: retiring one is a
+        separate decision, and this button is only "I have seen all of this".
+        """
+        await _server(request, session, server_id)
+        settled = await acknowledge(session, server_id)
+        return await _reviewed(request, session, server_id, settled.flash)
+
+    @router.post(REFRESH_PATH)
+    async def refresh_now(
+        request: Request,
+        server_id: int,
+        session: Session,
+        #: Which page the button was on. Not a path — see :data:`BACK_FIELD`.
+        back: Annotated[str, Form(alias=BACK_FIELD)] = "",
+    ) -> Response:
+        """Re-read this server's spec, and say what came of it (spec §5.4).
+
+        A whole page rather than a fragment, on both pages that offer the
+        button. A refresh moves the summary, the counts, the review strip, every
+        row's status and the flag at once, and a swap that left any of those
+        showing the world as it was before would be worse than a reload.
+
+        A refresh that failed still lands here as a page with a message on it:
+        the gateway went and looked, and what it found is now recorded against
+        the row (:mod:`mcp_gateway.refresh`).
+        """
+        cipher = _cipher(request)
+        settings: Settings = request.app.state.settings
+        try:
+            report = await refresh_server(
+                session,
+                server_id,
+                cipher=cipher,
+                http=settings.http,
+                # Whatever pool the process shares (spec §2).
+                client=request.app.state.http_client,
+                announce=app_announcer(request.app),
+            )
+        except repo.ServerNotFound:
+            raise _gone(request, server_id) from None
+
+        where = SERVERS_PATH if back == BACK_TO_LIST else f"{SERVERS_PATH}/{server_id}"
+        response = RedirectResponse(where, status_code=303)
+        _shell(request).flash(request, response, report.summary, level=report_level(report))
+        return response
+
     @router.post(f"{SERVERS_PATH}/{{server_id}}/enabled")
     async def set_enabled(
         request: Request,
@@ -890,6 +1069,9 @@ def mount_ui(app: FastAPI) -> None:
 
 
 __all__ = [
+    "ACKNOWLEDGE_PATH",
+    "BACK_FIELD",
+    "BACK_TO_LIST",
     "DETAIL_PATH",
     "DETAIL_TEMPLATE",
     "LIST_ID",
@@ -913,9 +1095,11 @@ __all__ = [
     "PREVIEW_GONE",
     "PREVIEW_PATH",
     "PREVIEW_TEMPLATE",
+    "REFRESH_PATH",
     "RENAME_ID",
     "RENAME_TARGET",
     "RENAME_TEMPLATE",
+    "REVIEW_PATH",
     "ROW_TEMPLATE",
     "SERVERS_PATH",
     "SERVERS_TEMPLATE",
@@ -923,6 +1107,7 @@ __all__ = [
     "exact_time",
     "mount_ui",
     "refresh_state",
+    "report_level",
     "time_ago",
     "to_row",
     "ui_router",

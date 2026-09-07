@@ -324,6 +324,57 @@ textarea.field__input {
   color: var(--ink-soft);
 }
 
+/* --- the review strip ----------------------------------------------------- */
+
+/* What the last refresh left to decide, above the table it left it in. One
+ * strip rather than a panel: it is read in a glance and then acted on in the
+ * rows below, so it earns a border and no more room than a line of text. */
+.review {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap);
+  margin: 0 0 0.75rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--warn-soft);
+  border: 1px solid #ecd5a6;
+  border-radius: var(--radius);
+}
+
+.review__note {
+  flex: 1 1 16rem;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.review__counts {
+  margin: 0;
+}
+
+/* The counts are links to the filter that shows them, so they need to stop
+ * looking like body text without stopping looking like the badges beside them
+ * in the Status column. */
+a.badge {
+  text-decoration: none;
+}
+
+a.badge:hover {
+  text-decoration: underline;
+}
+
+/* Several forms in one cell — Save, then whichever decisions the row is
+ * waiting on — sit in a line rather than stacking, since each is one button. */
+.row-actions form {
+  display: inline-block;
+  margin: 0;
+}
+
+.row-actions .button + .button,
+.row-actions form + form,
+.row-actions form + .button {
+  margin-left: 0.25rem;
+}
+
 /* The checkbox column: as narrow as a checkbox, and centred over it. */
 .table th.pick,
 .table td.pick {

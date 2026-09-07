@@ -52,6 +52,15 @@
   </td>
   <td>{{ status_badge(row.state, label=row.refreshed, title=row.refresh_title) }}</td>
   <td class="row-actions">
+    {# A real form and a whole page, not an htmx swap: a refresh fetches an
+       upstream document, and the answer belongs on a page that shows what came
+       of it. ``back`` says which of the two pages offering this button it was
+       pressed on, and is two literals rather than a path — a redirect target
+       taken from a form is a redirect target an attacker can write. #}
+    <form class="toggle" method="post" action="{{ row.refresh_path }}">
+      <input type="hidden" name="back" value="list" />
+      <button class="button" type="submit">Refresh</button>
+    </form>
     {{ confirm(
          row.delete_path,
          "Delete",

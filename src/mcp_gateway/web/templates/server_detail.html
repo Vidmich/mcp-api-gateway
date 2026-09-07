@@ -13,7 +13,6 @@
 {% from "partials/field.html" import field, choice, switch %}
 {% from "partials/credential_fields.html" import credential_fields %}
 {% from "partials/status_badge.html" import status_badge %}
-{% from "partials/empty_state.html" import empty_state %}
 
 {% block title %}{{ settings.server.name }} &middot; mcp-gateway{% endblock %}
 
@@ -22,12 +21,18 @@
 {% endblock %}
 
 {% block content %}
+{# **Needs attention** is not shown here. It lives on the review strip above the
+   operation table, inside the region htmx swaps, so that settling the last row
+   takes the badge off the page it was settled on rather than at the next
+   reload. A badge in this toolbar would be a second copy that could disagree. #}
 <div class="toolbar">
   <h1 class="toolbar__title">{{ settings.server.name }}</h1>
   {{ status_badge("enabled" if settings.server.enabled else "disabled") }}
-  {% if settings.server.needs_attention %}
-  {{ status_badge("attention", title="A refresh found changes nobody has reviewed yet.") }}
-  {% endif %}
+  {# A whole-page action, deliberately: a refresh moves the summary below, every
+     row's status, the counts and the flag at once (spec §5.4). #}
+  <form method="post" action="{{ refresh_path }}">
+    <button class="button" type="submit">Refresh</button>
+  </form>
   <a class="button" href="{{ servers_path }}">All servers</a>
 </div>
 
@@ -257,10 +262,12 @@
   </label>
 </form>
 
-{% include "partials/operation_table.html" %}
-{% else %}
-{{ empty_state(
-     "No operations",
-     "This server has no stored operations. Refresh it to read its spec again.") }}
 {% endif %}
+
+{# Included whether or not there are rows, unlike the filters above it. It is
+   the region htmx swaps, and retiring the last ``removed`` operation has to
+   land somewhere: a target that stopped existing when it emptied would leave
+   the operator's click with nowhere to go. The table says so itself when it has
+   nothing in it. #}
+{% include "partials/operation_table.html" %}
 {% endblock %}
