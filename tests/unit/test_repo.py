@@ -20,6 +20,7 @@ from mcp_gateway.crypto import CredentialCipher, CredentialUnreadable, generate_
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import Base, MetricBucket, Operation, Server
 from mcp_gateway.db.repo import (
+    CallFailure,
     NewServer,
     OperationInput,
     OperationNotFound,
@@ -724,6 +725,95 @@ async def test_a_setting_is_written_read_and_dropped(session: Any) -> None:
     assert await repo.delete_setting(session, "theme") is True
     assert await repo.delete_setting(session, "theme") is False
     assert await repo.all_settings(session) == {"refresh_minutes": "15"}
+
+
+# --------------------------------------------------------------------------- #
+# Recent failures
+# --------------------------------------------------------------------------- #
+
+
+async def a_few_failures(session: Any) -> dt.datetime:
+    """Five failures a minute apart, oldest first. Returns the newest moment."""
+    newest = dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC)
+    await repo.add_call_errors(
+        session,
+        [
+            CallFailure(
+                occurred_at=newest - dt.timedelta(minutes=age),
+                server_id=1,
+                tool_name="petstore_listPets",
+                status_code=502,
+                message=f"{age} minutes before the end.",
+            )
+            for age in range(4, -1, -1)
+        ],
+    )
+    return newest
+
+
+async def test_the_recent_failures_come_back_newest_first(session: Any) -> None:
+    newest = await a_few_failures(session)
+    rows = await repo.recent_call_errors(session)
+
+    assert [row.occurred_at for row in rows] == [
+        newest - dt.timedelta(minutes=age) for age in range(5)
+    ]
+    assert rows[0].message == "0 minutes before the end."
+
+
+async def test_failures_that_happened_at_once_keep_a_stable_order(session: Any) -> None:
+    # The writer flushes a batch whose timestamps can tie. Without the tiebreak
+    # the newest few would shuffle between two reads of the same rows.
+    at = dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC)
+    await repo.add_call_errors(
+        session,
+        [CallFailure(occurred_at=at, server_id=1, message=f"call {n}") for n in range(5)],
+    )
+
+    once = [row.id for row in await repo.recent_call_errors(session)]
+    again = [row.id for row in await repo.recent_call_errors(session)]
+
+    assert once == again == sorted(once, reverse=True)
+
+
+async def test_a_window_narrows_the_failures_to_it(session: Any) -> None:
+    newest = await a_few_failures(session)
+    rows = await repo.recent_call_errors(session, since=newest - dt.timedelta(minutes=2))
+
+    assert len(rows) == 3
+
+
+async def test_the_list_is_capped_at_what_a_panel_can_show(session: Any) -> None:
+    at = dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC)
+    await repo.add_call_errors(
+        session,
+        [
+            CallFailure(occurred_at=at - dt.timedelta(seconds=n), server_id=1, message="no")
+            for n in range(repo.RECENT_ERRORS + 10)
+        ],
+    )
+
+    assert len(await repo.recent_call_errors(session)) == repo.RECENT_ERRORS
+    assert len(await repo.recent_call_errors(session, limit=3)) == 3
+
+
+async def test_a_failure_keeps_the_id_of_a_server_that_is_gone(session: Any) -> None:
+    # Same rule as the metric buckets: these rows outlive what they point at.
+    await repo.add_call_errors(
+        session,
+        [
+            CallFailure(
+                occurred_at=dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC),
+                server_id=404,
+                tool_name="gone_listPets",
+                status_code=None,
+                message="The upstream never answered.",
+            )
+        ],
+    )
+    (row,) = await repo.recent_call_errors(session)
+
+    assert (row.server_id, row.status_code) == (404, None)
 
 
 # --------------------------------------------------------------------------- #

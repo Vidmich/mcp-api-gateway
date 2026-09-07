@@ -741,6 +741,165 @@ a.badge:hover {
   color: var(--ink-soft);
 }
 
+/* --- the monitoring page --------------------------------------------------- */
+
+/* The region htmx swaps: everything on the page that describes one window. */
+.usage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.usage__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.usage__covers {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.875rem;
+}
+
+/* Hidden until an update fails to arrive, which is the one moment the page
+ * cannot say anything true by staying quiet. */
+.usage__alert {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius);
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.usage__none {
+  margin: 0;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--ink-soft);
+}
+
+/* The range selector: links, so a browser running no script still works. */
+.ranges {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.1875rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.ranges__item {
+  padding: 0.25rem 0.625rem;
+  border-radius: calc(var(--radius) - 0.125rem);
+  color: var(--ink-soft);
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+
+.ranges__item:hover {
+  background: var(--page);
+  color: var(--ink);
+}
+
+.ranges__item--current {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.ranges__item--current:hover {
+  background: var(--accent-dark);
+  color: #ffffff;
+}
+
+/* The window in numbers, above the charts of the same window. */
+.totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.totals__term {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.8125rem;
+}
+
+.totals__value {
+  margin: 0;
+  font-size: 1.25rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.totals__value--bad {
+  color: var(--bad);
+}
+
+.chart {
+  margin: 0;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.chart__caption {
+  margin: 0 0 0.75rem;
+}
+
+.chart__title {
+  margin: 0;
+  font-size: 1.0625rem;
+}
+
+.chart__note {
+  margin: 0.25rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.875rem;
+}
+
+/* A fixed height, because a canvas with none collapses and Chart.js is asked
+ * to keep the aspect ratio the box gives it rather than one of its own. */
+.chart__frame {
+  position: relative;
+  height: 15rem;
+}
+
+/* What stands where the drawing would be. Removed by the script once it has
+ * drawn; left alone when there is nothing to draw with. */
+.chart__fallback,
+.chart__empty {
+  margin: 0.75rem 0 0;
+  color: var(--ink-soft);
+  font-size: 0.875rem;
+}
+
+/* The colour a server is drawn in, beside its name in the strip, so a band on
+ * a chart can be matched to the row that explains it. */
+.swatch {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-right: 0.375rem;
+  border-radius: 0.1875rem;
+  vertical-align: baseline;
+}
+
+.table td.numeric--bad {
+  color: var(--bad);
+}
+
 /* --- htmx ----------------------------------------------------------------- */
 
 /* htmx sets this class on an element for the duration of its request. */

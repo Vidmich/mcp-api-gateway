@@ -105,6 +105,7 @@ from mcp_gateway.web.detail import (
     save_settings,
     settings_view,
 )
+from mcp_gateway.web.formatting import exact_time, plural, refresh_state, time_ago
 from mcp_gateway.web.picker import (
     NO_BASE_URL,
     PREFIX_FIELD,
@@ -196,16 +197,13 @@ ROW_TEMPLATE: Final = "partials/server_row.html"
 LIST_ID: Final = "server-list"
 LIST_TARGET: Final = f"#{LIST_ID}"
 
-MINUTE: Final = 60
-HOUR: Final = 60 * MINUTE
-DAY: Final = 24 * HOUR
-
-#: The same two spans counted in minutes, which is the unit the refresh interval
-#: is configured and stored in.
+#: The spans counted in minutes, which is the unit the refresh interval is
+#: configured and stored in. The ones counted in seconds — what "4 minutes ago"
+#: is measured with — belong to :mod:`mcp_gateway.web.formatting`, which is
+#: where two pages agree about them.
 HOUR_MINUTES: Final = 60
 DAY_MINUTES: Final = 24 * HOUR_MINUTES
 
-NEVER: Final = "Never"
 NEVER_REFRESHED: Final = "This server has never been refreshed."
 
 #: An upstream's error text can be a whole HTML page. The tooltip gets the start
@@ -253,33 +251,6 @@ RENAME_ID: Final = "rename-preview"
 RENAME_TARGET: Final = f"#{RENAME_ID}"
 
 
-def _plural(count: int, unit: str) -> str:
-    """``1 operation``, ``2 operations`` — English's one irregularity here."""
-    return f"{count} {unit}" if count == 1 else f"{count} {unit}s"
-
-
-def time_ago(then: dt.datetime | None, now: dt.datetime | None = None) -> str:
-    """How long ago ``then`` was, in the coarsest unit that still says something.
-
-    Relative rather than absolute, because the question this column answers is
-    "has this gone stale", not "what time was it". The exact timestamp is on the
-    same cell's ``title`` for the times that is not enough.
-    """
-    if then is None:
-        return NEVER
-    seconds = ((now or utcnow()) - then).total_seconds()
-    if seconds < MINUTE:
-        # Also where a clock that has run backwards lands. That is the machine's
-        # problem, and a status column reporting a negative age would make it
-        # look like the gateway's.
-        return "just now"
-    if seconds < HOUR:
-        return f"{_plural(int(seconds // MINUTE), 'minute')} ago"
-    if seconds < DAY:
-        return f"{_plural(int(seconds // HOUR), 'hour')} ago"
-    return f"{_plural(int(seconds // DAY), 'day')} ago"
-
-
 def interval_words(minutes: int) -> str:
     """A number of minutes as the largest whole unit that still says it exactly.
 
@@ -289,39 +260,16 @@ def interval_words(minutes: int) -> str:
     rounded, because this is a setting and not an estimate.
     """
     if minutes % DAY_MINUTES == 0:
-        return _plural(minutes // DAY_MINUTES, "day")
+        return plural(minutes // DAY_MINUTES, "day")
     if minutes % HOUR_MINUTES == 0:
-        return _plural(minutes // HOUR_MINUTES, "hour")
-    return _plural(minutes, "minute")
+        return plural(minutes // HOUR_MINUTES, "hour")
+    return plural(minutes, "minute")
 
 
 def how_often(minutes: int) -> str:
     """The same, as a frequency: ``every day``, ``every 6 hours``."""
     words = interval_words(minutes)
     return f"every {words.removeprefix('1 ')}"
-
-
-def exact_time(when: dt.datetime | None) -> str | None:
-    """The full timestamp behind a relative one, in UTC and said so.
-
-    UTC rather than the browser's zone: the gateway stores UTC, its logs are in
-    UTC, and a page that quietly converts makes the two impossible to line up.
-    """
-    if when is None:
-        return None
-    return when.astimezone(dt.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-def refresh_state(status: str | None) -> str:
-    """The badge a stored ``last_refresh_status`` maps onto.
-
-    Anything that is not a recorded success shows as a failure. This column
-    exists to make a server whose spec can no longer be fetched obvious, and a
-    status string this release does not recognise is not evidence it went well.
-    """
-    if status is None:
-        return "unknown"
-    return "ok" if status == "ok" else "error"
 
 
 #: Which page the Refresh button was pressed on. A choice of two literals
@@ -418,7 +366,7 @@ class ServerRow:
     @property
     def counts_title(self) -> str:
         counts = self.server.counts
-        return f"{counts.selected} of {_plural(counts.total, 'operation')} exposed as tools."
+        return f"{counts.selected} of {plural(counts.total, 'operation')} exposed as tools."
 
     @property
     def refresh_title(self) -> str:
@@ -440,7 +388,7 @@ class ServerRow:
         """
         return (
             f"Delete {self.server.name} and its "
-            f"{_plural(self.server.counts.total, 'operation')}? Recorded usage is kept."
+            f"{plural(self.server.counts.total, 'operation')}? Recorded usage is kept."
         )
 
 
@@ -1228,7 +1176,7 @@ def ui_router() -> APIRouter:
         except repo.ServerNotFound:
             raise _gone(request, server_id) from None
         logger.info(
-            "Deleted server %r and its %s", doomed.name, _plural(doomed.counts.total, "operation")
+            "Deleted server %r and its %s", doomed.name, plural(doomed.counts.total, "operation")
         )
 
         if HTMX_REQUEST not in request.headers:
@@ -1263,7 +1211,6 @@ __all__ = [
     "LIST_ID",
     "LIST_TARGET",
     "LIST_TEMPLATE",
-    "NEVER",
     "NEVER_REFRESHED",
     "NEW_SERVER_PATH",
     "NEW_SERVER_TEMPLATE",
@@ -1290,11 +1237,8 @@ __all__ = [
     "SERVERS_PATH",
     "SERVERS_TEMPLATE",
     "ServerRow",
-    "exact_time",
     "mount_ui",
-    "refresh_state",
     "report_level",
-    "time_ago",
     "to_row",
     "ui_router",
 ]

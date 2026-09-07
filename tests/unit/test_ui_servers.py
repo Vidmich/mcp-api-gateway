@@ -35,21 +35,18 @@ from mcp_gateway.db.repo import NewServer, OperationInput
 from mcp_gateway.db.session import NO_DATABASE, database_service, open_database
 from mcp_gateway.scheduler import INTERVAL_KEY
 from mcp_gateway.web.auth import HOME_PATH, LOGIN_PATH
+from mcp_gateway.web.formatting import NEVER
 from mcp_gateway.web.routes_ui import (
     AUTO_REFRESH_PATH,
     INTERVAL_FIELD,
     INTERVAL_INVALID,
     LIST_TARGET,
-    NEVER,
     NEVER_REFRESHED,
     NEW_SERVER_PATH,
     SERVERS_PATH,
     ServerRow,
-    exact_time,
     how_often,
     interval_words,
-    refresh_state,
-    time_ago,
     to_row,
 )
 
@@ -158,64 +155,6 @@ def signed_in(settings: Settings) -> TestClient:
     http = client(settings)
     http.post(LOGIN_PATH, data={"username": "operator", "password": "s3cret"})
     return http
-
-
-# --- how a moment is written -------------------------------------------------
-
-
-def test_a_server_that_was_never_refreshed_says_so() -> None:
-    assert time_ago(None) == NEVER
-
-
-@pytest.mark.parametrize(
-    ("ago", "expected"),
-    [
-        (dt.timedelta(seconds=0), "just now"),
-        (dt.timedelta(seconds=59), "just now"),
-        (dt.timedelta(seconds=60), "1 minute ago"),
-        (dt.timedelta(minutes=4), "4 minutes ago"),
-        (dt.timedelta(minutes=59), "59 minutes ago"),
-        (dt.timedelta(hours=1), "1 hour ago"),
-        (dt.timedelta(hours=23), "23 hours ago"),
-        (dt.timedelta(days=1), "1 day ago"),
-        (dt.timedelta(days=90), "90 days ago"),
-    ],
-)
-def test_an_age_is_written_in_the_coarsest_unit_that_still_says_something(
-    ago: dt.timedelta, expected: str
-) -> None:
-    assert time_ago(NOW - ago, NOW) == expected
-
-
-def test_a_timestamp_from_the_future_is_not_reported_as_a_negative_age() -> None:
-    # A clock that has run backwards is the machine's problem. A status column
-    # saying "-3 minutes ago" would make it look like the gateway's.
-    assert time_ago(NOW + dt.timedelta(minutes=3), NOW) == "just now"
-
-
-def test_the_exact_time_is_utc_and_says_which_zone_it_is_in() -> None:
-    assert exact_time(NOW) == "2026-03-04 12:00:00 UTC"
-
-
-def test_the_exact_time_of_a_refresh_that_never_happened_is_nothing() -> None:
-    assert exact_time(None) is None
-
-
-def test_a_timestamp_in_another_zone_is_shown_as_utc() -> None:
-    # Nothing writes one today, but the column has to be readable next to a log
-    # line if one ever does.
-    elsewhere = NOW.astimezone(dt.timezone(dt.timedelta(hours=5, minutes=30)))
-    assert exact_time(elsewhere) == "2026-03-04 12:00:00 UTC"
-
-
-@pytest.mark.parametrize(
-    ("status", "expected"),
-    [(None, "unknown"), ("ok", "ok"), ("error", "error"), ("something-new", "error")],
-)
-def test_a_refresh_status_picks_its_badge(status: str | None, expected: str) -> None:
-    # Anything unrecognised reads as a failure: this column exists to make a
-    # server whose spec can no longer be fetched obvious.
-    assert refresh_state(status) == expected
 
 
 # --- what a row says ---------------------------------------------------------

@@ -24,7 +24,7 @@ Draw the three charts the operator asked for, offline.
 
 ## Acceptance
 
-- [ ] The page renders all three charts against seeded metrics.
-- [ ] Switching range re-queries and redraws without a full page load.
-- [ ] No external network requests are issued by the rendered page.
-- [ ] An empty database renders empty charts, not an error.
+- [x] The page renders all three charts against seeded metrics.
+- [x] Switching range re-queries and redraws without a full page load.
+- [x] No external network requests are issued by the rendered page.
+- [x] An empty database renders empty charts, not an error.

@@ -52,8 +52,7 @@ from mcp_gateway.usage import (
     GroupBy,
     UsageRange,
     UsageReport,
-    build_report,
-    window_for,
+    usage_report,
 )
 from mcp_gateway.web.api import (
     CUSTOM_NEEDS_CREDENTIAL,
@@ -377,17 +376,17 @@ def api_router() -> APIRouter:
         The window is worked out before anything is read, and the re-bucketing
         happens in SQL, so what crosses this boundary is the number of points
         that will be drawn rather than the number of buckets that were stored.
+
+        The reading itself is :func:`~mcp_gateway.usage.usage_report`, which is
+        also what the monitoring page calls: one definition of what a range
+        means, so the chart and the endpoint cannot report different totals for
+        the same hour.
         """
         settings: Settings = request.app.state.settings
-        window = window_for(range_, settings.metrics.bucket_seconds)
-        return build_report(
-            window,
-            await repo.metric_slices(session, window.start, window.end, window.step_seconds),
-            # Read every time rather than cached: a rename between two refreshes
-            # of the page should show up in the legend, and this is one small
-            # query against a table with as many rows as the operator has
-            # servers.
-            await repo.server_names(session),
+        return await usage_report(
+            session,
+            range_,
+            bucket_seconds=settings.metrics.bucket_seconds,
             group_by=group_by,
         )
 

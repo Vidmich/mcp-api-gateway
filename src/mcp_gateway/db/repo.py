@@ -65,6 +65,11 @@ from mcp_gateway.db.models import (
 #: Statuses that mean the operator has something to look at (spec §5.4).
 UNREVIEWED: Final[frozenset[str]] = frozenset({"new", "changed"})
 
+#: How many recent failures :func:`recent_call_errors` will hand back at once.
+#: A panel is for noticing that something is wrong and finding the first
+#: example of it; reading a thousand of them is what the log is for.
+RECENT_ERRORS: Final = 50
+
 
 # Named the way the standard library names a failed lookup — KeyError, not
 # KeyLookupError — because that is how these read at a call site.
@@ -252,6 +257,25 @@ class MetricSlice(BaseModel):
     bytes_out: int = 0
     bytes_in: int = 0
     duration_ms_sum: int = 0
+
+
+class CallErrorView(BaseModel):
+    """One entry of the recent-failures list (spec §4, §7.2).
+
+    The same columns :class:`CallFailure` wrote, plus the id, read back for the
+    panel under the charts. It carries a ``server_id`` and no name for the
+    reason the metric buckets do: the row outlives the server it names, and
+    whoever is rendering it already knows what the registered ones are called.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    occurred_at: dt.datetime
+    server_id: int | None = None
+    tool_name: str | None = None
+    status_code: int | None = None
+    message: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -1251,8 +1275,42 @@ async def add_call_errors(session: AsyncSession, failures: Iterable[CallFailure]
     return len(rows)
 
 
+async def recent_call_errors(
+    session: AsyncSession, *, since: dt.datetime | None = None, limit: int = RECENT_ERRORS
+) -> list[CallErrorView]:
+    """The latest failures, newest first, for the panel under the charts.
+
+    ``since`` narrows the list to a window rather than to a count, which is what
+    lets the whole monitoring page describe one span of time: an errors list
+    showing yesterday's failures beside a chart of the last hour would be two
+    answers to two different questions on one screen.
+
+    Ordered by id after time, because the writer flushes a batch of failures
+    that all happened within a second or two of each other and their timestamps
+    can tie. Without the tiebreak the newest few would shuffle between two
+    reads of the same data.
+    """
+    statement = select(CallError).order_by(CallError.occurred_at.desc(), CallError.id.desc())
+    if since is not None:
+        statement = statement.where(CallError.occurred_at >= since)
+    rows = await session.scalars(statement.limit(limit))
+    return [
+        CallErrorView(
+            id=row.id,
+            occurred_at=row.occurred_at,
+            server_id=row.server_id,
+            tool_name=row.tool_name,
+            status_code=row.status_code,
+            message=row.message,
+        )
+        for row in rows
+    ]
+
+
 __all__ = [
+    "RECENT_ERRORS",
     "BucketDelta",
+    "CallErrorView",
     "CallFailure",
     "MetricSlice",
     "NewServer",
@@ -1291,6 +1349,7 @@ __all__ = [
     "list_tools",
     "mark_needs_attention",
     "metric_slices",
+    "recent_call_errors",
     "record_refresh",
     "require_server",
     "server_detail",

@@ -39,6 +39,7 @@ from mcp_gateway.refresh import RefreshLocks
 from mcp_gateway.scheduler import refresh_service
 from mcp_gateway.web.api import Health, health_report
 from mcp_gateway.web.auth import mount_admin, signing_key
+from mcp_gateway.web.monitoring import mount_monitoring
 from mcp_gateway.web.routes_api import mount_api
 from mcp_gateway.web.routes_ui import mount_ui
 from mcp_gateway.web.shell import mount_shell
@@ -210,6 +211,9 @@ def create_app(
     #: The configuration pages (spec §7.1). After the admin account, whose
     #: guard every one of them is declared behind.
     mount_ui(app)
+    #: The monitoring page (spec §7.2), on a router of its own because it is the
+    #: other half of the navigation rather than another configuration page.
+    mount_monitoring(app)
     #: The JSON API the pages mirror (spec §7.3). Behind the same guard, and
     #: mounted after the pages so that the two prefixes are added in the order
     #: they are read about.

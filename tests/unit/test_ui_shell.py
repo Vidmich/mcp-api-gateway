@@ -44,6 +44,9 @@ from mcp_gateway.web.shell import (
 #: only has to be somewhere under ``/ui/servers``, which is what makes the
 #: masthead light Configuration up.
 LAYOUT_PAGE = f"{UI_PREFIX}/servers/7/layout"
+#: The same, in the other section, since task 030 made ``/ui/monitoring`` a real
+#: page: below it, so the masthead still lights Monitoring up.
+MONITORING_LAYOUT = f"{MONITORING_PATH}/layout"
 BOOM_PAGE = f"{UI_PREFIX}/boom"
 FLASH_PAGE = f"{UI_PREFIX}/flash"
 
@@ -56,6 +59,13 @@ EXTERNAL = re.compile(r"""(?:https?:)?//[^/"'\s]""")
 #: The same question asked of a vendored script, where a bare ``//`` is a comment
 #: rather than a URL and only a scheme means anything.
 EXTERNAL_IN_ASSET = re.compile(r"https?://")
+
+#: A ``/*! ... */`` block: the licence banner a minified library carries. The
+#: MIT licences these are shipped under require the notice to be kept, and the
+#: notices name their projects, so the rule below is asked of everything else.
+#: A URL in a comment is not a request; a URL anywhere a browser would act on
+#: it is exactly what these two tests exist to catch.
+LICENCE_BANNER = re.compile(r"/\*![\s\S]*?\*/")
 
 #: Every file the browser can load from this package. Discovered rather than
 #: listed, so an asset added later is held to the same two rules without anybody
@@ -83,7 +93,7 @@ def shelled_app(settings: Settings, **kwargs: Any) -> FastAPI:
     router = APIRouter()
 
     @router.get(f"{UI_PREFIX}/servers/{{server_id}}/layout")
-    @router.get(MONITORING_PATH)
+    @router.get(MONITORING_LAYOUT)
     async def page(request: Request) -> Response:
         shell: Shell = request.app.state.shell
         return shell.render(request, "base.html")
@@ -198,7 +208,7 @@ def test_a_path_outside_the_sections_lights_none_of_them(path: str) -> None:
 
 def test_the_active_section_is_marked_in_the_page(tmp_path: Path) -> None:
     with client(settings_for(tmp_path)) as http:
-        body = http.get(MONITORING_PATH, headers=HTML).text
+        body = http.get(MONITORING_LAYOUT, headers=HTML).text
 
     marked = re.findall(r'<a\s+class="nav__item nav__item--active"\s+href="([^"]+)"', body)
     assert marked == [MONITORING_PATH]
@@ -272,12 +282,22 @@ def test_no_template_refers_to_another_host(template: str) -> None:
 
 @pytest.mark.parametrize("asset", ASSETS)
 def test_no_asset_refers_to_another_host(asset: str) -> None:
-    source = (STATIC_DIR / asset).read_text(encoding="utf-8")
+    source = LICENCE_BANNER.sub("", (STATIC_DIR / asset).read_text(encoding="utf-8"))
 
     assert EXTERNAL_IN_ASSET.search(source) is None
 
 
-@pytest.mark.parametrize("path", [LAYOUT_PAGE, MONITORING_PATH])
+@pytest.mark.parametrize("asset", ASSETS)
+def test_a_vendored_asset_keeps_the_notice_it_was_shipped_with(asset: str) -> None:
+    # The other half of the rule above: a banner is exempt from the URL check,
+    # so nothing may be quietly deleted from one to get past it.
+    source = (STATIC_DIR / asset).read_text(encoding="utf-8")
+    banners = LICENCE_BANNER.findall(source)
+
+    assert all("License" in banner or "Licence" in banner for banner in banners)
+
+
+@pytest.mark.parametrize("path", [LAYOUT_PAGE, MONITORING_LAYOUT])
 def test_no_rendered_page_refers_to_another_host(tmp_path: Path, path: str) -> None:
     with client(locked(tmp_path)) as http:
         body = http.get(path, headers=HTML).text

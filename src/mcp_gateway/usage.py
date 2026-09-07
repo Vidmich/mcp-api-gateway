@@ -46,7 +46,9 @@ from dataclasses import dataclass, field
 from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from mcp_gateway.db import repo
 from mcp_gateway.db.models import MetricKind, utcnow
 from mcp_gateway.db.repo import MetricSlice
 from mcp_gateway.metrics import EPOCH, TOOL_CALL, TOOLS_LIST
@@ -360,6 +362,35 @@ def build_report(
     )
 
 
+async def usage_report(
+    session: AsyncSession,
+    range_: UsageRange,
+    *,
+    bucket_seconds: int = 60,
+    group_by: GroupBy = DEFAULT_GROUP_BY,
+    now: dt.datetime | None = None,
+) -> UsageReport:
+    """Read one range back, from the window to the folded series.
+
+    The whole of what ``GET /api/v1/metrics`` does, in one call, because the
+    monitoring page draws the same numbers and the two must not be able to
+    disagree about them. A page assembled from its own query would be a second
+    definition of what "the last hour" means, and the first thing anybody would
+    notice is a chart whose totals do not match the endpoint they were told to
+    script against.
+    """
+    window = window_for(range_, bucket_seconds, now=now)
+    return build_report(
+        window,
+        await repo.metric_slices(session, window.start, window.end, window.step_seconds),
+        # Read every time rather than cached: a rename between two refreshes of
+        # a page should show up in the legend, and this is one small query
+        # against a table with as many rows as the operator has servers.
+        await repo.server_names(session),
+        group_by=group_by,
+    )
+
+
 __all__ = [
     "DEFAULT_GROUP_BY",
     "DEFAULT_RANGE",
@@ -376,5 +407,6 @@ __all__ = [
     "UsageTotals",
     "Window",
     "build_report",
+    "usage_report",
     "window_for",
 ]

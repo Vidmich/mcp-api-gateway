@@ -1,0 +1,23 @@
+{# The monitoring page (spec §7.2).
+
+   Almost nothing of its own, for the same reason the server list has almost
+   nothing of its own: everything on it belongs to one window of time, and that
+   window is a region htmx re-reads. What is left here is the heading and the
+   two scripts the region needs — loaded by the page rather than by the
+   fragment, so that swapping the region does not re-download Chart.js. #}
+{% extends "base.html" %}
+
+{% block title %}Monitoring · mcp-gateway{% endblock %}
+
+{% block scripts %}
+{# Chart.js first: the page's own script asks for it by name at swap time. #}
+<script src="{{ static_url('js/chart.umd.js') }}" defer></script>
+<script src="{{ static_url('js/monitoring.js') }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <h1 class="toolbar__title">Monitoring</h1>
+</div>
+{% include "partials/usage.html" %}
+{% endblock %}

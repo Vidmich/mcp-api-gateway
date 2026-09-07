@@ -1,0 +1,182 @@
+{# One window of usage: the selector, the three charts, the strip, the failures.
+
+   An ordinary template rather than a macro, like the server list: it is also
+   returned on its own, as the answer to a range button and to the timer, and a
+   macro rendered as a response would produce an empty body. Its context is what
+   ``monitoring.context`` builds.
+
+   All of it lives inside ``usage_id`` on purpose. Everything here describes one
+   span of time, so everything here is replaced at once — a swap that left the
+   failures list from the previous range beside the new charts would be two
+   answers to two different questions on one screen.
+
+   The selector is inside the region too, because which range is current is part
+   of the answer: the button that lights up has to change with the charts. Each
+   is a real link as well as an htmx request, so a browser running no script at
+   all still changes range, by loading the whole page. #}
+<div
+  id="{{ usage_id }}"
+  class="usage"
+  hx-get="{{ usage_path }}?{{ range_field }}={{ view.range }}"
+  hx-trigger="every {{ view.poll_seconds }}s"
+  hx-target="this"
+  hx-swap="outerHTML"
+>
+  <div class="usage__head">
+    <nav class="ranges" aria-label="Time range">
+      {% for option in view.options %}
+      <a
+        class="ranges__item{% if option.current %} ranges__item--current{% endif %}"
+        href="{{ option.path }}"
+        hx-get="{{ option.fragment }}"
+        hx-target="#{{ usage_id }}"
+        hx-swap="outerHTML"
+        hx-push-url="{{ option.path }}"
+        {% if option.current %}aria-current="true"{% endif %}
+      >{{ option.label }}</a>
+      {% endfor %}
+    </nav>
+    <p class="usage__covers">{{ view.covers }}, one point per {{ view.resolution }}.</p>
+  </div>
+
+  {# Un-hidden by the script when an update did not arrive. The wording is here
+     rather than in the script so that what the page says when it is failing is
+     a sentence with a test behind it. #}
+  <p class="usage__alert" id="{{ alert_id }}" role="status" hidden>{{ stale }}</p>
+
+  <dl class="totals">
+    <div class="totals__pair">
+      <dt class="totals__term">Tool calls</dt>
+      <dd class="totals__value">{{ view.tool_calls }}</dd>
+    </div>
+    <div class="totals__pair">
+      <dt class="totals__term">Failed</dt>
+      <dd class="totals__value{% if view.totals.errors %} totals__value--bad{% endif %}">{{ view.totals.errors }}</dd>
+    </div>
+    <div class="totals__pair">
+      <dt class="totals__term">Sent</dt>
+      <dd class="totals__value">{{ view.sent }}</dd>
+    </div>
+    <div class="totals__pair">
+      <dt class="totals__term">Received</dt>
+      <dd class="totals__value">{{ view.received }}</dd>
+    </div>
+    <div class="totals__pair">
+      <dt class="totals__term">tools/list</dt>
+      <dd class="totals__value">{{ view.listings }}</dd>
+    </div>
+  </dl>
+
+  {% for chart in view.charts %}
+  <figure class="chart" id="figure-{{ chart.id }}">
+    <figcaption class="chart__caption">
+      <h2 class="chart__title">{{ chart.title }}</h2>
+      <p class="chart__note">{{ chart.note }}</p>
+    </figcaption>
+    <div class="chart__frame">
+      <canvas id="{{ chart.canvas_id }}" role="img" aria-label="{{ chart.summary }}"></canvas>
+    </div>
+    {# Replaced by the drawing when there is a script to draw it. #}
+    <p class="chart__fallback">{{ no_charts }}</p>
+    {% if chart.empty %}
+    <p class="chart__empty">{{ no_traffic }}</p>
+    {% endif %}
+  </figure>
+  {% endfor %}
+
+  {# What the script draws. Not executable: the browser stores it, the script
+     reads it, and Jinja escapes it so that a server named after a closing tag
+     cannot end the block early. #}
+  <script id="{{ chart_data_id }}" type="application/json">{{ chart_data | tojson }}</script>
+
+  <h2 class="card__title">Servers</h2>
+  {% if view.servers %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th scope="col">Server</th>
+        <th scope="col">Status</th>
+        <th scope="col">Last refresh</th>
+        <th scope="col" class="numeric">Calls</th>
+        <th scope="col" class="numeric">Errors</th>
+        <th scope="col" class="numeric">Sent</th>
+        <th scope="col" class="numeric">Received</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% from "partials/status_badge.html" import status_badge %}
+      {% for row in view.servers %}
+      <tr>
+        <th scope="row">
+          <span class="swatch" style="background: {{ row.colour }}" aria-hidden="true"></span>
+          {% if row.detail_path %}
+          <a href="{{ row.detail_path }}">{{ row.name }}</a>
+          {% else %}
+          {{ row.name }}
+          {% endif %}
+        </th>
+        <td>
+          {% if row.deleted %}
+          {{ status_badge("removed", label="Deleted") }}
+          {% else %}
+          {{ status_badge("enabled" if row.enabled else "disabled") }}
+          {% if row.needs_attention %}
+          {{ status_badge("attention") }}
+          {% endif %}
+          {% endif %}
+        </td>
+        <td>
+          {% if row.deleted %}
+          <span class="cell-note">{{ not_recorded }}</span>
+          {% else %}
+          {# One badge carrying the age, exactly as the server list writes it:
+             the two pages answer the same question and must look like it. #}
+          {{ status_badge(row.state, label=row.refreshed, title=row.refreshed_at) }}
+          {% endif %}
+        </td>
+        <td class="numeric">{{ row.totals.calls }}</td>
+        <td class="numeric{% if row.failing %} numeric--bad{% endif %}">{{ row.totals.errors }}</td>
+        <td class="numeric">{{ row.sent }}</td>
+        <td class="numeric">{{ row.received }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="usage__none">{{ no_servers }}</p>
+  {% endif %}
+
+  <h2 class="card__title">Recent failures</h2>
+  {% if view.failures %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th scope="col">When</th>
+        <th scope="col">Server</th>
+        <th scope="col">Tool</th>
+        <th scope="col">Status</th>
+        <th scope="col">What happened</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for failure in view.failures %}
+      <tr>
+        <td{% if failure.at %} title="{{ failure.at }}"{% endif %}>{{ failure.when }}</td>
+        <td>
+          {% if failure.server_path %}
+          <a href="{{ failure.server_path }}">{{ failure.server }}</a>
+          {% else %}
+          {{ failure.server }}
+          {% endif %}
+        </td>
+        <td><code>{{ failure.tool }}</code></td>
+        <td>{{ failure.status }}</td>
+        <td>{{ failure.message }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="usage__none">{{ no_failures }}</p>
+  {% endif %}
+</div>
