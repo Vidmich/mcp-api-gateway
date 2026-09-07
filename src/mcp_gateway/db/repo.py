@@ -36,6 +36,8 @@ from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Select, case, func, select
+from sqlalchemy.dialects.sqlite import Insert as SQLiteInsert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway.crypto import (
@@ -47,6 +49,10 @@ from mcp_gateway.crypto import (
     parse_credential,
 )
 from mcp_gateway.db.models import (
+    MAX_ERROR_TEXT,
+    CallError,
+    MetricBucket,
+    MetricKind,
     Operation,
     OperationStatus,
     Server,
@@ -333,6 +339,48 @@ class OperationSync(BaseModel):
     def needs_attention(self) -> bool:
         """Whether this sync is something the operator must review (spec §5.4)."""
         return bool(self.inserted or self.changed or self.removed)
+
+
+class BucketDelta(BaseModel):
+    """What one flush adds to one metric bucket (spec §4).
+
+    A delta rather than a total, because the numbers it carries were counted in
+    memory since the last flush and the row may already hold the count from the
+    flush before: :func:`add_metrics` adds, it never assigns.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    #: Aligned to ``metrics.bucket_seconds`` by whoever counted it.
+    bucket_start: dt.datetime
+    #: ``None`` for ``tools_list``, which belongs to the gateway rather than to
+    #: any one upstream.
+    server_id: int | None = None
+    kind: MetricKind = "tool_call"
+
+    calls: int = 0
+    errors: int = 0
+    bytes_out: int = 0
+    bytes_in: int = 0
+    duration_ms_sum: int = 0
+
+
+class CallFailure(BaseModel):
+    """One failed tool call, as the ``call_errors`` ring remembers it.
+
+    ``message`` is written by the caller from what *kind* of failure it was
+    rather than from the call itself: the arguments a model sent are the request
+    body, and spec §4 keeps that out of this table. See
+    :func:`mcp_gateway.metrics.failure_text`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    occurred_at: dt.datetime
+    server_id: int | None = None
+    tool_name: str | None = None
+    status_code: int | None = None
+    message: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -1016,7 +1064,91 @@ async def delete_setting(session: AsyncSession, key: str) -> bool:
     return True
 
 
+# --------------------------------------------------------------------------- #
+# Usage
+# --------------------------------------------------------------------------- #
+
+
+def _bucket_conflict(statement: SQLiteInsert, server_id: int | None) -> SQLiteInsert:
+    """Point one insert at the unique index that would reject it.
+
+    There are two, for the reason :class:`~mcp_gateway.db.models.MetricBucket`
+    gives: SQLite counts NULLs as distinct, so the three-column constraint does
+    not cover ``tools_list`` rows and a partial index covers exactly those. An
+    upsert has to name the right one, or the conflict is not caught at all and
+    the same bucket is inserted twice.
+    """
+    totals = {
+        column: getattr(MetricBucket, column) + getattr(statement.excluded, column)
+        for column in ("calls", "errors", "bytes_out", "bytes_in", "duration_ms_sum")
+    }
+    if server_id is None:
+        return statement.on_conflict_do_update(
+            index_elements=[MetricBucket.bucket_start, MetricBucket.kind],
+            index_where=MetricBucket.server_id.is_(None),
+            set_=totals,
+        )
+    return statement.on_conflict_do_update(
+        index_elements=[MetricBucket.bucket_start, MetricBucket.server_id, MetricBucket.kind],
+        set_=totals,
+    )
+
+
+async def add_metrics(session: AsyncSession, deltas: Iterable[BucketDelta]) -> int:
+    """Add a flush's worth of counters to the time series (spec §8).
+
+    One statement per bucket, whether that bucket saw one call or ten thousand:
+    the counting happened in memory, and this is the only place traffic turns
+    into writes. Each is an upsert rather than a read followed by a write, so a
+    flush that overlaps anything else touching the row still adds rather than
+    overwrites.
+    """
+    written = 0
+    for delta in deltas:
+        statement = _bucket_conflict(
+            sqlite_insert(MetricBucket).values(
+                bucket_start=delta.bucket_start,
+                server_id=delta.server_id,
+                kind=delta.kind,
+                calls=delta.calls,
+                errors=delta.errors,
+                bytes_out=delta.bytes_out,
+                bytes_in=delta.bytes_in,
+                duration_ms_sum=delta.duration_ms_sum,
+            ),
+            delta.server_id,
+        )
+        await session.execute(statement)
+        written += 1
+    await session.flush()
+    return written
+
+
+async def add_call_errors(session: AsyncSession, failures: Iterable[CallFailure]) -> int:
+    """Append to the ring of recent failures (spec §4).
+
+    The message is truncated here rather than trusted: the column has a size,
+    and the caller is describing something that already went wrong. Nothing
+    trims the ring at this end — task 031's purge owns how long the tail lives.
+    """
+    rows = [
+        CallError(
+            occurred_at=failure.occurred_at,
+            server_id=failure.server_id,
+            tool_name=failure.tool_name,
+            status_code=failure.status_code,
+            message=failure.message[:MAX_ERROR_TEXT],
+        )
+        for failure in failures
+    ]
+    session.add_all(rows)
+    await session.flush()
+    return len(rows)
+
+
 __all__ = [
+    "BucketDelta",
+    "CallFailure",
     "NewServer",
     "OperationCounts",
     "OperationInput",
@@ -1032,6 +1164,8 @@ __all__ = [
     "ServerSummary",
     "ToolRow",
     "acknowledge_server",
+    "add_call_errors",
+    "add_metrics",
     "all_settings",
     "auto_refresh_servers",
     "count_unreviewed",

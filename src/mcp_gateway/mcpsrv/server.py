@@ -48,6 +48,7 @@ connected client needs them.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Final
@@ -74,6 +75,7 @@ from mcp_gateway.mcpsrv import proxy, tools
 from mcp_gateway.mcpsrv.auth import protect
 from mcp_gateway.mcpsrv.notify import ToolListWatchers, session_key
 from mcp_gateway.mcpsrv.proxy import Upstream
+from mcp_gateway.metrics import Meter
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +158,17 @@ def app_upstreams(app: FastAPI) -> Upstreams:
     without keys, and no client is the outbound service not running.
     """
 
+    def note(outcome: proxy.CallOutcome) -> None:
+        """The debug line and the counter, at the one boundary both want.
+
+        Composed here rather than inside either of them: the proxy does not
+        need to know what a meter is, and the meter does not need to know how
+        a call is logged.
+        """
+        proxy.record_call(outcome)
+        meter: Meter = app.state.metrics
+        meter.call(outcome)
+
     @asynccontextmanager
     async def open_upstream() -> AsyncIterator[Upstream]:
         database: Database | None = app.state.db
@@ -169,19 +182,27 @@ def app_upstreams(app: FastAPI) -> Upstreams:
             raise MCPError(INTERNAL_ERROR, NO_CLIENT)
         settings: Settings = app.state.settings
         async with database.session() as session:
-            yield Upstream(session=session, cipher=cipher, client=client, http=settings.http)
+            yield Upstream(
+                session=session,
+                cipher=cipher,
+                client=client,
+                http=settings.http,
+                record=note,
+            )
 
     return open_upstream
 
 
-def record_listing(count: int) -> None:
+def record_listing(count: int, duration_ms: float = 0.0) -> None:
     """Note that a ``tools/list`` was served.
 
-    The metrics hook spec §4 asks for: task 028 counts this as a ``tools_list``
-    bucket with a null server. Until then it is the log line, which is also how
-    an operator watching at debug sees the list change size under them.
+    The log line an operator watching at debug sees the list change size on.
+    The bucket it also becomes is the meter's doing, next to the call site:
+    what is counted is that a listing happened and how long it took, never how
+    many tools came back, because a number of tools is a fact about the
+    configuration rather than about usage.
     """
-    logger.debug("tools/list -> %d tool(s)", count)
+    logger.debug("tools/list -> %d tool(s) in %.1f ms", count, duration_ms)
 
 
 class GatewayServer(Server[Any]):
@@ -214,6 +235,7 @@ def build_server(
     sessions: Sessions = no_database,
     upstreams: Upstreams = no_upstream,
     watchers: ToolListWatchers | None = None,
+    meter: Meter | None = None,
 ) -> GatewayServer:
     """The MCP server the gateway presents to clients.
 
@@ -221,7 +243,14 @@ def build_server(
     (:mod:`mcp_gateway.mcpsrv.notify`). A server built without one still answers
     every request; it simply tells nobody afterwards, which is what a server
     with no endpoint holding it open would do anyway.
+
+    ``meter`` is where listings are counted (spec §4). Held rather than read off
+    the app each time, unlike the database: it is made with the app and never
+    replaced, and a server built without one counts into a meter of its own that
+    nothing ever drains. Tool calls are counted through their :class:`Upstream`
+    instead, because that is what the proxy is given.
     """
+    counters = meter or Meter()
 
     async def on_list_tools(
         context: ServerRequestContext[Any], params: types.PaginatedRequestParams | None
@@ -232,9 +261,12 @@ def build_server(
         list changes: a client that has just been handed one is exactly the
         client whose copy a later refresh can make stale (spec §5.4).
         """
+        started = time.perf_counter()
         async with sessions() as session:
             listed = await tools.list_tools(session)
-        record_listing(len(listed.tools))
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        record_listing(len(listed.tools), elapsed_ms)
+        counters.listing(duration_ms=elapsed_ms)
         if watchers is not None:
             watchers.watch(session_key(context.request), context.session)
         return listed
@@ -272,11 +304,14 @@ class MCPEndpoint:
     """
 
     def __init__(
-        self, sessions: Sessions = no_database, upstreams: Upstreams = no_upstream
+        self,
+        sessions: Sessions = no_database,
+        upstreams: Upstreams = no_upstream,
+        meter: Meter | None = None,
     ) -> None:
         #: The connections to tell when a refresh moves the tool list.
         self.watchers = ToolListWatchers()
-        self.server = build_server(sessions, upstreams, self.watchers)
+        self.server = build_server(sessions, upstreams, self.watchers, meter)
         self.sessions = StreamableHTTPSessionManager(app=self.server)
         #: True only between the start and stop of :meth:`run`.
         self.running = False
@@ -345,7 +380,7 @@ def mount_mcp(app: FastAPI) -> MCPEndpoint:
     wants the thing with a lifetime, and the bearer guard has none.
     """
     settings: Settings = app.state.settings
-    endpoint = MCPEndpoint(app_sessions(app), app_upstreams(app))
+    endpoint = MCPEndpoint(app_sessions(app), app_upstreams(app), app.state.metrics)
     # The route serves the guarded application; ``app.state.mcp`` stays the
     # endpoint itself, because that is what the lifespan has to start.
     guarded = protect(endpoint, settings.mcp)

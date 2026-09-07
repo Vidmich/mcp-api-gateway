@@ -4,8 +4,8 @@
 test can build one against a throwaway :class:`~mcp_gateway.config.Settings`
 without a server, a database, or a config file anywhere near it.
 
-Everything with a lifetime — the database engine, the refresh scheduler, and
-later the metrics writer — is a *service*: an async context manager
+Everything with a lifetime — the database engine, the refresh scheduler, the
+metrics writer — is a *service*: an async context manager
 entered during startup and exited, in reverse order, during shutdown (spec §8).
 :func:`default_services` names the set a real gateway runs; a test that wants an
 inert app passes its own, so no future background task has to reopen the
@@ -33,6 +33,7 @@ from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
+from mcp_gateway.metrics import Meter, metrics_service
 from mcp_gateway.outbound import outbound_service
 from mcp_gateway.refresh import RefreshLocks
 from mcp_gateway.scheduler import refresh_service
@@ -182,6 +183,13 @@ def create_app(
     app.state.cipher = None if keys is None else CredentialCipher(keys.encryption_key)
     #: Set by the refresh service; ``None`` in an app that does not run one.
     app.state.scheduler = None
+    #: Counts every tool call and listing until the writer flushes them (spec
+    #: §4). Made here, like the locks below, because the MCP endpoint counts
+    #: into it from the moment the route exists — which is before any service
+    #: has started, and in an app that runs none at all.
+    app.state.metrics = Meter(settings.metrics.bucket_seconds)
+    #: Set by the metrics service; ``None`` in an app that does not run one.
+    app.state.metrics_writer = None
     #: Held by every refresh, whoever started it, so that two of the same server
     #: never overlap (spec §8). Built here rather than by the scheduler service,
     #: because the button on the page needs it in an app that runs no scheduler.
@@ -221,11 +229,18 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     the endpoint which uses it to proxy tool calls cannot start before it exists.
     The scheduler comes last, since a sweep uses all three, and it is the first
     thing stopped on the way out for the same reason.
+
+    The metrics writer goes *before* the MCP endpoint, which is the same as
+    saying it is torn down after it: services unwind in reverse, so the last
+    flush of the counters happens once nothing is serving calls that could still
+    be counted (spec §8).
+
     Tests that want an inert app pass their own list instead.
     """
     return (
         database_service(settings),
         outbound_service(settings.http),
+        metrics_service,
         mcp_service,
         refresh_service,
     )

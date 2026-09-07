@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final
 from urllib.parse import quote, urlencode
@@ -120,6 +120,46 @@ class UnknownTool(LookupError):  # noqa: N818 - it is a lookup, not a crash
 
 
 @dataclass(frozen=True, slots=True)
+class CallOutcome:
+    """One tool call, as the monitoring page will want to count it (spec §4)."""
+
+    tool_name: str
+    server_id: int
+    #: ``None`` when the call never produced a response.
+    status_code: int | None
+    request_bytes: int
+    response_bytes: int
+    duration_ms: float
+    #: One of the failure constants above, or ``None`` for a call that worked.
+    failure: str | None = None
+
+
+#: What a finished call is handed to. :func:`record_call` is the whole of it in
+#: an app that counts nothing; a running gateway passes
+#: :meth:`~mcp_gateway.metrics.Meter.call`, which also adds it to the buckets.
+Recorder = Callable[[CallOutcome], None]
+
+
+def record_call(outcome: CallOutcome) -> None:
+    """Note that a tool call happened, however it went.
+
+    The debug line an operator watches calls go by on, in deliberately the same
+    shape as the metric row: a tool that always fails is exactly what the
+    monitoring page exists to show, so the failure is part of the line rather
+    than something only a traceback would have mentioned.
+    """
+    logger.debug(
+        "tools/call %s -> %s in %.1f ms (%d B out, %d B in)%s",
+        outcome.tool_name,
+        "no response" if outcome.status_code is None else outcome.status_code,
+        outcome.duration_ms,
+        outcome.request_bytes,
+        outcome.response_bytes,
+        "" if outcome.failure is None else f" [{outcome.failure}]",
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class Upstream:
     """What a tool call needs from the gateway besides its arguments.
 
@@ -135,6 +175,9 @@ class Upstream:
     cipher: CredentialCipher
     client: httpx.AsyncClient
     http: HttpSettings
+    #: Where the outcome of each call goes. The default only logs it, so a
+    #: proxy exercised on its own counts nothing and needs nothing to count into.
+    record: Recorder = record_call
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,21 +245,6 @@ class Received:
 
 
 @dataclass(frozen=True, slots=True)
-class CallOutcome:
-    """One tool call, as the monitoring page will want to count it (spec §4)."""
-
-    tool_name: str
-    server_id: int
-    #: ``None`` when the call never produced a response.
-    status_code: int | None
-    request_bytes: int
-    response_bytes: int
-    duration_ms: float
-    #: One of the failure constants above, or ``None`` for a call that worked.
-    failure: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class _Attempt:
     """A result, plus what the metric will want to know about how it went."""
 
@@ -225,25 +253,6 @@ class _Attempt:
     request_bytes: int = 0
     response_bytes: int = 0
     failure: str | None = None
-
-
-def record_call(outcome: CallOutcome) -> None:
-    """Note that a tool call happened, however it went.
-
-    The metrics hook spec §6 asks for at the call boundary: task 028 turns this
-    into a ``tool_call`` row carrying the server, the byte counts and the
-    duration. Until then it is one debug line — which is deliberately the same
-    shape as the row, so the call site does not change when the writer arrives.
-    """
-    logger.debug(
-        "tools/call %s -> %s in %.1f ms (%d B out, %d B in)%s",
-        outcome.tool_name,
-        "no response" if outcome.status_code is None else outcome.status_code,
-        outcome.duration_ms,
-        outcome.request_bytes,
-        outcome.response_bytes,
-        "" if outcome.failure is None else f" [{outcome.failure}]",
-    )
 
 
 async def call_tool(
@@ -261,7 +270,7 @@ async def call_tool(
 
     started = time.perf_counter()
     attempt = await _attempt(upstream, row, dict(arguments or {}))
-    record_call(
+    upstream.record(
         CallOutcome(
             tool_name=row.tool_name,
             server_id=row.server_id,
@@ -651,6 +660,7 @@ __all__ = [
     "CallOutcome",
     "OutboundRequest",
     "Received",
+    "Recorder",
     "UnknownTool",
     "Upstream",
     "Wiring",

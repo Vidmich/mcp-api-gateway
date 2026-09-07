@@ -10,6 +10,7 @@ message and log line the module produced and prove none of them carries a token.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -503,22 +504,21 @@ async def test_a_body_is_sent_with_the_arguments_it_was_given(upstream: Upstream
 
 
 @respx.mock
-async def test_a_call_is_recorded_whatever_the_outcome(
-    upstream: Upstream, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The hook task 028 fills in. It fires for a call that never left the
-    # gateway as well as one that came back 500, because a tool that always
-    # fails is exactly what an operator wants to see on the monitoring page.
+async def test_a_call_is_recorded_whatever_the_outcome(upstream: Upstream) -> None:
+    # The recorder fires for a call that never left the gateway as well as one
+    # that came back 503, because a tool that always fails is exactly what an
+    # operator wants to see on the monitoring page. In a running gateway this is
+    # what the meter is handed (task 028).
     recorded: list[proxy.CallOutcome] = []
-    monkeypatch.setattr(proxy, "record_call", recorded.append)
+    counted = dataclasses.replace(upstream, record=recorded.append)
 
     name = await register(
-        upstream, schema=a_schema({"petId": {"type": "integer"}}, required=["petId"])
+        counted, schema=a_schema({"petId": {"type": "integer"}}, required=["petId"])
     )
     respx.get(f"{BASE_URL}/pets").mock(return_value=httpx.Response(503, text="down"))
 
-    await proxy.call_tool(upstream, name, {})
-    await proxy.call_tool(upstream, name, {"petId": 1})
+    await proxy.call_tool(counted, name, {})
+    await proxy.call_tool(counted, name, {"petId": 1})
 
     assert [(outcome.status_code, outcome.failure) for outcome in recorded] == [
         (None, proxy.INVALID_ARGUMENTS),
@@ -526,6 +526,12 @@ async def test_a_call_is_recorded_whatever_the_outcome(
     ]
     assert all(outcome.tool_name == name for outcome in recorded)
     assert recorded[1].response_bytes == len(b"down")
+
+
+async def test_a_proxy_given_no_recorder_still_makes_the_call(upstream: Upstream) -> None:
+    # The default only logs. A gateway always passes something that counts, but
+    # the proxy is exercised on its own in half this file and must not need one.
+    assert upstream.record is proxy.record_call
 
 
 @respx.mock

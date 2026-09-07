@@ -24,9 +24,9 @@ Count what the gateway does, cheaply enough that traffic does not become write l
 
 ## Acceptance
 
-- [ ] N tool calls produce the expected counters in the expected buckets.
-- [ ] A `tools/list` call is recorded under `tools_list` with a null server.
-- [ ] Failed calls increment both `calls` and `errors` and add one `call_errors` row.
-- [ ] Shutdown flushes pending counters.
-- [ ] A burst of calls inside one window produces one upsert, not one per call.
-- [ ] No credential or request body reaches `call_errors`.
+- [x] N tool calls produce the expected counters in the expected buckets.
+- [x] A `tools/list` call is recorded under `tools_list` with a null server.
+- [x] Failed calls increment both `calls` and `errors` and add one `call_errors` row.
+- [x] Shutdown flushes pending counters.
+- [x] A burst of calls inside one window produces one upsert, not one per call.
+- [x] No credential or request body reaches `call_errors`.
