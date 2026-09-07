@@ -552,8 +552,12 @@ def test_saving_creates_the_server_and_the_list_shows_it(
         )
         assert saved.status_code == 303
         assert saved.headers["location"] == SERVERS_PATH
-        listing = http.get(SERVERS_PATH, headers=HTML).text
+        landed = http.get(SERVERS_PATH, headers=HTML)
+        listing = landed.text
 
+    # And the browser is told not to keep the page it landed on, which is what
+    # stops the next visit showing a list from before the save (task 103).
+    assert landed.headers["cache-control"] == "no-store"
     assert "Pet Store" in listing
     assert "2 / 3" in listing.replace("\n", " ").replace("  ", " ")
     [server] = stored(settings)

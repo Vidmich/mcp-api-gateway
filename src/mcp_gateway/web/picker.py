@@ -91,7 +91,7 @@ NO_BASE_URL: Final = (
 )
 
 #: What is said once the row exists, on the page that now lists it.
-SAVED: Final = "{name} was added: {selected} of {total} operations are exposed as tools."
+SAVED: Final = "{name} was added: {selected} of {total} tools are exposed."
 
 
 @dataclass(frozen=True, slots=True)

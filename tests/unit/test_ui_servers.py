@@ -41,7 +41,7 @@ from mcp_gateway.web.routes_ui import (
     INTERVAL_FIELD,
     INTERVAL_INVALID,
     LIST_TARGET,
-    NEVER_REFRESHED,
+    NEVER_DOWNLOADED,
     NEW_SERVER_PATH,
     SERVERS_PATH,
     ServerRow,
@@ -198,14 +198,12 @@ def test_a_row_knows_where_its_own_routes_are() -> None:
 
 
 def test_the_delete_question_names_what_goes_and_what_stays() -> None:
-    assert a_row().delete_question == (
-        "Delete Petstore and its 12 operations? Recorded usage is kept."
-    )
+    assert a_row().delete_question == ("Delete Petstore and its 12 tools? Recorded usage is kept.")
 
 
-def test_the_delete_question_counts_a_lone_operation_in_the_singular() -> None:
+def test_the_delete_question_counts_a_lone_tool_in_the_singular() -> None:
     assert a_row(counts={"total": 1, "selected": 1}).delete_question.startswith(
-        "Delete Petstore and its 1 operation?"
+        "Delete Petstore and its 1 tool?"
     )
 
 
@@ -233,8 +231,25 @@ def test_a_long_upstream_error_is_cut_down_to_a_tooltip() -> None:
     assert len(row.refresh_title) < 300
 
 
-def test_a_server_never_refreshed_says_so_in_its_tooltip_too() -> None:
-    assert a_row().refresh_title == NEVER_REFRESHED
+def test_a_server_whose_spec_was_never_read_says_so_in_its_tooltip_too() -> None:
+    assert a_row().refresh_title == NEVER_DOWNLOADED
+
+
+def test_a_row_states_its_status_and_offers_the_other_one() -> None:
+    """The column says what a server is; the button says what pressing it does."""
+    off = a_row(enabled=False)
+    on = a_row(enabled=True)
+
+    assert (off.status, off.toggle_label, off.toggle_value) == ("disabled", "Enable", "true")
+    assert (on.status, on.toggle_label, on.toggle_value) == ("enabled", "Disable", "false")
+
+
+def test_the_counts_tooltip_counts_tools() -> None:
+    assert a_row().counts_title == "3 of 12 tools exposed."
+
+
+def test_a_server_with_a_document_has_no_note_where_its_download_time_goes() -> None:
+    assert a_row().spec_note is None
 
 
 # --- the table ---------------------------------------------------------------
@@ -269,7 +284,7 @@ def test_a_row_carries_its_selected_and_total_counts(tmp_path: Path) -> None:
     assert "2 / 5" in re.sub(r"\s+", " ", body)
 
 
-def test_operations_nobody_has_reviewed_are_badged(tmp_path: Path) -> None:
+def test_tools_nobody_has_reviewed_are_badged(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
 
     async def unreviewed(session: AsyncSession) -> None:
@@ -296,6 +311,63 @@ def test_a_server_with_nothing_new_wears_no_new_badge(tmp_path: Path) -> None:
     assert "badge--new" not in body
 
 
+def test_the_headings_name_what_the_columns_hold(tmp_path: Path) -> None:
+    """The operator's words, not the gateway's internal ones (task 103)."""
+    settings = settings_for(tmp_path)
+    seed(settings, register)
+
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+
+    for heading in ("Status", "Tools", "Last spec download"):
+        assert f">{heading}</th>" in body
+    for gone in ("Enabled</th>", "Operations</th>", "Last refresh</th>"):
+        assert gone not in body
+
+
+def test_the_status_column_states_the_state_and_holds_no_control(tmp_path: Path) -> None:
+    """A live checkbox in a column of facts is a setting a reader can trip over."""
+    settings = settings_for(tmp_path)
+
+    async def one_of_each(session: AsyncSession) -> None:
+        await register(session, "petstore", enabled=True)
+        await register(session, "billing", enabled=False)
+
+    seed(settings, one_of_each)
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+
+    assert 'class="badge badge--enabled"' in body
+    assert 'class="badge badge--disabled"' in body
+    assert "checkbox" not in body
+
+
+def test_a_row_offers_the_switch_it_is_not_already_in(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+
+    async def one_of_each(session: AsyncSession) -> None:
+        await register(session, "petstore", enabled=True)
+        await register(session, "billing", enabled=False)
+
+    seed(settings, one_of_each)
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+
+    assert ">Disable</button>" in body
+    assert ">Enable</button>" in body
+
+
+def test_every_row_offers_a_way_in_to_the_page_that_edits_it(tmp_path: Path) -> None:
+    """The name links there too, but a name does not look like a way in."""
+    settings = settings_for(tmp_path)
+    server_id = seed(settings, register)
+
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+
+    assert f'<a class="button" href="{SERVERS_PATH}/{server_id}">Edit</a>' in body
+
+
 def test_a_server_that_needs_attention_says_so(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
 
@@ -310,15 +382,21 @@ def test_a_server_that_needs_attention_says_so(tmp_path: Path) -> None:
     assert "Needs attention" in body
 
 
-def test_a_server_nobody_has_refreshed_says_never(tmp_path: Path) -> None:
+def test_a_registered_server_shows_when_its_spec_was_downloaded(tmp_path: Path) -> None:
+    """Registering read the document, so the column has something to say.
+
+    It said "Never" before task 103, on a row whose every operation had come out
+    of a fetch a second earlier.
+    """
     settings = settings_for(tmp_path)
     seed(settings, register)
 
     with client(settings) as http:
         body = http.get(SERVERS_PATH, headers=HTML).text
 
-    assert NEVER in body
-    assert NEVER_REFRESHED in body
+    assert NEVER not in body
+    assert NEVER_DOWNLOADED not in body
+    assert "just now" in body
 
 
 def test_a_failed_refresh_shows_as_a_failure(tmp_path: Path) -> None:
@@ -424,6 +502,62 @@ def test_disabling_a_server_removes_its_tools_from_the_next_listing(tmp_path: Pa
     assert in_the_database(settings, repo.list_tools) == []
 
 
+def test_the_enable_button_posts_what_the_route_takes(tmp_path: Path) -> None:
+    """The checkbox became a button; the route underneath did not move.
+
+    What is posted is read out of the rendered page rather than written here,
+    so a form that stopped agreeing with the route it submits to fails.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seed(settings, lambda session: register(session, enabled=False))
+
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+        submitted = re.search(r'name="enabled" value="([^"]+)"', body)
+        assert submitted is not None
+        http.post(
+            f"{SERVERS_PATH}/{server_id}/enabled",
+            data={"enabled": submitted.group(1)},
+            headers=HTMX,
+        )
+
+    stored = in_the_database(settings, lambda session: repo.require_server(session, server_id))
+    assert stored.enabled is True
+
+
+def test_the_disable_button_posts_what_the_route_takes(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    server_id = seed(settings, register)
+
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+        submitted = re.search(r'name="enabled" value="([^"]+)"', body)
+        assert submitted is not None
+        http.post(
+            f"{SERVERS_PATH}/{server_id}/enabled",
+            data={"enabled": submitted.group(1)},
+            headers=HTMX,
+        )
+
+    stored = in_the_database(settings, lambda session: repo.require_server(session, server_id))
+    assert stored.enabled is False
+
+
+def test_the_swapped_row_offers_the_other_direction(tmp_path: Path) -> None:
+    """The answer to a switch is a row an operator can switch straight back."""
+    settings = settings_for(tmp_path)
+    server_id = seed(settings, lambda session: register(session, enabled=False))
+
+    with client(settings) as http:
+        body = http.post(
+            f"{SERVERS_PATH}/{server_id}/enabled", data={"enabled": "true"}, headers=HTMX
+        ).text
+
+    assert 'class="badge badge--enabled"' in body
+    assert ">Disable</button>" in body
+    assert 'name="enabled" value="false"' in body
+
+
 def test_the_toggle_answers_htmx_with_the_row_alone(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
     server_id = seed(settings, register)
@@ -487,11 +621,11 @@ def test_the_delete_button_asks_before_it_acts(tmp_path: Path) -> None:
         body = http.get(SERVERS_PATH, headers=HTML).text
 
     assert "hx-confirm=" in body
-    assert "Delete Petstore and its 2 operations? Recorded usage is kept." in body
+    assert "Delete Petstore and its 2 tools? Recorded usage is kept." in body
     assert f'hx-target="{LIST_TARGET}"' in body
 
 
-def test_deleting_a_server_removes_its_operations(tmp_path: Path) -> None:
+def test_deleting_a_server_removes_its_stored_tools(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
 
     async def with_operations(session: AsyncSession) -> int:

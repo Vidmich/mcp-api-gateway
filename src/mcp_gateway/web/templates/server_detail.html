@@ -57,7 +57,7 @@
     <dd class="summary__value">{{ settings.server.spec_format }}</dd>
   </div>
   <div class="summary__pair">
-    <dt class="summary__term">Last refresh</dt>
+    <dt class="summary__term">Last spec download</dt>
     <dd class="summary__value">
       {{ status_badge(overview.state, label=overview.refreshed, title=overview.refresh_title) }}
     </dd>
@@ -65,7 +65,7 @@
   <div class="summary__pair">
     <dt class="summary__term">Exposed</dt>
     <dd class="summary__value" title="{{ overview.counts_title }}">
-      {{ settings.server.counts.selected }} of {{ settings.server.counts.total }} operations
+      {{ settings.server.counts.selected }} of {{ settings.server.counts.total }} tools
     </dd>
   </div>
 </dl>
@@ -222,7 +222,7 @@
 {% endif %}
 
 <div class="toolbar">
-  <h2 class="toolbar__title">Operations</h2>
+  <h2 class="toolbar__title">Tools</h2>
 </div>
 
 {# Said once here rather than on every row, which is where it would be noise. #}

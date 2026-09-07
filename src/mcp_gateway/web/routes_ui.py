@@ -6,6 +6,13 @@ registered, what is switched on, how much of each service is actually exposed,
 and whether the last look at an upstream's spec worked. Everything else here is
 in service of that row.
 
+**A column of facts holds no controls.** Enabling and disabling are actions, in
+the column called Actions, beside Edit, Refresh and Delete; the Status column
+states which the server is. A live checkbox in the middle of a table is a
+setting an operator can change by mis-clicking while reading it, and a state
+shown as a control is a state they have to interpret rather than read
+(task 103).
+
 **Formatting happens in Python, not in the template.** "4 minutes ago", "2 of 12
 operations", the sentence the delete dialog asks — each is a function with a
 test, and the template does no arithmetic and joins no strings. A page whose
@@ -205,7 +212,10 @@ LIST_TARGET: Final = f"#{LIST_ID}"
 HOUR_MINUTES: Final = 60
 DAY_MINUTES: Final = 24 * HOUR_MINUTES
 
-NEVER_REFRESHED: Final = "This server has never been refreshed."
+#: The tooltip on a row with no download behind it. Rare, now that registering
+#: a server stamps the read it did (task 103): a row gets here by predating that,
+#: or by being the built-in server, which has no document at all.
+NEVER_DOWNLOADED: Final = "This server's spec has never been downloaded."
 
 #: What the flag means when a refresh diff put it up.
 UNREVIEWED_TITLE: Final = "A refresh found changes nobody has reviewed yet."
@@ -232,6 +242,9 @@ BUILTIN_ROW_NOTE: Final = "Provided by the gateway; its tools run in this proces
 BUILTIN_UNDELETABLE: Final = (
     "This server is part of the gateway and cannot be deleted. Switch it off instead."
 )
+#: What stands where a download time would, on the one row with no document
+#: behind it. A badge there would date an event that cannot happen to it.
+BUILTIN_NO_SPEC: Final = "No spec"
 
 #: An upstream's error text can be a whole HTML page. The tooltip gets the start
 #: of it; the detail page (task 023) is where the whole thing belongs.
@@ -375,12 +388,33 @@ class ServerRow:
 
     @property
     def detail_path(self) -> str:
-        """Task 023's page. The name links there."""
+        """Task 023's page. The name links there, and so does the Edit action."""
         return f"{SERVERS_PATH}/{self.server.id}"
 
     @property
     def toggle_path(self) -> str:
         return f"{SERVERS_PATH}/{self.server.id}/enabled"
+
+    @property
+    def status(self) -> str:
+        """Which badge the Status column wears — the same two the monitoring
+        page uses for the same fact, so one page cannot describe a server
+        differently from the other."""
+        return "enabled" if self.server.enabled else "disabled"
+
+    @property
+    def toggle_label(self) -> str:
+        """What the button offers, which is the transition rather than the
+        state. A button labelled with what a row already is reads as a
+        description somebody made clickable."""
+        return "Disable" if self.server.enabled else "Enable"
+
+    @property
+    def toggle_value(self) -> str:
+        """What that button posts. Exactly what the checkbox it replaced sent,
+        to exactly the route it sent it to, so nothing downstream — the swap,
+        the no-JavaScript fallback, the tests — has to know it changed."""
+        return "false" if self.server.enabled else "true"
 
     @property
     def delete_path(self) -> str:
@@ -414,6 +448,13 @@ class ServerRow:
         return BUILTIN_ROW_NOTE if self.server.builtin else None
 
     @property
+    def spec_note(self) -> str | None:
+        """What stands where a download time would, for a server with no
+        document. Same rule as :attr:`refreshable`, said in the cell rather
+        than on the button."""
+        return BUILTIN_NO_SPEC if self.server.builtin else None
+
+    @property
     def undeletable_note(self) -> str:
         """What stands where the Delete button would, for the one row that has
         none. Spelled here rather than in the template, beside the rule that
@@ -426,8 +467,11 @@ class ServerRow:
 
     @property
     def counts_title(self) -> str:
+        """What the Tools column means. The document's word is *operation*; the
+        operator's is *tool*, because that is what their client shows them, and
+        this is a page for the operator (task 103)."""
         counts = self.server.counts
-        return f"{counts.selected} of {plural(counts.total, 'operation')} exposed as tools."
+        return f"{counts.selected} of {plural(counts.total, 'tool')} exposed."
 
     @property
     def flagged_by_gateway(self) -> bool:
@@ -465,9 +509,9 @@ class ServerRow:
 
     @property
     def refresh_title(self) -> str:
-        """What the refresh badge says when the pointer rests on it."""
+        """What the spec-download badge says when the pointer rests on it."""
         if self.refreshed_at is None:
-            return NEVER_REFRESHED
+            return NEVER_DOWNLOADED
         error = self.server.last_refresh_error
         if error:
             return f"{self.refreshed_at}: {error[:MAX_ERROR_IN_TITLE]}"
@@ -483,7 +527,7 @@ class ServerRow:
         """
         return (
             f"Delete {self.server.name} and its "
-            f"{plural(self.server.counts.total, 'operation')}? Recorded usage is kept."
+            f"{plural(self.server.counts.total, 'tool')}? Recorded usage is kept."
         )
 
 
@@ -1349,6 +1393,7 @@ __all__ = [
     "ACKNOWLEDGE_PATH",
     "BACK_FIELD",
     "BACK_TO_LIST",
+    "BUILTIN_NO_SPEC",
     "BUILTIN_ROW_NOTE",
     "BUILTIN_UNDELETABLE",
     "DETAIL_PATH",
@@ -1360,7 +1405,7 @@ __all__ = [
     "LIST_ID",
     "LIST_TARGET",
     "LIST_TEMPLATE",
-    "NEVER_REFRESHED",
+    "NEVER_DOWNLOADED",
     "NEW_SERVER_PATH",
     "NEW_SERVER_TEMPLATE",
     "NO_CIPHER",

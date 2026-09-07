@@ -61,7 +61,12 @@ from mcp_gateway.db.session import Database, open_database
 from mcp_gateway.mcpsrv import proxy, tools
 from mcp_gateway.mcpsrv.proxy import GATEWAY_ERROR, CallOutcome, Upstream
 from mcp_gateway.refresh import refresh_server
-from mcp_gateway.web.routes_ui import BUILTIN_ROW_NOTE, BUILTIN_UNDELETABLE, to_row
+from mcp_gateway.web.routes_ui import (
+    BUILTIN_NO_SPEC,
+    BUILTIN_ROW_NOTE,
+    BUILTIN_UNDELETABLE,
+    to_row,
+)
 
 SPEC_URL = "https://petstore.example/openapi.json"
 API_TOKEN = "SENTINEL-AGENT-TOKEN"
@@ -797,7 +802,11 @@ async def test_the_row_offers_neither_delete_nor_refresh_and_says_why(
     assert built_in.refreshable is False
     assert built_in.origin_note == BUILTIN_ROW_NOTE
     assert built_in.undeletable_note == BUILTIN_UNDELETABLE
+    # And no download time, because there is no document behind it: a badge
+    # there would date an event that cannot happen to this row (task 103).
+    assert built_in.spec_note == BUILTIN_NO_SPEC
     assert (other.deletable, other.refreshable, other.origin_note) == (True, True, None)
+    assert other.spec_note is None
 
 
 # --------------------------------------------------------------------------- #

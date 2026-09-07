@@ -4,10 +4,9 @@
    rather than a macro and why it starts at the ``<tr>``: htmx replaces the row
    it came from with exactly this.
 
-   The toggle is a real form with a real ``action``, and htmx only intercepts
-   it. Without the script the operator still gets a checkbox and a Save button
-   pointing at the same route, which is also what makes the route testable
-   without a browser. #}
+   Every action is a real form with a real ``action``, and htmx only intercepts
+   it. Without the script the operator still gets a button posting to the same
+   route, which is also what makes the routes testable without a browser. #}
 {% from "partials/status_badge.html" import status_badge %}
 {% from "partials/confirm.html" import confirm %}
 <tr id="server-{{ row.server.id }}">
@@ -35,30 +34,10 @@
     <code>{{ row.server.base_url }}</code>
     {% endif %}
   </td>
-  <td>
-    <form
-      class="toggle"
-      method="post"
-      action="{{ row.toggle_path }}"
-      hx-post="{{ row.toggle_path }}"
-      hx-trigger="change"
-      hx-target="closest tr"
-      hx-swap="outerHTML"
-    >
-      <input
-        class="toggle__input"
-        type="checkbox"
-        id="enabled-{{ row.server.id }}"
-        name="enabled"
-        value="true"
-        {% if row.server.enabled %}checked{% endif %}
-      />
-      <label class="toggle__label" for="enabled-{{ row.server.id }}">
-        {{ "Enabled" if row.server.enabled else "Disabled" }}
-      </label>
-      <noscript><button class="button" type="submit">Save</button></noscript>
-    </form>
-  </td>
+  {# A state, stated. The switch that changes it is an action in the Actions
+     column: a live control in a column of facts is something an operator can
+     change by mis-clicking while reading the table (task 103). #}
+  <td>{{ status_badge(row.status) }}</td>
   <td class="numeric">
     <span title="{{ row.counts_title }}">
       {{ row.server.counts.selected }} / {{ row.server.counts.total }}
@@ -67,8 +46,36 @@
     {{ status_badge("new", label="%d new"|format(row.server.counts.new)) }}
     {% endif %}
   </td>
-  <td>{{ status_badge(row.state, label=row.refreshed, title=row.refresh_title) }}</td>
+  <td>
+    {# The built-in server has no document to read, so it gets a word rather
+       than a badge dating an event that cannot happen to it (task 102). #}
+    {% if row.spec_note %}
+    <span class="cell-note">{{ row.spec_note }}</span>
+    {% else %}
+    {{ status_badge(row.state, label=row.refreshed, title=row.refresh_title) }}
+    {% endif %}
+  </td>
   <td class="row-actions">
+    {# The way in to everything that can be changed. The name links here too,
+       but a name does not look like a way in, and the operator looking for one
+       is looking in this column. Shown for the built-in server as well: the
+       page it opens is where that server's tools are listed, even though its
+       settings are not an operator's to change. #}
+    <a class="button" href="{{ row.detail_path }}">Edit</a>
+    {# The switch, as an action. It posts what the checkbox posted, to the
+       route the checkbox posted to, so htmx still swaps this row in place and
+       a browser that never ran the script still works. #}
+    <form
+      class="toggle"
+      method="post"
+      action="{{ row.toggle_path }}"
+      hx-post="{{ row.toggle_path }}"
+      hx-target="closest tr"
+      hx-swap="outerHTML"
+    >
+      <input type="hidden" name="enabled" value="{{ row.toggle_value }}" />
+      <button class="button" type="submit">{{ row.toggle_label }}</button>
+    </form>
     {# A real form and a whole page, not an htmx swap: a refresh fetches an
        upstream document, and the answer belongs on a page that shows what came
        of it. ``back`` says which of the two pages offering this button it was

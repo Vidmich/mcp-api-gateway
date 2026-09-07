@@ -77,6 +77,12 @@ ONLY_ENABLED: Final = "can only be switched on and off"
 #: The one field of a patch the built-in row accepts.
 ENABLED_FIELD: Final = "enabled"
 
+#: What ``last_refresh_status`` says about a read that worked. Spelled here
+#: as well as in :mod:`mcp_gateway.refresh`, which owns the refresh vocabulary,
+#: because a server is stamped with it at birth and this module cannot import
+#: that one without closing a cycle.
+REFRESH_OK: Final = "ok"
+
 #: Statuses that mean the operator has something to look at (spec §5.4).
 UNREVIEWED: Final[frozenset[str]] = frozenset({"new", "changed"})
 
@@ -370,6 +376,11 @@ class NewServer(BaseModel):
 
     spec_hash: str | None = None
     spec_snapshot: dict[str, Any] | None = None
+
+    #: When the document behind this server was read. Defaults to now, which is
+    #: what registering means; a caller with the exact moment of its own fetch
+    #: can say so instead.
+    downloaded_at: dt.datetime | None = None
 
 
 class ServerPatch(BaseModel):
@@ -677,7 +688,14 @@ async def create_builtin_server(
 async def create_server(
     session: AsyncSession, new: NewServer, *, cipher: CredentialCipher
 ) -> Server:
-    """Register a server. Returns the flushed row, so its id is available."""
+    """Register a server. Returns the flushed row, so its id is available.
+
+    The refresh columns are stamped here, because registering a server *is* a
+    spec download: everything this row knows came out of a document read a
+    moment ago. Leaving them empty would show "never downloaded" against a
+    server whose every operation arrived that way (task 103), and would tell a
+    restarted scheduler it had never had a successful read of this upstream.
+    """
     server = Server(
         name=new.name,
         slug=new.slug,
@@ -690,6 +708,8 @@ async def create_server(
         spec_auth_mode=new.spec_auth_mode,
         spec_hash=new.spec_hash,
         spec_snapshot=new.spec_snapshot,
+        last_refresh_at=new.downloaded_at or utcnow(),
+        last_refresh_status=REFRESH_OK,
     )
     _write_api_credential(server, new.credential, cipher=cipher)
     _write_spec_credential(server, new.spec_credential, cipher=cipher)

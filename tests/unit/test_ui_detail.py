@@ -1252,6 +1252,20 @@ def test_the_note_describes_the_stored_row_and_not_a_rejected_form() -> None:
     assert view.fields[RATE_CALLS_FIELD] == "5"
 
 
+def test_the_page_calls_them_tools_and_dates_the_download(tmp_path: Path) -> None:
+    """The operator's words, on the page as on the list (task 103)."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    assert ">Tools</h2>" in body
+    assert "Last spec download" in body
+    assert ">Operations</h2>" not in body
+    assert "Last refresh" not in body
+
+
 def test_the_page_offers_the_boxes_and_says_what_is_in_force(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
     server_id = seeded(

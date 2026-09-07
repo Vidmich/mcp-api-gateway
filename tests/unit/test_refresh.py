@@ -429,7 +429,10 @@ async def test_an_unchanged_spec_still_records_that_somebody_looked(
 ) -> None:
     serves(respx.mock, V1)
     server = await a_server(session, cipher)
-    assert server.last_refresh_at is None
+    # Registering it was itself a download, so what this proves is that the
+    # timestamp moves again for a refresh that found nothing to change.
+    registered_at = server.last_refresh_at
+    assert registered_at is not None
 
     serves(respx.mock, V1)
     report = await refresh.refresh_server(session, server.id, cipher=cipher)
@@ -438,6 +441,7 @@ async def test_an_unchanged_spec_still_records_that_somebody_looked(
     assert stored.last_refresh_status == "ok"
     assert stored.last_refresh_error is None
     assert stored.last_refresh_at == report.at
+    assert stored.last_refresh_at > registered_at
 
 
 @respx.mock

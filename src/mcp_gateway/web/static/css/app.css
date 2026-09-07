@@ -377,8 +377,16 @@ a.badge:hover {
 
 .row-actions .button + .button,
 .row-actions form + form,
-.row-actions form + .button {
+.row-actions form + .button,
+.row-actions .button + form {
   margin-left: 0.25rem;
+}
+
+/* The one thing in this column that is a sentence rather than a control — what
+ * stands where the built-in server's Delete would be. The buttons must not
+ * wrap; a sentence has to, or it sets the width of the whole table. */
+.row-actions .cell-note {
+  white-space: normal;
 }
 
 /* The checkbox column: as narrow as a checkbox, and centred over it. */

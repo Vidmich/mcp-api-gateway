@@ -1,0 +1,27 @@
+# mcp-gateway configuration
+#
+# Written on first run. Only the settings worth changing are listed here --
+# every other setting falls back to a built-in default, so this file does not
+# go stale when a later release adds one.
+#
+# Precedence: command-line flag > MCP_GATEWAY_* environment variable > this
+# file > built-in default.
+
+[server]
+host = "127.0.0.1"
+port = 8080
+# Holds the SQLite database and keys.json. A relative path is resolved against
+# this file, not the working directory the process happens to start in.
+data_dir = "data"
+
+# Admin login is off until this section exists. While it stays commented out,
+# the configuration and monitoring pages are open to anyone who can reach the
+# port above.
+# [admin]
+# username = "admin"
+# password = "changeme"
+
+# /mcp is open until a token is set. While it stays commented out, anyone who
+# can reach the port can call every enabled operation.
+# [mcp]
+# auth_token = "put-a-long-random-string-here"

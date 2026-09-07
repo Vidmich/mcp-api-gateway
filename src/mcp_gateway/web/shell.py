@@ -1,7 +1,7 @@
 """The UI shell: the page every other page is rendered into (spec §7.1).
 
 Tasks 020 to 023 add the pages; this adds what they render *into*. One Jinja
-environment with autoescaping on, one layout with the Configuration / Monitoring
+environment with autoescaping on, one layout with the API Servers / Monitoring
 navigation, one stylesheet, one copy of htmx, and the error pages a request
 lands on when there is no page to show it.
 
@@ -20,6 +20,15 @@ write into the page.
 
 ``/static`` is deliberately outside ``/ui``. The stylesheet has to load on the
 login page, which by definition renders to someone who is not signed in.
+
+**Nothing rendered here may be stored by the browser.** Every page is a view of
+state the operator is in the middle of changing, and several of them are landed
+on immediately after a redirect that changed it — registering a server ends on
+the list it now belongs to. Without a directive saying otherwise a browser is
+free to reuse the copy it already had, and the operator reads that as a save
+that did not happen (task 103). ``no-store`` rather than ``no-cache``, because a
+page listing upstreams, their base URLs and what is switched on is not something
+to leave in a disk cache either.
 """
 
 from __future__ import annotations
@@ -58,6 +67,11 @@ STATIC_DIR: Final = Path(__file__).parent / "static"
 STATIC_PREFIX: Final = "/static"
 
 MONITORING_PATH: Final = f"{UI_PREFIX}/monitoring"
+
+#: What every rendered page and fragment carries, for the reason in the module
+#: docstring. The login page sets the same thing for its own reasons
+#: (:mod:`mcp_gateway.web.auth`); this is the rule for the rest.
+NO_STORE: Final = "no-store"
 
 FLASH_COOKIE: Final = "mcp_gateway_flash"
 
@@ -101,12 +115,15 @@ class NavItem:
     #: Where the entry goes.
     path: str
     #: A request path at or below this one lights the entry up, so that
-    #: ``/ui/servers/7`` still shows Configuration as the current section.
+    #: ``/ui/servers/7`` still shows API Servers as the current section.
     prefix: str
 
 
+#: The sections, in the order they are read. "API Servers" rather than
+#: "Configuration" because it is what the page lists, and because the word is
+#: about to belong to the page that holds the gateway's own settings (task 104).
 NAV: Final = (
-    NavItem("Configuration", HOME_PATH, f"{UI_PREFIX}/servers"),
+    NavItem("API Servers", HOME_PATH, f"{UI_PREFIX}/servers"),
     NavItem("Monitoring", MONITORING_PATH, MONITORING_PATH),
 )
 
@@ -250,6 +267,10 @@ class Shell:
             # Shown once. Clearing here rather than on the next request is what
             # stops a message from following the operator around the UI.
             self.clear(response)
+        # Set here rather than in a middleware so that it covers exactly what
+        # this method renders — the pages and the htmx fragments — and nothing
+        # about the static assets, which are versioned and meant to be kept.
+        response.headers["Cache-Control"] = NO_STORE
         return response
 
     def error_page(self, request: Request, status: int) -> Response:
@@ -365,6 +386,7 @@ __all__ = [
     "MAX_FLASH_CHARS",
     "MONITORING_PATH",
     "NAV",
+    "NO_STORE",
     "STATIC_DIR",
     "STATIC_PREFIX",
     "TEMPLATES_DIR",

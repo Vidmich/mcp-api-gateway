@@ -238,7 +238,7 @@ off — a minute, then doubling, up to six hours — instead of being retried ev
 tick.
 
 Auto-refresh itself is per server, on its detail page. This is the one setting
-here the UI can override at runtime: the box on the Configuration page writes
+here the UI can override at runtime: the box on the API Servers page writes
 the same key into the database, and the stored value wins for as long as it is
 there.
 

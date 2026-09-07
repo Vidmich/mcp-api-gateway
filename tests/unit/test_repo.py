@@ -123,10 +123,14 @@ async def test_a_registered_server_keeps_what_it_was_given(
 
     assert server.id == 1
     assert (server.name, server.slug, server.tool_prefix) == ("Petstore", "petstore", "petstore")
-    # Defaults: visible, manual, unauthenticated, never refreshed.
+    # Defaults: visible, manual, unauthenticated.
     assert (server.enabled, server.auto_refresh, server.needs_attention) == (True, False, False)
     assert (server.auth_type, server.auth_config_encrypted) == ("none", None)
-    assert (server.spec_auth_mode, server.last_refresh_at) == ("none", None)
+    assert server.spec_auth_mode == "none"
+    # Not a default: registering a server read its document, so the row is born
+    # having had one successful spec download (task 103).
+    assert server.last_refresh_at is not None
+    assert (server.last_refresh_status, server.last_refresh_error) == ("ok", None)
 
 
 async def test_a_credential_is_stored_encrypted_and_types_itself(

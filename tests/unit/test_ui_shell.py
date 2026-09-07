@@ -29,6 +29,7 @@ from mcp_gateway.web.shell import (
     MAX_FLASHES,
     MONITORING_PATH,
     NAV,
+    NO_STORE,
     STATIC_DIR,
     STATIC_PREFIX,
     TEMPLATES_DIR,
@@ -173,6 +174,26 @@ def test_a_signed_in_masthead_offers_a_sign_out(tmp_path: Path) -> None:
         assert "Sign out" in http.get(LAYOUT_PAGE, headers=HTML).text
 
 
+def test_a_rendered_page_is_never_stored_by_the_browser(tmp_path: Path) -> None:
+    """Every page here is a view of state the operator is in the middle of
+    changing, and several are landed on straight after a redirect that changed
+    it. Left to itself a browser may answer that GET from its own cache, which
+    is how a server registered a second ago fails to appear on the list it was
+    registered from (task 103)."""
+    with client(settings_for(tmp_path)) as http:
+        response = http.get(LAYOUT_PAGE, headers=HTML)
+
+    assert response.headers["cache-control"] == NO_STORE
+
+
+def test_an_error_page_is_not_stored_either(tmp_path: Path) -> None:
+    with client(settings_for(tmp_path)) as http:
+        response = http.get("/no-such-page", headers=HTML)
+
+    assert response.status_code == 404
+    assert response.headers["cache-control"] == NO_STORE
+
+
 # --- the navigation ----------------------------------------------------------
 
 
@@ -188,9 +209,9 @@ def test_the_nav_names_both_sections(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        (HOME_PATH, "Configuration"),
-        (f"{HOME_PATH}/new", "Configuration"),
-        (f"{HOME_PATH}/7", "Configuration"),
+        (HOME_PATH, "API Servers"),
+        (f"{HOME_PATH}/new", "API Servers"),
+        (f"{HOME_PATH}/7", "API Servers"),
         (MONITORING_PATH, "Monitoring"),
         (f"{MONITORING_PATH}/anything", "Monitoring"),
     ],

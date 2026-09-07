@@ -217,7 +217,7 @@ MORE_RENAMES: Final = "…and {count} more."
 #: than one, because "nothing here" means very different things when the filter
 #: is narrow and when the server has never been read.
 NOTHING_MATCHES: Final = "Nothing here matches the filter. Everything else is untouched."
-NO_OPERATIONS: Final = "This server has no stored operations. Refresh it to read its spec again."
+NO_OPERATIONS: Final = "This server has no stored tools. Refresh it to read its spec again."
 
 #: What the browser asks before a ``removed`` row is retired. It names the tool
 #: name that comes free, since reusing it is very often the reason.
