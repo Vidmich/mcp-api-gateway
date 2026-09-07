@@ -22,7 +22,7 @@ Serve the time series the monitoring page draws.
 
 ## Acceptance
 
-- [ ] Unit tests pin the bucketing maths at each range boundary.
-- [ ] A window with no data returns a full series of zeros, not an empty array.
-- [ ] Deleted servers still appear in historical data with a resolvable label.
-- [ ] `group_by=total` and `group_by=server` agree on totals.
+- [x] Unit tests pin the bucketing maths at each range boundary.
+- [x] A window with no data returns a full series of zeros, not an empty array.
+- [x] Deleted servers still appear in historical data with a resolvable label.
+- [x] `group_by=total` and `group_by=server` agree on totals.

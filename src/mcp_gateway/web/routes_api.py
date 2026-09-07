@@ -46,6 +46,15 @@ from mcp_gateway.naming import NamesTaken
 from mcp_gateway.openapi.diagnostics import SpecError
 from mcp_gateway.openapi.ingest import preview_spec
 from mcp_gateway.refresh import RefreshLocks, refresh_server
+from mcp_gateway.usage import (
+    DEFAULT_GROUP_BY,
+    DEFAULT_RANGE,
+    GroupBy,
+    UsageRange,
+    UsageReport,
+    build_report,
+    window_for,
+)
 from mcp_gateway.web.api import (
     CUSTOM_NEEDS_CREDENTIAL,
     Health,
@@ -94,6 +103,7 @@ SERVER_OPERATIONS_PATH: Final = f"{SERVER_PATH}/operations"
 #: should not have to remember which server it came from to edit it.
 OPERATION_PATH: Final = f"{API_PREFIX}/operations/{{operation_id}}"
 PREVIEW_PATH: Final = f"{API_PREFIX}/specs/preview"
+METRICS_PATH: Final = f"{API_PREFIX}/metrics"
 HEALTH_PATH: Final = f"{API_PREFIX}/health"
 
 
@@ -350,6 +360,37 @@ def api_router() -> APIRouter:
             )
             return repo.to_view(operation)
 
+    @router.get(METRICS_PATH, summary="Usage over time")
+    async def metrics(
+        request: Request,
+        session: Session,
+        range_: Annotated[UsageRange, Query(alias="range")] = DEFAULT_RANGE,
+        group_by: Annotated[GroupBy, Query()] = DEFAULT_GROUP_BY,
+    ) -> UsageReport:
+        """The time series the monitoring page draws (spec §7.2).
+
+        Both parameters are enumerations rather than free text, so a range this
+        gateway does not draw is refused by the same 422 as a malformed body
+        instead of quietly becoming a default — a caller asking for ``90d`` and
+        being handed a day would have no way to notice.
+
+        The window is worked out before anything is read, and the re-bucketing
+        happens in SQL, so what crosses this boundary is the number of points
+        that will be drawn rather than the number of buckets that were stored.
+        """
+        settings: Settings = request.app.state.settings
+        window = window_for(range_, settings.metrics.bucket_seconds)
+        return build_report(
+            window,
+            await repo.metric_slices(session, window.start, window.end, window.step_seconds),
+            # Read every time rather than cached: a rename between two refreshes
+            # of the page should show up in the legend, and this is one small
+            # query against a table with as many rows as the operator has
+            # servers.
+            await repo.server_names(session),
+            group_by=group_by,
+        )
+
     @router.post(PREVIEW_PATH, summary="Read a spec URL without saving anything")
     async def preview(request: Request, body: SpecPreviewIn) -> SpecPreviewOut:
         """Fetch and parse a document, storing nothing (spec §5.1).
@@ -434,6 +475,7 @@ def mount_api(app: FastAPI) -> None:
 __all__ = [
     "ACKNOWLEDGE_PATH",
     "HEALTH_PATH",
+    "METRICS_PATH",
     "OPERATION_PATH",
     "PREVIEW_PATH",
     "REFRESH_PATH",

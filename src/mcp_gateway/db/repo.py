@@ -35,7 +35,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import Select, case, func, select
+from sqlalchemy import ColumnElement, Integer, Select, case, func, select
 from sqlalchemy.dialects.sqlite import Insert as SQLiteInsert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -225,6 +225,33 @@ class ToolRow(BaseModel):
     description: str | None
     description_override: str | None
     input_schema: dict[str, Any]
+
+
+class MetricSlice(BaseModel):
+    """One re-bucketed piece of the time series (spec §7.2).
+
+    What :func:`metric_slices` answers with: the counters of every stored bucket
+    that fell in one output window, for one server and one kind. Coarser than
+    what is stored and never finer — the resolution a chart wants is a property
+    of the range being drawn, and the resolution on disk is a property of the
+    configuration, so the two are decided in different places and only ever meet
+    here.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    #: Start of the *output* window, aligned to the step that was asked for.
+    slot: dt.datetime
+    #: ``None`` for ``tools_list``, and for a server that has since been deleted
+    #: it is still the id it had: these rows outlive the row they point at.
+    server_id: int | None = None
+    kind: MetricKind = "tool_call"
+
+    calls: int = 0
+    errors: int = 0
+    bytes_out: int = 0
+    bytes_in: int = 0
+    duration_ms_sum: int = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -723,6 +750,19 @@ async def list_servers(session: AsyncSession) -> list[ServerSummary]:
     return [to_summary(server, counts.get(server.id)) for server in servers]
 
 
+async def server_names(session: AsyncSession) -> dict[int, str]:
+    """Every server's display name, by id.
+
+    For labelling things that can outlive the row: a metric bucket keeps the id
+    of a server that has since been deleted (spec §4), and a chart legend still
+    has to call that series something. An id missing from this mapping is
+    exactly that case, which is why it answers with what exists rather than
+    raising for what does not.
+    """
+    rows = await session.execute(select(Server.id, Server.name))
+    return {row.id: row.name for row in rows}
+
+
 async def auto_refresh_servers(session: AsyncSession) -> list[RefreshCandidate]:
     """Servers the scheduler is allowed to refresh on its own (spec §8).
 
@@ -1124,6 +1164,71 @@ async def add_metrics(session: AsyncSession, deltas: Iterable[BucketDelta]) -> i
     return written
 
 
+def _slot(step_seconds: int) -> ColumnElement[int]:
+    """The start of the output window a stored bucket falls in, as SQL.
+
+    Epoch seconds floored to ``step_seconds``, computed in SQLite rather than in
+    Python because the alternative is fetching every stored bucket in the range:
+    thirty days of one-minute buckets across a handful of servers is hundreds of
+    thousands of rows to build thirty points out of. Grouping here bounds what
+    crosses the boundary by *points times series* instead.
+
+    Written as a subtracted remainder rather than as a division: SQLAlchemy 2.0
+    renders ``/`` as *true* division, casting to NUMERIC first, so dividing and
+    multiplying back lands a bucket a second either side of its own boundary and
+    the grouping silently does nothing. ``%%`` stays integral, and the floor it
+    leaves is the one :meth:`mcp_gateway.metrics.Meter.bucket_start` takes, from
+    the same epoch — which is what makes a stored bucket land whole in exactly
+    one output window.
+    """
+    epoch = func.cast(func.strftime("%s", MetricBucket.bucket_start), Integer)
+    return epoch - epoch % step_seconds
+
+
+async def metric_slices(
+    session: AsyncSession, start: dt.datetime, end: dt.datetime, step_seconds: int
+) -> list[MetricSlice]:
+    """The time series between ``start`` and ``end``, re-bucketed to ``step_seconds``.
+
+    Half-open on the right, so two adjacent windows asked for separately count
+    each stored bucket exactly once.
+
+    Always grouped by server, whatever the caller means to draw. A per-server
+    chart and a total are then two foldings of one answer rather than two
+    queries, which is what makes them agree about totals by construction instead
+    of by both being written carefully.
+    """
+    slot = _slot(step_seconds)
+    rows = await session.execute(
+        select(
+            slot,
+            MetricBucket.server_id,
+            MetricBucket.kind,
+            func.sum(MetricBucket.calls),
+            func.sum(MetricBucket.errors),
+            func.sum(MetricBucket.bytes_out),
+            func.sum(MetricBucket.bytes_in),
+            func.sum(MetricBucket.duration_ms_sum),
+        )
+        .where(MetricBucket.bucket_start >= start, MetricBucket.bucket_start < end)
+        .group_by(slot, MetricBucket.server_id, MetricBucket.kind)
+        .order_by(slot, MetricBucket.server_id, MetricBucket.kind)
+    )
+    return [
+        MetricSlice(
+            slot=dt.datetime.fromtimestamp(seconds, dt.UTC),
+            server_id=server_id,
+            kind=kind,
+            calls=calls or 0,
+            errors=errors or 0,
+            bytes_out=bytes_out or 0,
+            bytes_in=bytes_in or 0,
+            duration_ms_sum=duration or 0,
+        )
+        for seconds, server_id, kind, calls, errors, bytes_out, bytes_in, duration in rows
+    ]
+
+
 async def add_call_errors(session: AsyncSession, failures: Iterable[CallFailure]) -> int:
     """Append to the ring of recent failures (spec §4).
 
@@ -1149,6 +1254,7 @@ async def add_call_errors(session: AsyncSession, failures: Iterable[CallFailure]
 __all__ = [
     "BucketDelta",
     "CallFailure",
+    "MetricSlice",
     "NewServer",
     "OperationCounts",
     "OperationInput",
@@ -1184,9 +1290,11 @@ __all__ = [
     "list_servers",
     "list_tools",
     "mark_needs_attention",
+    "metric_slices",
     "record_refresh",
     "require_server",
     "server_detail",
+    "server_names",
     "set_selected",
     "set_server_enabled",
     "set_setting",

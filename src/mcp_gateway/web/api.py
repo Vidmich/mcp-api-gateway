@@ -29,10 +29,11 @@ credential nobody read, let alone overwrote.
 because a top-level JSON array is the one shape that cannot gain a field later
 without breaking every caller, and both of these lists will want one.
 
-**One endpoint in spec §7.3 is not here yet.** ``GET /metrics`` is the metrics
-aggregation (task 029), a milestone of its own that builds on this one. It is
-absent rather than stubbed: a route that answers "not implemented" is a route a
-caller has to learn to distinguish from one that works.
+**One endpoint's models are not here.** ``GET /metrics`` answers with
+:class:`mcp_gateway.usage.UsageReport`, which lives beside the folding that
+builds it. Nothing would be gained by restating it here: the models in this
+module exist to dress a domain object for the wire, and a usage report has no
+domain object behind it — the report *is* the shape.
 """
 
 from __future__ import annotations
