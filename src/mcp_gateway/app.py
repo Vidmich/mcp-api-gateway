@@ -4,8 +4,8 @@
 test can build one against a throwaway :class:`~mcp_gateway.config.Settings`
 without a server, a database, or a config file anywhere near it.
 
-Everything with a lifetime — the database engine, and later the refresh
-scheduler and the metrics writer — is a *service*: an async context manager
+Everything with a lifetime — the database engine, the refresh scheduler, and
+later the metrics writer — is a *service*: an async context manager
 entered during startup and exited, in reverse order, during shutdown (spec §8).
 :func:`default_services` names the set a real gateway runs; a test that wants an
 inert app passes its own, so no future background task has to reopen the
@@ -34,6 +34,8 @@ from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
 from mcp_gateway.outbound import outbound_service
+from mcp_gateway.refresh import RefreshLocks
+from mcp_gateway.scheduler import refresh_service
 from mcp_gateway.web.api import Health, health_report
 from mcp_gateway.web.auth import mount_admin, signing_key
 from mcp_gateway.web.routes_api import mount_api
@@ -178,6 +180,12 @@ def create_app(
     app.state.http_client = None
     #: Encrypts stored upstream credentials; ``None`` without keys (spec §3.2).
     app.state.cipher = None if keys is None else CredentialCipher(keys.encryption_key)
+    #: Set by the refresh service; ``None`` in an app that does not run one.
+    app.state.scheduler = None
+    #: Held by every refresh, whoever started it, so that two of the same server
+    #: never overlap (spec §8). Built here rather than by the scheduler service,
+    #: because the button on the page needs it in an app that runs no scheduler.
+    app.state.refresh_locks = RefreshLocks()
 
     app.add_middleware(RequestLog)
     app.include_router(router)
@@ -211,9 +219,16 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     the MCP session manager, the refresh scheduler, the metrics writer — needs
     a migrated schema to read and write. The outbound client comes next, so that
     the endpoint which uses it to proxy tool calls cannot start before it exists.
+    The scheduler comes last, since a sweep uses all three, and it is the first
+    thing stopped on the way out for the same reason.
     Tests that want an inert app pass their own list instead.
     """
-    return (database_service(settings), outbound_service(settings.http), mcp_service)
+    return (
+        database_service(settings),
+        outbound_service(settings.http),
+        mcp_service,
+        refresh_service,
+    )
 
 
 def uvicorn_config(app: FastAPI, settings: Settings) -> uvicorn.Config:

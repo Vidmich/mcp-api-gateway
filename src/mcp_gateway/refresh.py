@@ -41,13 +41,24 @@ thing to get wrong and the first is a thing to compute.
 app, a refresh commits: the notification that follows it is a promise that the
 new list is already there, and a client that refetched on hearing it and found
 the old one would have no reason to ask again.
+
+**Two refreshes of one server never overlap.** A refresh reads the stored hash,
+diffs the document against it, and writes a new one; two running at once both
+read the old hash and both apply the same diff, so a ``changed`` the operator
+has already acknowledged comes back, and the second one announces a tool list
+that did not move. :class:`RefreshLocks` is what stops it — held by the manual
+button, by the API, and by the scheduler (task 027), so the pair that has to be
+kept apart is kept apart wherever it comes from.
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections import Counter
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
@@ -176,6 +187,78 @@ class RefreshReport:
             return f"{self.server_name} is unchanged."
         counted = ", ".join(f"{count} {status}" for status, count in self.counts.items() if count)
         return f"{self.server_name}: {counted or 'nothing to review'}."
+
+
+class RefreshLocks:
+    """One lock per server, so that no two refreshes of it run at once.
+
+    Process-local, and that is the whole of the claim: the scheduler and the web
+    routes are two callers inside one process, and this keeps *them* apart. It
+    is not a lease on the row, and a second gateway pointed at the same file
+    would not see it.
+
+    A caller that can usefully wait — the operator pressed Refresh, and the
+    answer is the page they are about to be shown — takes :meth:`hold`. A caller
+    that cannot — the scheduler, working through a list on a clock — takes
+    :meth:`claim` and moves on when the server is busy, because a refresh of
+    that server is already happening, which is what the tick wanted.
+
+    The lock for a server is dropped once nobody holds or wants it, so a process
+    that has been running for a year holds locks for the servers it is refreshing
+    rather than for every server it has ever refreshed.
+    """
+
+    __slots__ = ("_interested", "_locks")
+
+    def __init__(self) -> None:
+        self._locks: dict[int, asyncio.Lock] = {}
+        #: How many callers are inside :meth:`_locked` for each server, waiting
+        #: ones included. Kept here rather than read off the lock, whose waiter
+        #: list is private and whose emptiness would not include the holder.
+        self._interested: Counter[int] = Counter()
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(busy={sorted(self._locks)})"
+
+    def busy(self, server_id: int) -> bool:
+        """Whether a refresh of this server is running right now."""
+        lock = self._locks.get(server_id)
+        return lock is not None and lock.locked()
+
+    @asynccontextmanager
+    async def hold(self, server_id: int) -> AsyncIterator[None]:
+        """Wait for this server's turn, then take it."""
+        async with self._locked(server_id):
+            yield
+
+    @asynccontextmanager
+    async def claim(self, server_id: int) -> AsyncIterator[bool]:
+        """Take this server's turn if it is free; yield ``False`` if it is not.
+
+        Nothing is taken in the ``False`` case, so a caller that ignores the
+        value gets a refresh that overlaps another — which is why the value is
+        the whole point of this method and the body should do nothing without it.
+        """
+        if self.busy(server_id):
+            yield False
+            return
+        async with self._locked(server_id):
+            yield True
+
+    @asynccontextmanager
+    async def _locked(self, server_id: int) -> AsyncIterator[None]:
+        lock = self._locks.setdefault(server_id, asyncio.Lock())
+        self._interested[server_id] += 1
+        try:
+            async with lock:
+                yield
+        finally:
+            self._interested[server_id] -= 1
+            if not self._interested[server_id]:
+                # Nobody holds it and nobody is queued for it, so the next
+                # caller can start again from a fresh one.
+                del self._interested[server_id]
+                del self._locks[server_id]
 
 
 async def refresh_server(
@@ -506,6 +589,7 @@ __all__ = [
     "Announce",
     "OperationChange",
     "Outcome",
+    "RefreshLocks",
     "RefreshReport",
     "refresh_server",
     "tool_signature",

@@ -17,7 +17,8 @@
 {% if error %}<span class="field__error" id="{{ name }}-error" role="alert">{{ error }}</span>{% endif %}
 {%- endmacro %}
 
-{% macro field(name, label, value="", hint=none, error=none, type="text", required=false) -%}
+{% macro field(name, label, value="", hint=none, error=none, type="text", required=false,
+               placeholder=none) -%}
 <label class="field{% if error %} field--invalid{% endif %}">
   <span class="field__label">{{ label }}</span>
   <input
@@ -25,6 +26,8 @@
     type="{{ type }}"
     name="{{ name }}"
     value="{{ value }}"
+    {# What the box means when it is left empty, said where it is left empty. #}
+    {% if placeholder is not none %}placeholder="{{ placeholder }}"{% endif %}
     autocomplete="off"
     spellcheck="false"
     {% if required %}required{% endif %}

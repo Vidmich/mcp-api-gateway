@@ -173,6 +173,30 @@ class ServerDetail(ServerSummary):
     operations: tuple[OperationView, ...] = ()
 
 
+class RefreshCandidate(BaseModel):
+    """A server the scheduler may be about to refresh (spec §8).
+
+    Deliberately thin. The sweep asks one question of each row — is this one due
+    yet — and answering it needs four fields; loading the counts and the
+    credential states for every opted-in server, once a minute, to decide that
+    most of them are not due would be work in aid of nothing.
+
+    ``created_at`` is here because it is the clock a server that has never been
+    refreshed is measured from: registering it read the document, so the first
+    automatic reading is due an interval after that rather than at once.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    name: str
+    last_refresh_at: dt.datetime | None
+    #: The last attempt's outcome, which is how a restarted process knows a
+    #: server was already failing before it started counting.
+    last_refresh_status: str | None
+    created_at: dt.datetime
+
+
 class ToolRow(BaseModel):
     """Everything needed to advertise a tool and to call it.
 
@@ -651,6 +675,36 @@ async def list_servers(session: AsyncSession) -> list[ServerSummary]:
     return [to_summary(server, counts.get(server.id)) for server in servers]
 
 
+async def auto_refresh_servers(session: AsyncSession) -> list[RefreshCandidate]:
+    """Servers the scheduler is allowed to refresh on its own (spec §8).
+
+    Both halves of that permission are asked here, in SQL, so no caller can
+    forget one of them. ``auto_refresh`` is the operator opting in; ``enabled``
+    is the promise the detail page already makes beside the checkbox — a
+    disabled server contributes no tools and is never refreshed — and a
+    scheduler that fetched one anyway would be calling an upstream on behalf of
+    a service the operator has switched off.
+
+    Ordered by id: the sweep works through them one at a time, and a stable
+    order makes a log of two ticks comparable.
+    """
+    rows = await session.scalars(
+        select(Server)
+        .where(Server.auto_refresh.is_(True), Server.enabled.is_(True))
+        .order_by(Server.id)
+    )
+    return [
+        RefreshCandidate(
+            id=server.id,
+            name=server.name,
+            last_refresh_at=server.last_refresh_at,
+            last_refresh_status=server.last_refresh_status,
+            created_at=server.created_at,
+        )
+        for server in rows
+    ]
+
+
 async def server_detail(session: AsyncSession, server_id: int) -> ServerDetail:
     """One server together with its operations."""
     server = await require_server(session, server_id)
@@ -971,6 +1025,7 @@ __all__ = [
     "OperationStatus",
     "OperationSync",
     "OperationView",
+    "RefreshCandidate",
     "ServerDetail",
     "ServerNotFound",
     "ServerPatch",
@@ -978,6 +1033,7 @@ __all__ = [
     "ToolRow",
     "acknowledge_server",
     "all_settings",
+    "auto_refresh_servers",
     "count_unreviewed",
     "create_server",
     "credential_for",

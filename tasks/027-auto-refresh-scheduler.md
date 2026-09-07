@@ -22,8 +22,8 @@ Refresh opted-in servers on a schedule, in the background, without stepping on i
 
 ## Acceptance
 
-- [ ] A due server is refreshed and a not-yet-due one is skipped, with time controlled by the test.
-- [ ] Repeated failures back off along the documented curve and stop at the cap.
-- [ ] A manual refresh during a scheduled one does not double-apply the diff.
-- [ ] Shutdown mid-refresh leaves the DB consistent.
-- [ ] Servers with `auto_refresh` off are never touched.
+- [x] A due server is refreshed and a not-yet-due one is skipped, with time controlled by the test.
+- [x] Repeated failures back off along the documented curve and stop at the cap.
+- [x] A manual refresh during a scheduled one does not double-apply the diff.
+- [x] Shutdown mid-refresh leaves the DB consistent.
+- [x] Servers with `auto_refresh` off are never touched.

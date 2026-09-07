@@ -33,8 +33,12 @@ from mcp_gateway.db.migrate import upgrade_to_head
 from mcp_gateway.db.models import MetricBucket, Operation, utcnow
 from mcp_gateway.db.repo import NewServer, OperationInput
 from mcp_gateway.db.session import NO_DATABASE, database_service, open_database
+from mcp_gateway.scheduler import INTERVAL_KEY
 from mcp_gateway.web.auth import HOME_PATH, LOGIN_PATH
 from mcp_gateway.web.routes_ui import (
+    AUTO_REFRESH_PATH,
+    INTERVAL_FIELD,
+    INTERVAL_INVALID,
     LIST_TARGET,
     NEVER,
     NEVER_REFRESHED,
@@ -42,6 +46,8 @@ from mcp_gateway.web.routes_ui import (
     SERVERS_PATH,
     ServerRow,
     exact_time,
+    how_often,
+    interval_words,
     refresh_state,
     time_ago,
     to_row,
@@ -711,3 +717,124 @@ def test_the_same_request_from_a_script_stays_json(tmp_path: Path) -> None:
 
     assert response.status_code == 503
     assert response.json() == {"detail": NO_DATABASE}
+
+
+# --- how often the opted-in servers are re-read -------------------------------
+
+
+@pytest.mark.parametrize(
+    ("minutes", "expected"),
+    [
+        (1, "1 minute"),
+        (30, "30 minutes"),
+        (60, "1 hour"),
+        (360, "6 hours"),
+        (1440, "1 day"),
+        (4320, "3 days"),
+        (90, "90 minutes"),
+        (1441, "1441 minutes"),
+    ],
+)
+def test_an_interval_is_written_in_the_largest_unit_that_still_says_it_exactly(
+    minutes: int, expected: str
+) -> None:
+    # 1440 is a day to everybody except a form field, and an interval that does
+    # not divide evenly stays in minutes rather than being rounded: this is a
+    # setting, not an estimate.
+    assert interval_words(minutes) == expected
+
+
+@pytest.mark.parametrize(
+    ("minutes", "expected"),
+    [(1, "every minute"), (60, "every hour"), (360, "every 6 hours"), (1440, "every day")],
+)
+def test_the_same_interval_as_a_frequency(minutes: int, expected: str) -> None:
+    assert how_often(minutes) == expected
+
+
+def test_the_page_says_how_often_a_server_that_opted_in_is_re_read(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+
+    assert "Automatic refresh" in body
+    assert "re-read every day" in body
+    assert "what the configuration file says" in body
+
+
+def test_the_configured_interval_is_the_placeholder_rather_than_the_value(
+    tmp_path: Path,
+) -> None:
+    """An empty box means the configured default, and says so where it is empty."""
+    settings = settings_for(tmp_path, "[refresh]\nauto_refresh_interval_minutes = 360\n")
+
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+
+    assert 'placeholder="360"' in body
+    assert f'name="{INTERVAL_FIELD}"' in body
+    assert "re-read every 6 hours" in body
+
+
+def test_a_typed_interval_is_stored_and_takes_effect_without_a_restart(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        saved = http.post(
+            AUTO_REFRESH_PATH, data={INTERVAL_FIELD: "30"}, headers=HTML, follow_redirects=False
+        )
+        assert saved.status_code == 303
+        assert saved.headers["location"] == SERVERS_PATH
+        body = http.get(saved.headers["location"], headers=HTML).text
+
+    assert "now re-read every 30 minutes" in body
+    assert 'value="30"' in body
+    assert "Empty the box to go back to what the configuration file says, 1 day." in body
+    stored = in_the_database(settings, lambda session: repo.get_setting(session, INTERVAL_KEY))
+    assert stored == "30"
+
+
+def test_emptying_the_box_is_how_the_configured_interval_comes_back(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    in_the_database(settings, lambda session: repo.set_setting(session, INTERVAL_KEY, "30"))
+
+    with client(settings) as http:
+        cleared = http.post(
+            AUTO_REFRESH_PATH, data={INTERVAL_FIELD: "  "}, headers=HTML, follow_redirects=False
+        )
+        assert cleared.status_code == 303
+        body = http.get(cleared.headers["location"], headers=HTML).text
+
+    assert "re-read every day again" in body
+    stored = in_the_database(settings, lambda session: repo.get_setting(session, INTERVAL_KEY))
+    assert stored is None
+
+
+@pytest.mark.parametrize("typed", ["0", "-5", "soon", "1.5", "1 440"])
+def test_an_interval_that_is_not_a_number_of_minutes_is_refused(tmp_path: Path, typed: str) -> None:
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        response = http.post(AUTO_REFRESH_PATH, data={INTERVAL_FIELD: typed}, headers=HTML)
+
+    assert response.status_code == 422
+    assert INTERVAL_INVALID in response.text
+    # The box keeps what was typed, so the operator can see what was refused.
+    assert f'value="{typed}"' in response.text
+    stored = in_the_database(settings, lambda session: repo.get_setting(session, INTERVAL_KEY))
+    assert stored is None
+
+
+def test_changing_the_interval_needs_a_session(tmp_path: Path) -> None:
+    settings = locked(tmp_path)
+
+    with client(settings) as http:
+        response = http.post(
+            AUTO_REFRESH_PATH, data={INTERVAL_FIELD: "5"}, headers=HTML, follow_redirects=False
+        )
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith(LOGIN_PATH)
+    stored = in_the_database(settings, lambda session: repo.get_setting(session, INTERVAL_KEY))
+    assert stored is None

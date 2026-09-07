@@ -45,7 +45,7 @@ from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken
 from mcp_gateway.openapi.diagnostics import SpecError
 from mcp_gateway.openapi.ingest import preview_spec
-from mcp_gateway.refresh import refresh_server
+from mcp_gateway.refresh import RefreshLocks, refresh_server
 from mcp_gateway.web.api import (
     CUSTOM_NEEDS_CREDENTIAL,
     Health,
@@ -143,6 +143,12 @@ def _cipher(request: Request) -> CredentialCipher:
     if cipher is None:
         raise HTTPException(status_code=503, detail=NO_CIPHER)
     return cipher
+
+
+def _locks(request: Request) -> RefreshLocks:
+    """The registry that keeps two refreshes of one server apart (spec §8)."""
+    locks: RefreshLocks = request.app.state.refresh_locks
+    return locks
 
 
 async def _operation(session: AsyncSession, operation_id: int) -> Operation:
@@ -282,14 +288,18 @@ def api_router() -> APIRouter:
         cipher = _cipher(request)
         settings: Settings = request.app.state.settings
         with answered():
-            report = await refresh_server(
-                session,
-                server_id,
-                cipher=cipher,
-                http=settings.http,
-                client=request.app.state.http_client,
-                announce=app_announcer(request.app),
-            )
+            # Queues behind a refresh of this server that is already running,
+            # the scheduler's included, rather than running a second one beside
+            # it (spec §8).
+            async with _locks(request).hold(server_id):
+                report = await refresh_server(
+                    session,
+                    server_id,
+                    cipher=cipher,
+                    http=settings.http,
+                    client=request.app.state.http_client,
+                    announce=app_announcer(request.app),
+                )
         return refreshed(report)
 
     @router.get(SERVER_OPERATIONS_PATH, summary="One server's operations")

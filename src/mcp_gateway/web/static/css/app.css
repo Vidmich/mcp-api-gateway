@@ -147,6 +147,12 @@ pre {
   width: min(22rem, 90vw);
 }
 
+/* A card that follows something on a page rather than starting one, which
+ * nothing above it has a bottom margin for. */
+.card--below {
+  margin-top: 1.5rem;
+}
+
 .card__title {
   margin: 0 0 1.25rem;
   font-size: 1.125rem;

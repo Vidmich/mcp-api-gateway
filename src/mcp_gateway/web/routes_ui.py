@@ -57,6 +57,13 @@ it. That is also why **Needs Attention** is rendered inside that region rather
 than in the page heading: settling the last row has to take the badge off the
 page it was settled on, and a second copy in the chrome could only disagree.
 What each decision means is :mod:`mcp_gateway.web.review`.
+
+**One setting on this page belongs to the gateway rather than to a server.** How
+often the servers that opted into automatic refreshing are re-read is a single
+number (spec §8), so the card that changes it sits under the table it applies to
+rather than on any row of it. Emptying the box is how the configured value comes
+back — the same idiom as a tool name left empty on the detail page, and the
+reason there is one control there instead of two.
 """
 
 from __future__ import annotations
@@ -81,7 +88,8 @@ from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken, conflict_alerts
 from mcp_gateway.openapi.diagnostics import SpecError
 from mcp_gateway.openapi.ingest import preview_spec
-from mcp_gateway.refresh import RefreshReport, refresh_server
+from mcp_gateway.refresh import RefreshLocks, RefreshReport, refresh_server
+from mcp_gateway.scheduler import INTERVAL_KEY, interval_minutes
 from mcp_gateway.web.auth import HTMX_REQUEST, UI_PREFIX, require_session
 from mcp_gateway.web.detail import (
     TOOL_NAME_FIELD,
@@ -145,6 +153,11 @@ PREVIEW_PATH: Final = f"{NEW_SERVER_PATH}/{{token}}"
 #: without it reloads are the same answer built the same way.
 PICKER_PATH: Final = f"{PREVIEW_PATH}/operations"
 
+#: How often servers that opted into automatic refreshing are re-read (spec §8).
+#: One number for the whole gateway, so it belongs to the section rather than to
+#: any server on it. Registered before ``{server_id}`` for the reason ``new`` is.
+AUTO_REFRESH_PATH: Final = f"{SERVERS_PATH}/auto-refresh"
+
 #: One registered server, and everything about it that can be changed.
 #: Registered *after* every ``new`` route, since the first route to match a path
 #: wins and ``new`` would otherwise be read as a server id.
@@ -187,6 +200,11 @@ MINUTE: Final = 60
 HOUR: Final = 60 * MINUTE
 DAY: Final = 24 * HOUR
 
+#: The same two spans counted in minutes, which is the unit the refresh interval
+#: is configured and stored in.
+HOUR_MINUTES: Final = 60
+DAY_MINUTES: Final = 24 * HOUR_MINUTES
+
 NEVER: Final = "Never"
 NEVER_REFRESHED: Final = "This server has never been refreshed."
 
@@ -197,6 +215,27 @@ MAX_ERROR_IN_TITLE: Final = 200
 #: What the operator is told when the token in the URL names nothing any more.
 PREVIEW_GONE: Final = (
     "That preview is no longer held. Fetch the spec again to carry on adding the server."
+)
+
+#: The box that holds the automatic-refresh interval, in minutes.
+INTERVAL_FIELD: Final = "interval_minutes"
+
+#: Said when what was typed in it is not a number of minutes. The box is a
+#: number input, so reaching this takes a browser that ignored that or a client
+#: that never rendered it.
+INTERVAL_INVALID: Final = "How often to refresh is a number of minutes, and at least 1."
+INTERVAL_SAVED: Final = "Servers set to refresh automatically are now re-read {how_often}."
+INTERVAL_DEFAULTED: Final = (
+    "Servers set to refresh automatically are re-read {how_often} again, "
+    "which is what the configuration file says."
+)
+INTERVAL_HINT: Final = (
+    "Every server with automatic refresh switched on is re-read {how_often}, "
+    "which is what the configuration file says. A number here changes that without a restart."
+)
+INTERVAL_HINT_OVERRIDDEN: Final = (
+    "Every server with automatic refresh switched on is re-read {how_often}. "
+    "Empty the box to go back to what the configuration file says, {configured}."
 )
 
 #: A save with no cipher to encrypt credentials with (spec §3.2). Only reachable
@@ -241,6 +280,27 @@ def time_ago(then: dt.datetime | None, now: dt.datetime | None = None) -> str:
     return f"{_plural(int(seconds // DAY), 'day')} ago"
 
 
+def interval_words(minutes: int) -> str:
+    """A number of minutes as the largest whole unit that still says it exactly.
+
+    ``1440`` is a day to everybody except a form field, and a page that reports
+    the refresh interval in minutes makes its reader do the division every time.
+    Anything that does not divide evenly stays in minutes rather than being
+    rounded, because this is a setting and not an estimate.
+    """
+    if minutes % DAY_MINUTES == 0:
+        return _plural(minutes // DAY_MINUTES, "day")
+    if minutes % HOUR_MINUTES == 0:
+        return _plural(minutes // HOUR_MINUTES, "hour")
+    return _plural(minutes, "minute")
+
+
+def how_often(minutes: int) -> str:
+    """The same, as a frequency: ``every day``, ``every 6 hours``."""
+    words = interval_words(minutes)
+    return f"every {words.removeprefix('1 ')}"
+
+
 def exact_time(when: dt.datetime | None) -> str | None:
     """The full timestamp behind a relative one, in UTC and said so.
 
@@ -283,6 +343,43 @@ def report_level(report: RefreshReport) -> FlashLevel:
     if report.needs_attention:
         return "warning"
     return "success" if report.outcome == "updated" else "info"
+
+
+@dataclass(frozen=True, slots=True)
+class AutoRefresh:
+    """How often opted-in servers are re-read, as the page offers to change it.
+
+    Two numbers rather than one: what is in force, and what the configuration
+    file says. They differ only when somebody has typed a number on this page,
+    and telling the operator which they are looking at is the difference between
+    an interval they can explain and one they cannot.
+    """
+
+    #: In force right now, override included. What the scheduler is going by.
+    minutes: int
+    #: What ``refresh.auto_refresh_interval_minutes`` says.
+    configured: int
+    #: Whether the ``settings`` table holds an override at all — not whether the
+    #: two numbers differ, since an override may be set to the same value.
+    overridden: bool
+    #: What goes in the box: the override, or nothing when there is none.
+    typed: str
+    error: str | None = None
+
+    @property
+    def path(self) -> str:
+        return AUTO_REFRESH_PATH
+
+    @property
+    def field(self) -> str:
+        return INTERVAL_FIELD
+
+    @property
+    def hint(self) -> str:
+        template = INTERVAL_HINT_OVERRIDDEN if self.overridden else INTERVAL_HINT
+        return template.format(
+            how_often=how_often(self.minutes), configured=interval_words(self.configured)
+        )
 
 
 @dataclass(frozen=True)
@@ -370,8 +467,31 @@ def _shell(request: Request) -> Shell:
     return shell
 
 
+async def auto_refresh_view(
+    session: AsyncSession, settings: Settings, *, typed: str | None = None, error: str | None = None
+) -> AutoRefresh:
+    """Read the interval as it now stands, for the card that changes it.
+
+    ``typed`` and ``error`` are how a rejected save comes back: the box keeps
+    what was in it, so the operator can see what the gateway would not take.
+    """
+    stored = await repo.get_setting(session, INTERVAL_KEY)
+    return AutoRefresh(
+        minutes=await interval_minutes(session, settings),
+        configured=settings.refresh.auto_refresh_interval_minutes,
+        overridden=stored is not None,
+        typed=stored or "" if typed is None else typed,
+        error=error,
+    )
+
+
 async def _list_context(session: AsyncSession) -> dict[str, object]:
-    """What both the whole page and the swapped-in fragment need."""
+    """What both the whole page and the swapped-in fragment need.
+
+    The interval card is not in here: it is on the page and not in the region a
+    delete swaps, and a fragment that read the setting to render nothing with it
+    would be a query per delete for no reason.
+    """
     now = utcnow()
     return {
         "rows": [to_row(server, now) for server in await repo.list_servers(session)],
@@ -650,6 +770,17 @@ def _cipher(request: Request) -> CredentialCipher:
     return cipher
 
 
+def _locks(request: Request) -> RefreshLocks:
+    """The registry that keeps two refreshes of one server apart (spec §8).
+
+    Built by :func:`~mcp_gateway.app.create_app`, so it is there whether or not
+    this app runs a scheduler — the two pages that offer the button are two
+    callers of their own.
+    """
+    locks: RefreshLocks = request.app.state.refresh_locks
+    return locks
+
+
 def ui_router() -> APIRouter:
     """The configuration pages, every one of them behind a session."""
     router = APIRouter(
@@ -660,9 +791,59 @@ def ui_router() -> APIRouter:
         dependencies=[Depends(require_session)],
     )
 
+    async def _servers_page(
+        request: Request,
+        session: AsyncSession,
+        *,
+        interval: AutoRefresh | None = None,
+        status_code: int = 200,
+    ) -> Response:
+        """The Configuration landing page, however it is being arrived at."""
+        settings: Settings = request.app.state.settings
+        context = await _list_context(session)
+        context["auto_refresh"] = interval or await auto_refresh_view(session, settings)
+        return _shell(request).render(request, SERVERS_TEMPLATE, context, status_code=status_code)
+
     @router.get(SERVERS_PATH)
     async def server_list(request: Request, session: Session) -> Response:
-        return _shell(request).render(request, SERVERS_TEMPLATE, await _list_context(session))
+        return await _servers_page(request, session)
+
+    @router.post(AUTO_REFRESH_PATH)
+    async def set_auto_refresh_interval(
+        request: Request,
+        session: Session,
+        #: Read as text rather than as a number so that what comes back for an
+        #: unusable value is this page's sentence about minutes, and not the
+        #: framework's about the shape of a form field.
+        interval: Annotated[str, Form(alias=INTERVAL_FIELD)] = "",
+    ) -> Response:
+        """Set — or clear — the runtime override of the refresh interval (spec §8).
+
+        An empty box is not a missing answer, it is the answer: it deletes the
+        override, and the configured value is in force again. That is the same
+        idiom as a tool name left empty on the detail page, and it means the way
+        back from a change is the change undone rather than a second control.
+        """
+        settings: Settings = request.app.state.settings
+        typed = interval.strip()
+        if typed:
+            minutes = int(typed) if typed.isdigit() else 0
+            if minutes < 1:
+                view = await auto_refresh_view(
+                    session, settings, typed=typed, error=INTERVAL_INVALID
+                )
+                return await _servers_page(request, session, interval=view, status_code=422)
+            await repo.set_setting(session, INTERVAL_KEY, str(minutes))
+            message = INTERVAL_SAVED.format(how_often=how_often(minutes))
+        else:
+            await repo.delete_setting(session, INTERVAL_KEY)
+            message = INTERVAL_DEFAULTED.format(
+                how_often=how_often(settings.refresh.auto_refresh_interval_minutes)
+            )
+        logger.info("%s", message)
+        response = RedirectResponse(SERVERS_PATH, status_code=303)
+        _shell(request).flash(request, response, message, level="success")
+        return response
 
     @router.get(NEW_SERVER_PATH)
     async def new_server_form(request: Request) -> Response:
@@ -992,15 +1173,20 @@ def ui_router() -> APIRouter:
         cipher = _cipher(request)
         settings: Settings = request.app.state.settings
         try:
-            report = await refresh_server(
-                session,
-                server_id,
-                cipher=cipher,
-                http=settings.http,
-                # Whatever pool the process shares (spec §2).
-                client=request.app.state.http_client,
-                announce=app_announcer(request.app),
-            )
+            # Waits for a refresh already running against this server — the
+            # scheduler's, or the other tab's — rather than joining it. What
+            # comes back then says ``unchanged``, which is the truth: somebody
+            # else has just read the document this button asked about.
+            async with _locks(request).hold(server_id):
+                report = await refresh_server(
+                    session,
+                    server_id,
+                    cipher=cipher,
+                    http=settings.http,
+                    # Whatever pool the process shares (spec §2).
+                    client=request.app.state.http_client,
+                    announce=app_announcer(request.app),
+                )
         except repo.ServerNotFound:
             raise _gone(request, server_id) from None
 
