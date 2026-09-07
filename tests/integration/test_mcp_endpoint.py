@@ -42,8 +42,9 @@ from mcp_gateway.crypto import BearerCredential, CredentialCipher, generate_key
 from mcp_gateway.db import repo
 from mcp_gateway.db.repo import NewServer, OperationInput
 from mcp_gateway.db.session import Database
-from mcp_gateway.mcpsrv.server import SERVER_NAME
+from mcp_gateway.mcpsrv.server import SERVER_NAME, app_announcer
 from mcp_gateway.openapi.schema import EXTENSION
+from mcp_gateway.refresh import refresh_server
 
 #: Uvicorn's note for a connection torn down while its response was still
 #: streaming. ``sse-starlette`` drains open SSE streams when the server starts
@@ -134,6 +135,39 @@ async def running_upstream(tmp_path: Path, token: str) -> AsyncIterator[str]:
         await asyncio.wait_for(task, timeout=15)
 
 
+#: What :func:`running_spec` serves: the petstore as it is *after* somebody
+#: retired ``POST /pets``. Registering against it is a refresh that removes a
+#: tool a client is holding, which is the smallest real ``list_changed``.
+SHRUNK_SPEC: dict[str, Any] = {
+    "openapi": "3.0.3",
+    "info": {"title": "Petstore", "version": "2.0.0"},
+    "servers": [{"url": "https://api.petstore.example/v2"}],
+    "paths": {
+        "/pets": {"get": {"operationId": "listPets", "summary": "List pets", "responses": {}}}
+    },
+}
+
+
+@asynccontextmanager
+async def running_spec(tmp_path: Path) -> AsyncIterator[str]:
+    """A real HTTP server holding a spec document, yielding its URL."""
+    settings = settings_for(tmp_path / "spec", free_port())
+    api = FastAPI()
+
+    # Not ``/openapi.json``: FastAPI serves its own document there, and a spec
+    # server that answers with the spec of the spec server is a confusing hour.
+    @api.get("/spec.json")
+    async def document() -> Any:
+        return SHRUNK_SPEC
+
+    server, task = await start(api, settings)
+    try:
+        yield f"http://127.0.0.1:{settings.server.port}/spec.json"
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, timeout=15)
+
+
 def petstore_app(token: str) -> FastAPI:
     """The upstream the gateway proxies to: two endpoints and a bearer check."""
     api = FastAPI()
@@ -176,6 +210,7 @@ async def register(
     base_url: str | None = None,
     credential: BearerCredential | None = None,
     cipher: CredentialCipher | None = None,
+    spec_url: str | None = None,
 ) -> int:
     """Put one server and its operations in the gateway's database.
 
@@ -189,7 +224,7 @@ async def register(
             name=slug.title(),
             slug=slug,
             tool_prefix=slug,
-            spec_url=f"https://{slug}.example/openapi.json",
+            spec_url=spec_url or f"https://{slug}.example/openapi.json",
             spec_format="openapi-3.1",
             base_url=base_url or f"https://{slug}.example/api",
             credential=credential,
@@ -233,12 +268,18 @@ def a_pet_lookup(prefix: str) -> OperationInput:
 
 
 @asynccontextmanager
-async def connected(url: str, token: str | None = None) -> AsyncIterator[ClientSession]:
+async def connected(
+    url: str,
+    token: str | None = None,
+    *,
+    message_handler: Any = None,
+) -> AsyncIterator[ClientSession]:
     """An MCP client session against ``url``, closed on the way out.
 
     ``token`` is presented the way a real client would present one: on the
     transport's own HTTP client, so it rides every request of the session
-    rather than only the handshake.
+    rather than only the handshake. ``message_handler`` is how a test watches
+    what the server sends without being asked.
     """
     async with AsyncExitStack() as stack:
         http = None
@@ -249,7 +290,9 @@ async def connected(url: str, token: str | None = None) -> AsyncIterator[ClientS
         read, write, *_ = await stack.enter_async_context(
             streamable_http_client(url, http_client=http)
         )
-        yield await stack.enter_async_context(ClientSession(read, write))
+        yield await stack.enter_async_context(
+            ClientSession(read, write, message_handler=message_handler)
+        )
 
 
 async def test_a_real_client_completes_the_handshake(tmp_path: Path) -> None:
@@ -327,6 +370,57 @@ async def test_disabling_a_server_empties_the_next_listing(tmp_path: Path) -> No
 
     assert [tool.name for tool in before] == ["petstore__get_pets"]
     assert after == []
+
+
+async def test_a_refresh_tells_a_connected_client_the_tool_list_changed(
+    tmp_path: Path,
+) -> None:
+    """The promise ``tools.listChanged`` makes, kept over a real socket.
+
+    A client connects, lists tools, and then the gateway re-reads a spec that no
+    longer describes one of them. Nothing asks the client anything; the
+    notification arrives on the stream the transport opened, which is the only
+    form of "listChanged works" worth asserting.
+    """
+    heard: list[str] = []
+
+    async def note(message: Any) -> None:
+        heard.append(type(message).__name__)
+
+    async with running_gateway(tmp_path) as gateway, running_spec(tmp_path) as spec_url:
+        async with gateway.session() as db:
+            server_id = await register(
+                db,
+                "petstore",
+                ("GET /pets", "List pets"),
+                ("POST /pets", "Add a pet"),
+                selected=["GET /pets", "POST /pets"],
+                spec_url=spec_url,
+            )
+
+        async with connected(gateway.url, message_handler=note) as session:
+            await session.initialize()
+            before = (await session.list_tools()).tools
+
+            async with gateway.session() as db:
+                report = await refresh_server(
+                    db,
+                    server_id,
+                    cipher=gateway.app.state.cipher,
+                    announce=app_announcer(gateway.app),
+                )
+
+            # The notification rides the transport's own stream, which is read
+            # by a task of its own: give it a moment to arrive.
+            await asyncio.sleep(0.5)
+            after = (await session.list_tools()).tools
+
+    assert report.outcome == "updated"
+    assert report.tools_changed is True
+    assert [tool.name for tool in before] == ["petstore__get_pets", "petstore__post_pets"]
+    # The stored operation keeps the name a client is already calling.
+    assert [tool.name for tool in after] == ["petstore__get_pets"]
+    assert "ToolListChangedNotification" in heard
 
 
 async def test_a_client_calls_a_tool_and_reaches_the_real_api(tmp_path: Path) -> None:

@@ -58,6 +58,7 @@ from mcp_gateway.web.routes_api import (
     ACKNOWLEDGE_PATH,
     HEALTH_PATH,
     PREVIEW_PATH,
+    REFRESH_PATH,
     SERVERS_PATH,
 )
 from mcp_gateway.web.routes_ui import NEW_SERVER_PATH
@@ -94,6 +95,15 @@ DOCUMENT: Final[dict[str, Any]] = {
             "get": {"operationId": "listPets", "summary": "List pets", "responses": {}},
             "post": {"operationId": "addPet", "summary": "Add a pet", "responses": {}},
         }
+    },
+}
+
+#: The same service, later: it has grown an endpoint. What a refresh reads.
+GROWN: Final[dict[str, Any]] = {
+    **DOCUMENT,
+    "paths": {
+        **DOCUMENT["paths"],
+        "/toys": {"get": {"operationId": "listToys", "summary": "List toys", "responses": {}}},
     },
 }
 
@@ -250,6 +260,7 @@ def serves_the_document(respx_mock: respx.MockRouter, document: Any = None) -> r
         ("patch", f"{SERVERS_PATH}/1"),
         ("delete", f"{SERVERS_PATH}/1"),
         ("post", ACKNOWLEDGE_PATH.format(server_id=1)),
+        ("post", REFRESH_PATH.format(server_id=1)),
         ("get", f"{SERVERS_PATH}/1/operations"),
         ("patch", "/api/v1/operations/1"),
         ("post", PREVIEW_PATH),
@@ -946,7 +957,7 @@ def test_acknowledging_settles_what_the_operator_has_reviewed(
     serves_the_document(respx_mock)
 
     async def a_refresh_found_something(session: AsyncSession) -> None:
-        """What a refresh will do once task 025 exists (spec §5.4)."""
+        """What a refresh does when it finds something (spec §5.4)."""
         await repo.mark_needs_attention(session, 1)
         for operation in await session.scalars(select(Operation)):
             operation.status = "new"
@@ -966,6 +977,105 @@ def test_acknowledging_settles_what_the_operator_has_reviewed(
 def test_acknowledging_a_server_that_is_not_there_is_a_404(tmp_path: Path) -> None:
     with client(settings_for(tmp_path), tmp_path) as http:
         assert http.post(ACKNOWLEDGE_PATH.format(server_id=7)).status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# Refreshing a server
+# --------------------------------------------------------------------------- #
+
+
+def test_a_refresh_reports_what_a_second_reading_found(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    route = serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        route.mock(return_value=httpx.Response(200, json=GROWN))
+        response = http.post(REFRESH_PATH.format(server_id=created["id"]))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["outcome"] == "updated"
+    assert body["counts"] == {"new": 1, "changed": 0, "removed": 0, "restored": 0}
+    assert [(change["op_key"], change["status"]) for change in body["changes"]] == [
+        ("GET /toys", "new")
+    ]
+    # The rule spec §5.4 exists to state, visible in the response itself.
+    assert body["changes"][0]["selected"] is False
+    assert body["needs_attention"] is True
+    assert body["previous_hash"] == created["spec_hash"] != body["spec_hash"]
+
+
+def test_a_refresh_of_an_unchanged_document_says_so(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        body = http.post(REFRESH_PATH.format(server_id=created["id"])).json()
+
+    assert body["outcome"] == "unchanged"
+    assert body["changes"] == []
+    assert body["tools_changed"] is False
+    assert body["spec_hash"] == body["previous_hash"] == created["spec_hash"]
+
+
+def test_a_refresh_that_could_not_read_the_document_is_still_a_200(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    """The gateway went and looked, and wrote down what it found.
+
+    A 4xx would say the request was wrong and nothing happened; what actually
+    happened is a row that now records why its upstream cannot be read.
+    """
+    settings = settings_for(tmp_path)
+    route = serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        route.mock(return_value=httpx.Response(503))
+        response = http.post(REFRESH_PATH.format(server_id=created["id"]))
+        detail = http.get(f"{SERVERS_PATH}/{created['id']}").json()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["outcome"] == "failed"
+    assert "503" in body["error"]
+    assert detail["last_refresh_status"] == "error"
+    assert detail["last_refresh_error"] == body["error"]
+    # Nothing about the operations moved.
+    assert {row["status"] for row in detail["operations"]} == {"active"}
+
+
+def test_refreshing_a_server_that_is_not_there_is_a_404(tmp_path: Path) -> None:
+    with client(settings_for(tmp_path), tmp_path) as http:
+        response = http.post(REFRESH_PATH.format(server_id=7))
+
+    assert response.status_code == 404
+    assert response.json()["code"] == NOT_FOUND
+
+
+def test_a_refresh_and_an_acknowledge_are_the_whole_review_loop(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    """A refresh flags; only acknowledging clears (spec §5.4)."""
+    settings = settings_for(tmp_path)
+    route = serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        route.mock(return_value=httpx.Response(200, json=GROWN))
+        flagged = http.post(REFRESH_PATH.format(server_id=created["id"])).json()
+        again = http.post(REFRESH_PATH.format(server_id=created["id"])).json()
+        cleared = http.post(ACKNOWLEDGE_PATH.format(server_id=created["id"])).json()
+
+    assert flagged["needs_attention"] is True
+    assert (again["outcome"], again["needs_attention"]) == ("unchanged", True)
+    assert cleared["needs_attention"] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -1192,6 +1302,7 @@ def test_no_response_body_anywhere_contains_a_stored_credential(
             http.get(f"{SERVERS_PATH}/{server_id}").text,
             http.get(f"{SERVERS_PATH}/{server_id}/operations").text,
             http.post(ACKNOWLEDGE_PATH.format(server_id=server_id)).text,
+            http.post(REFRESH_PATH.format(server_id=server_id)).text,
             http.patch(f"/api/v1/operations/{ids[LIST_PETS]}", json={"selected": True}).text,
             http.post(
                 PREVIEW_PATH,

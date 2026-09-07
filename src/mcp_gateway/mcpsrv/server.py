@@ -20,14 +20,19 @@ half-started gateway should say so in a status code.
 
 **The server.** :class:`GatewayServer` is the SDK's low-level ``Server`` with
 one correction, described on the class: it advertises ``tools.listChanged``,
-which spec §6 promises and task 025 delivers. Its ``tools/list`` handler opens
-a database session per request — see :data:`Sessions` — and hands the rows to
+which spec §6 promises. Its ``tools/list`` handler opens a database session per
+request — see :data:`Sessions` — and hands the rows to
 :mod:`mcp_gateway.mcpsrv.tools` to be dressed as MCP tools. Nothing is cached
 anywhere along that path, which is what makes a change made in the UI visible
 to the next call without a restart. Its ``tools/call`` handler asks for rather
 more — a session, the credential cipher and the shared HTTP client, gathered by
 :data:`Upstreams` — and hands the lot to :mod:`mcp_gateway.mcpsrv.proxy`, which
 makes the request the tool stands for.
+
+Listing tools also registers the connection with
+:class:`~mcp_gateway.mcpsrv.notify.ToolListWatchers`, which is how the promise
+gets kept: a refresh that changes the list calls :meth:`MCPEndpoint.tools_changed`
+and every client holding a stale answer is told to ask again (spec §5.4).
 
 What the two ask for differs on purpose. A listing needs only the database, so
 a gateway whose credentials have become unreadable can still be inspected; a
@@ -43,7 +48,7 @@ connected client needs them.
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Final
 
@@ -67,6 +72,7 @@ from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import Database
 from mcp_gateway.mcpsrv import proxy, tools
 from mcp_gateway.mcpsrv.auth import protect
+from mcp_gateway.mcpsrv.notify import ToolListWatchers, session_key
 from mcp_gateway.mcpsrv.proxy import Upstream
 
 logger = logging.getLogger(__name__)
@@ -78,7 +84,7 @@ SERVER_NAME: Final = "mcp-gateway"
 ROUTE_NAME: Final = "mcp"
 
 #: The notifications the gateway promises to send. ``tools_changed`` turns into
-#: ``capabilities.tools.listChanged`` at ``initialize``; task 025 sends it.
+#: ``capabilities.tools.listChanged`` at ``initialize``; a refresh sends it.
 NOTIFICATIONS: Final = NotificationOptions(tools_changed=True)
 
 #: Answer to a client whose request needs the database and cannot have it.
@@ -205,17 +211,32 @@ class GatewayServer(Server[Any]):
 
 
 def build_server(
-    sessions: Sessions = no_database, upstreams: Upstreams = no_upstream
+    sessions: Sessions = no_database,
+    upstreams: Upstreams = no_upstream,
+    watchers: ToolListWatchers | None = None,
 ) -> GatewayServer:
-    """The MCP server the gateway presents to clients."""
+    """The MCP server the gateway presents to clients.
+
+    ``watchers`` is the address book a refresh reaches its clients through
+    (:mod:`mcp_gateway.mcpsrv.notify`). A server built without one still answers
+    every request; it simply tells nobody afterwards, which is what a server
+    with no endpoint holding it open would do anyway.
+    """
 
     async def on_list_tools(
         context: ServerRequestContext[Any], params: types.PaginatedRequestParams | None
     ) -> types.ListToolsResult:
-        """Answer ``tools/list`` from the database, as of right now (spec §6)."""
+        """Answer ``tools/list`` from the database, as of right now (spec §6).
+
+        Answering is also what registers this connection to be told when the
+        list changes: a client that has just been handed one is exactly the
+        client whose copy a later refresh can make stale (spec §5.4).
+        """
         async with sessions() as session:
             listed = await tools.list_tools(session)
         record_listing(len(listed.tools))
+        if watchers is not None:
+            watchers.watch(session_key(context.request), context.session)
         return listed
 
     async def on_call_tool(
@@ -253,10 +274,21 @@ class MCPEndpoint:
     def __init__(
         self, sessions: Sessions = no_database, upstreams: Upstreams = no_upstream
     ) -> None:
-        self.server = build_server(sessions, upstreams)
+        #: The connections to tell when a refresh moves the tool list.
+        self.watchers = ToolListWatchers()
+        self.server = build_server(sessions, upstreams, self.watchers)
         self.sessions = StreamableHTTPSessionManager(app=self.server)
         #: True only between the start and stop of :meth:`run`.
         self.running = False
+
+    async def tools_changed(self) -> None:
+        """Send ``notifications/tools/list_changed`` to every listening client.
+
+        The shape :data:`mcp_gateway.refresh.Announce` asks for, so that the
+        refresh engine can be handed this method and never learn what an MCP
+        session is.
+        """
+        await self.watchers.changed()
 
     @asynccontextmanager
     async def run(self) -> AsyncIterator[None]:
@@ -284,6 +316,23 @@ class MCPEndpoint:
             await response(scope, receive, send)
             return
         await self.sessions.asgi_app(scope, receive, send)
+
+
+def app_announcer(app: FastAPI) -> Callable[[], Awaitable[None]]:
+    """How a request or a background task tells clients the tool list moved.
+
+    Read off ``app.state`` per call, for the reason :func:`app_sessions` gives,
+    and tolerant of there being no endpoint at all: an app built without one is
+    a normal thing in a test, and a refresh that nobody could be told about is
+    still a refresh that happened.
+    """
+
+    async def announce() -> None:
+        endpoint: MCPEndpoint | None = getattr(app.state, "mcp", None)
+        if endpoint is not None:
+            await endpoint.tools_changed()
+
+    return announce
 
 
 def mount_mcp(app: FastAPI) -> MCPEndpoint:
@@ -327,6 +376,7 @@ __all__ = [
     "MCPEndpoint",
     "Sessions",
     "Upstreams",
+    "app_announcer",
     "app_sessions",
     "app_upstreams",
     "build_server",

@@ -24,9 +24,9 @@ Re-fetch a spec and reconcile it against what is stored, without ever surprising
 
 ## Acceptance
 
-- [ ] A v1 → v2 fixture pair produces the expected status for every operation across all four transitions.
-- [ ] New operations are never auto-selected.
-- [ ] A `changed` operation keeps its previous `selected` value and any overrides.
-- [ ] An unchanged spec short-circuits on the hash and touches nothing but the timestamp.
-- [ ] A fetch failure records the error and leaves operations untouched.
-- [ ] `list_changed` fires on a real change and does not fire on a no-op refresh.
+- [x] A v1 → v2 fixture pair produces the expected status for every operation across all four transitions.
+- [x] New operations are never auto-selected.
+- [x] A `changed` operation keeps its previous `selected` value and any overrides.
+- [x] An unchanged spec short-circuits on the hash and touches nothing but the timestamp.
+- [x] A fetch failure records the error and leaves operations untouched.
+- [x] `list_changed` fires on a real change and does not fire on a no-op refresh.

@@ -41,14 +41,17 @@ from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import Operation, OperationStatus, Server
 from mcp_gateway.db.session import request_session
+from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken
 from mcp_gateway.openapi.diagnostics import SpecError
 from mcp_gateway.openapi.ingest import preview_spec
+from mcp_gateway.refresh import refresh_server
 from mcp_gateway.web.api import (
     CUSTOM_NEEDS_CREDENTIAL,
     Health,
     OperationList,
     OperationUpdate,
+    RefreshOut,
     ServerCreate,
     ServerList,
     ServerUpdate,
@@ -56,6 +59,7 @@ from mcp_gateway.web.api import (
     SpecPreviewOut,
     health_report,
     previewed,
+    refreshed,
 )
 from mcp_gateway.web.auth import API_PREFIX, require_session
 from mcp_gateway.web.detail import SettingsInvalid, apply_operation, apply_patch
@@ -83,6 +87,7 @@ logger = logging.getLogger(__name__)
 SERVERS_PATH: Final = f"{API_PREFIX}/servers"
 SERVER_PATH: Final = f"{SERVERS_PATH}/{{server_id}}"
 ACKNOWLEDGE_PATH: Final = f"{SERVER_PATH}/acknowledge"
+REFRESH_PATH: Final = f"{SERVER_PATH}/refresh"
 SERVER_OPERATIONS_PATH: Final = f"{SERVER_PATH}/operations"
 #: Addressed by row id and not under its server, exactly as spec §7.3 writes it:
 #: an operation id is unique on its own, and a caller holding one from a list
@@ -262,6 +267,31 @@ def api_router() -> APIRouter:
             await repo.acknowledge_server(session, server_id)
             return await repo.server_detail(session, server_id)
 
+    @router.post(REFRESH_PATH, summary="Re-read this server's spec")
+    async def refresh(request: Request, server_id: int, session: Session) -> RefreshOut:
+        """Fetch the document again and reconcile it (spec §5.4).
+
+        Answers 200 whatever the refresh turned out to be, including a document
+        that could not be read: the gateway went and looked, and what it found
+        is now recorded against the row, which is a thing that happened rather
+        than a request that was wrong. ``outcome`` is what a caller branches on.
+
+        The one refusal is a server id nothing answers to, which
+        :func:`answered` turns into the 404 it is.
+        """
+        cipher = _cipher(request)
+        settings: Settings = request.app.state.settings
+        with answered():
+            report = await refresh_server(
+                session,
+                server_id,
+                cipher=cipher,
+                http=settings.http,
+                client=request.app.state.http_client,
+                announce=app_announcer(request.app),
+            )
+        return refreshed(report)
+
     @router.get(SERVER_OPERATIONS_PATH, summary="One server's operations")
     async def list_operations(
         server_id: int,
@@ -396,6 +426,7 @@ __all__ = [
     "HEALTH_PATH",
     "OPERATION_PATH",
     "PREVIEW_PATH",
+    "REFRESH_PATH",
     "SERVERS_PATH",
     "SERVER_OPERATIONS_PATH",
     "SERVER_PATH",

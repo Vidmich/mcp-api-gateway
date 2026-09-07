@@ -29,16 +29,15 @@ credential nobody read, let alone overwrote.
 because a top-level JSON array is the one shape that cannot gain a field later
 without breaking every caller, and both of these lists will want one.
 
-**Two endpoints in spec §7.3 are not here yet.**
-``POST /servers/{id}/refresh`` is the refresh engine (task 025) and
-``GET /metrics`` is the metrics aggregation (task 029); both are milestones of
-their own that build on this one. They are absent rather than stubbed: a route
-that answers "not implemented" is a route a caller has to learn to distinguish
-from one that works.
+**One endpoint in spec §7.3 is not here yet.** ``GET /metrics`` is the metrics
+aggregation (task 029), a milestone of its own that builds on this one. It is
+absent rather than stubbed: a route that answers "not implemented" is a route a
+caller has to learn to distinguish from one that works.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import time
 from typing import Any, Final
 
@@ -52,6 +51,7 @@ from mcp_gateway.db.models import SpecAuthMode
 from mcp_gateway.naming import sanitize, server_slug
 from mcp_gateway.openapi.diagnostics import SpecWarning
 from mcp_gateway.openapi.ingest import SpecPreview
+from mcp_gateway.refresh import OperationChange, RefreshReport
 from mcp_gateway.web.picker import FALLBACK_SLUG
 from mcp_gateway.web.wizard import (
     BASE_URL_SCHEME,
@@ -224,6 +224,82 @@ def previewed(preview: SpecPreview) -> SpecPreviewOut:
 
 def _warning(warning: SpecWarning) -> WarningOut:
     return WarningOut(code=warning.code, message=warning.message, location=warning.location)
+
+
+class ChangedOperation(BaseModel):
+    """One operation a refresh moved (spec §5.4)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    op_key: str
+    #: ``new`` / ``changed`` / ``removed`` / ``restored``.
+    status: str
+    method: str
+    path: str
+    summary: str | None
+    tool_name: str
+    #: Whether this operation is exposed as a tool *now*. Always false for a
+    #: ``new`` one, which is the rule spec §5.4 exists to state.
+    selected: bool
+
+
+class RefreshOut(BaseModel):
+    """``POST /servers/{id}/refresh``: what the refresh turned out to be.
+
+    A failed refresh comes back here with ``outcome: "failed"`` and a 200, not
+    as an error envelope. The distinction is real: a 4xx would say the request
+    was wrong and nothing happened, and what actually happened is that the
+    gateway went and looked, could not read the document, and wrote that down
+    against the row. A caller branches on ``outcome``, exactly as the page does.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    server_id: int
+    server_name: str
+    #: ``updated`` / ``unchanged`` / ``failed``.
+    outcome: str
+    at: dt.datetime
+    spec_hash: str | None
+    previous_hash: str | None
+    error: str | None
+    #: How many operations landed in each reported status, so a caller need not
+    #: count :attr:`changes` to render a banner.
+    counts: dict[str, int]
+    changes: tuple[ChangedOperation, ...] = ()
+    tools_changed: bool = False
+    needs_attention: bool = False
+    warnings: tuple[WarningOut, ...] = ()
+
+
+def refreshed(report: RefreshReport) -> RefreshOut:
+    """Dress a :class:`~mcp_gateway.refresh.RefreshReport` for the wire."""
+    return RefreshOut(
+        server_id=report.server_id,
+        server_name=report.server_name,
+        outcome=report.outcome,
+        at=report.at,
+        spec_hash=report.spec_hash,
+        previous_hash=report.previous_hash,
+        error=report.error,
+        counts=report.counts,
+        changes=tuple(_changed(change) for change in report.changes),
+        tools_changed=report.tools_changed,
+        needs_attention=report.needs_attention,
+        warnings=tuple(_warning(warning) for warning in report.warnings),
+    )
+
+
+def _changed(change: OperationChange) -> ChangedOperation:
+    return ChangedOperation(
+        op_key=change.op_key,
+        status=change.status,
+        method=change.method,
+        path=change.path,
+        summary=change.summary,
+        tool_name=change.tool_name,
+        selected=change.selected,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -463,10 +539,12 @@ __all__ = [
     "CUSTOM_NEEDS_CREDENTIAL",
     "MAX_UNKNOWN_SHOWN",
     "UNKNOWN_SELECTION",
+    "ChangedOperation",
     "Health",
     "OperationList",
     "OperationUpdate",
     "PreviewedOperation",
+    "RefreshOut",
     "ServerCreate",
     "ServerList",
     "ServerUpdate",
@@ -475,4 +553,5 @@ __all__ = [
     "WarningOut",
     "health_report",
     "previewed",
+    "refreshed",
 ]
