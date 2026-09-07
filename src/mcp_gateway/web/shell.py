@@ -41,6 +41,12 @@ from starlette.responses import JSONResponse, PlainTextResponse, Response
 from mcp_gateway import __version__
 from mcp_gateway.config import Settings
 from mcp_gateway.web.auth import API_PREFIX, HOME_PATH, SESSION_COOKIE, UI_PREFIX, AdminAuth
+from mcp_gateway.web.errors import (
+    INTERNAL_ERROR,
+    INTERNAL_MESSAGE,
+    api_error,
+    from_http_exception,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +330,11 @@ def mount_shell(app: FastAPI, secret_key: str) -> Shell:
     async def on_http_error(request: Request, exc: Exception) -> Response:
         if not isinstance(exc, HTTPException):  # pragma: no cover - starlette's contract
             raise exc
+        # The JSON API answers in one shape whatever went wrong (task 024), and
+        # that includes failures raised by machinery which has never heard of
+        # it: a 503 from the session dependency, a 405 from the router.
+        if under(request.url.path, API_PREFIX):
+            return from_http_exception(exc)
         if not wants_html(request):
             return await http_exception_handler(request, exc)
         return shell.error_page(request, exc.status_code)
@@ -332,6 +343,10 @@ def mount_shell(app: FastAPI, secret_key: str) -> Shell:
         # Starlette re-raises after this returns, so the traceback still reaches
         # the log through the server; this line is what ties it to a URL.
         logger.error("Unhandled error serving %s", request.url.path, exc_info=exc)
+        if under(request.url.path, API_PREFIX):
+            # Without the reason: an unhandled exception's message is written
+            # for a log, and the log is where it has just gone.
+            return api_error(500, INTERNAL_MESSAGE, code=INTERNAL_ERROR)
         if not wants_html(request):
             return JSONResponse({"error": "Internal Server Error"}, status_code=500)
         return shell.error_page(request, 500)

@@ -23,7 +23,7 @@ Expose every configuration action over `/api/v1` so the gateway can be driven by
 
 ## Acceptance
 
-- [ ] Contract tests cover every endpoint's happy path and its main failure.
-- [ ] A response-body assertion proves no credential is ever serialised.
-- [ ] Unauthenticated API requests return 401, not a redirect.
-- [ ] Creating a server through the API produces the same state as the wizard does.
+- [x] Contract tests cover every endpoint's happy path and its main failure.
+- [x] A response-body assertion proves no credential is ever serialised.
+- [x] Unauthenticated API requests return 401, not a redirect.
+- [x] Creating a server through the API produces the same state as the wizard does.

@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway.crypto import Credential, CredentialCipher, CredentialState
 from mcp_gateway.db import repo
-from mcp_gateway.db.models import Server
+from mcp_gateway.db.models import Operation, Server
 from mcp_gateway.naming import (
     MAX_SLUG,
     PREFIX_REQUIRED,
@@ -487,7 +487,22 @@ async def save_settings(
     refused rename is refused rather than rolled back.
     """
     server = await repo.require_server(session, server_id)
-    patch = parse_settings(fields, server)
+    return await apply_patch(session, server, parse_settings(fields, server), cipher=cipher)
+
+
+async def apply_patch(
+    session: AsyncSession, server: Server, patch: repo.ServerPatch, *, cipher: CredentialCipher
+) -> Saved:
+    """Write an already-read patch, refusing anything it would collide with.
+
+    Separate from :func:`save_settings` because the JSON API (task 024) arrives
+    holding one of these already: it reads its own request, and everything after
+    that — the two identifier checks, the dry run, the write, the recompute, and
+    the order they happen in — is the same work whichever interface asked for
+    it. One implementation is what stops a prefix change made by script from
+    landing under rules a prefix change made by hand would have been refused by.
+    """
+    server_id = server.id
     await _identifiers_are_free(session, patch, server_id)
 
     prefix = patch.tool_prefix
@@ -829,10 +844,39 @@ async def save_operation(
     operation = await repo.get_operation(session, operation_id)
     if operation is None or operation.server_id != server_id:
         raise repo.OperationNotFound(operation_id)
+    return await apply_operation(
+        session,
+        operation,
+        selected=_ticked(fields, SELECTED_FIELD),
+        tool_name=_clean(fields.get(TOOL_NAME_FIELD)),
+        description=_clean(fields.get(DESCRIPTION_FIELD)) or None,
+    )
 
-    typed = _clean(fields.get(TOOL_NAME_FIELD))
-    override = sanitize(typed) or None
-    if typed and override is None:
+
+async def apply_operation(
+    session: AsyncSession,
+    operation: Operation,
+    *,
+    selected: bool,
+    tool_name: str,
+    description: str | None,
+) -> RowSaved:
+    """Write one operation's tick, name and description together.
+
+    All three at once rather than one at a time, because a name is only legal
+    with respect to the row it is on: checking it while some of the row is
+    already written would leave a refusal half-applied. The JSON API (task 024)
+    calls this directly, having read its own request; a caller with only some of
+    the three sends the stored values for the rest, which is what ``PATCH``
+    means there.
+
+    ``tool_name`` is the operator's override as it was typed, and an empty one
+    clears the override — the operation goes back to the name the prefix and its
+    ``operationId`` generate (spec §5.3).
+    """
+    server_id = operation.server_id
+    override = sanitize(tool_name.strip()) or None
+    if tool_name.strip() and override is None:
         raise SettingsInvalid({TOOL_NAME_FIELD: NAME_ILLEGAL})
 
     before = operation.effective_tool_name
@@ -842,11 +886,8 @@ async def save_operation(
 
     await repo.update_operation(
         session,
-        operation_id,
-        repo.OperationPatch(
-            selected=_ticked(fields, SELECTED_FIELD),
-            description_override=_clean(fields.get(DESCRIPTION_FIELD)) or None,
-        ),
+        operation.id,
+        repo.OperationPatch(selected=selected, description_override=description),
     )
     after = _assigned(plan, operation.op_key)
     logger.info("Saved operation %r of server %d: %s", operation.op_key, server_id, after or before)
@@ -962,6 +1003,8 @@ __all__ = [
     "Saved",
     "SettingsInvalid",
     "SettingsView",
+    "apply_operation",
+    "apply_patch",
     "build_operations",
     "credentials",
     "kept_fields",

@@ -80,9 +80,11 @@ SCHEMES: Final = ("http://", "https://")
 URL_REQUIRED: Final = "Enter the URL of the OpenAPI or Swagger document."
 URL_SCHEME: Final = "The URL has to start with http:// or https://."
 BASE_URL_SCHEME: Final = "The base URL has to start with http:// or https://."
+#: Said by the form and by the JSON API, so it names no direction: "above" is
+#: true of one of them and meaningless to the other.
 NOTHING_TO_REUSE: Final = (
-    "There is no API credential to reuse. Choose an API authentication type "
-    "above, or authenticate the spec URL separately."
+    "There is no API credential to reuse. Choose an API authentication type, "
+    "or authenticate the spec URL separately."
 )
 HEADER_LINE: Final = "Write one header per line, as 'Name: value'."
 

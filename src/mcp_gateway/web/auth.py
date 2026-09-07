@@ -35,10 +35,11 @@ from urllib.parse import urlencode
 
 from fastapi import APIRouter, FastAPI, Form, Query, Request
 from itsdangerous import BadSignature, URLSafeTimedSerializer
-from starlette.responses import JSONResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import ConfigError, Settings
+from mcp_gateway.web.errors import UNAUTHENTICATED, api_error
 from mcp_gateway.web.passwords import PasswordHash, PasswordHashInvalid, derive, parse
 
 if TYPE_CHECKING:
@@ -280,12 +281,14 @@ def safe_next(target: str | None) -> str:
 def unauthenticated(request: Request, exc: Exception) -> Response:
     """Turn a failed guard into a redirect for a browser, or a 401 for a script.
 
-    Task 024 requires the API to answer 401 rather than redirect: a script
-    following a redirect to a login page would read an HTML form as its result
-    and see a success where there was none.
+    The API answers 401 rather than redirecting: a script following a redirect
+    to a login page would read an HTML form as its result and see a success
+    where there was none (task 024). It answers in the same envelope as every
+    other API failure, so a caller has one shape to read and one ``code`` to
+    branch on.
     """
     if request.url.path.startswith(API_PREFIX):
-        return JSONResponse({"error": SIGN_IN_REQUIRED}, status_code=401)
+        return api_error(401, SIGN_IN_REQUIRED, code=UNAUTHENTICATED)
 
     target = login_url(request.url.path)
     if HTMX_REQUEST in request.headers:

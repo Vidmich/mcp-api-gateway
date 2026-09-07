@@ -24,7 +24,6 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 
 import uvicorn
 from fastapi import APIRouter, FastAPI, Request
-from pydantic import BaseModel
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from uvicorn.server import HANDLED_SIGNALS
 
@@ -35,7 +34,9 @@ from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
 from mcp_gateway.outbound import outbound_service
+from mcp_gateway.web.api import Health, health_report
 from mcp_gateway.web.auth import mount_admin, signing_key
+from mcp_gateway.web.routes_api import mount_api
 from mcp_gateway.web.routes_ui import mount_ui
 from mcp_gateway.web.shell import mount_shell
 
@@ -49,32 +50,15 @@ HEALTH_PATH = "/healthz"
 router = APIRouter()
 
 
-class Health(BaseModel):
-    """Body of ``GET /healthz``.
-
-    Carries only what a probe or an operator needs; never a credential, and
-    never anything that would help someone map the gateway's upstreams.
-    """
-
-    status: str = "ok"
-    version: str
-    uptime_seconds: float
-    #: The config file in use, or ``None`` when the process runs on defaults.
-    config_path: str | None = None
-
-
 @router.get(HEALTH_PATH, summary="Liveness probe", tags=["health"])
 async def healthz(request: Request) -> Health:
-    """Report that the process is up. Never behind auth (spec §4)."""
-    settings: Settings = request.app.state.settings
-    started_at: float | None = request.app.state.started_at
-    return Health(
-        version=__version__,
-        # Zero rather than an error when the lifespan has not run: a probe asking
-        # how long we have been up deserves a number, not a 500.
-        uptime_seconds=round(0.0 if started_at is None else time.monotonic() - started_at, 3),
-        config_path=str(settings.config_path) if settings.config_path else None,
-    )
+    """Report that the process is up. Never behind auth (spec §4).
+
+    The same body ``GET /api/v1/health`` serves, built by the same function:
+    spec §7.3 lists health under the API as well, and two answers to "how is the
+    gateway" that could drift apart would be one answer too many.
+    """
+    return health_report(request.app.state.settings, request.app.state.started_at)
 
 
 def startup_banner(settings: Settings, keys: Keys | None = None) -> str:
@@ -210,6 +194,10 @@ def create_app(
     #: The configuration pages (spec §7.1). After the admin account, whose
     #: guard every one of them is declared behind.
     mount_ui(app)
+    #: The JSON API the pages mirror (spec §7.3). Behind the same guard, and
+    #: mounted after the pages so that the two prefixes are added in the order
+    #: they are read about.
+    mount_api(app)
     #: The MCP endpoint. Mounted here so the route exists however the app is
     #: built; it answers 503 until ``mcp_service`` starts it (spec §6).
     app.state.mcp = mount_mcp(app)

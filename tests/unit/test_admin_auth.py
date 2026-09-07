@@ -42,6 +42,7 @@ from mcp_gateway.web.auth import (
     safe_next,
     signing_key,
 )
+from mcp_gateway.web.errors import UNAUTHENTICATED
 from mcp_gateway.web.passwords import (
     ALGORITHM,
     PasswordHash,
@@ -62,7 +63,11 @@ CHEAP_HASH = str(derive(PASSWORD, iterations=1))
 #: until task 020 made that one real, and it moves on again when task 030
 #: claims this one: what is under test is the guard, not the page.
 PROTECTED_PAGE = f"{UI_PREFIX}/monitoring"
-PROTECTED_API = f"{API_PREFIX}/servers"
+
+#: The same, under the API prefix. It was ``/api/v1/servers`` until task 024
+#: made that one real: what is under test is that the prefix is guarded, not
+#: what happens to be mounted on it.
+PROTECTED_API = f"{API_PREFIX}/probe"
 
 #: What the streamable HTTP transport requires of a POST.
 MCP_HEADERS = {
@@ -538,7 +543,14 @@ def test_an_anonymous_api_request_gets_401_rather_than_a_redirect(tmp_path: Path
         response = client.get(PROTECTED_API, follow_redirects=False)
 
     assert response.status_code == 401
-    assert response.json()["error"] == SIGN_IN_REQUIRED
+    # The envelope every API failure wears (task 024), not a redirect and not a
+    # shape of its own.
+    assert response.json() == {
+        "status": 401,
+        "code": UNAUTHENTICATED,
+        "message": SIGN_IN_REQUIRED,
+        "fields": {},
+    }
 
 
 def test_an_anonymous_htmx_request_is_told_to_navigate(tmp_path: Path) -> None:
