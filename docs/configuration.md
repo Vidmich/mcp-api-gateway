@@ -330,6 +330,7 @@ cannot take the gateway down with it.
 | Which operations are exposed, and what each tool is called | the database, on a server's detail page |
 | Whether a server auto-refreshes | the database, per server |
 | How fast one server may be called | the database, on that server's detail page |
+| Whether agents may configure this gateway over MCP | the database, the built-in Gateway server's toggle on the server list |
 | The auto-refresh interval, once changed in the UI | the database, overriding `refresh.auto_refresh_interval_minutes` |
 | Whether a server is enabled, including after the gateway disabled it | the database, toggled at `/ui/servers` |
 

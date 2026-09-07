@@ -145,6 +145,7 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 | `spec_format` | `openapi-3.1` / `openapi-3.0` / `swagger-2.0` (detected) |
 | `base_url` | resolved from the spec's `servers` or `host`+`basePath`, user-overridable |
 | `enabled` | per-server on/off; disabled servers contribute no tools |
+| `builtin` | true for the one server the gateway provides itself; false for everything registered from a document |
 | `needs_attention` | set by a refresh that found changes, or by auto-disable |
 | `attention_reason` | why the *gateway* raised the flag, in one sentence; null when a refresh diff did |
 | `disabled_at` | when auto-disable took the server out of service; null when a person turned it off |
@@ -179,6 +180,8 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 | `first_seen_at`, `last_seen_at` | |
 
 **Auto-disable.** The outcome of every `tools/call` is watched per server, off the same in-memory counters the metrics writer drains, so the call path takes no extra query and no extra write. A server is taken out of the tool list on either of two triggers: `health.auth_failures_before_disable` consecutive `401`/`403` answers (or credentials that would not decrypt), which a successful call resets; or, over `health.failure_window_minutes`, a window holding at least `health.failure_minimum_calls` of which at least `health.failure_threshold` were `5xx` or never reached the upstream. A `400`, `404`, `409`, `422` or an argument-validation failure counts toward neither, and is not in the window at all. Tripping sets `enabled = false` and `needs_attention = true`, writes `attention_reason` and `disabled_at`, records one `call_errors` row, logs one warning naming the server, the trigger and the counts — never the credential — and emits `notifications/tools/list_changed`. Nothing comes back on its own: the operator fixes the cause and re-enables the server, which is what clears `attention_reason`. `health.auto_disable = false` keeps all of that except `enabled = false`.
+
+**The built-in server.** Exactly one row carries `builtin`, seeded at startup and never deleted. It has no `spec_url`, no `base_url` and no credentials, because its tools dispatch in process rather than over HTTP: they are the gateway's own management API, and what they do is described in §6. `slug` and `tool_prefix` are both `gateway`, reserved from this version on — a database that predates the reservation and already holds the word keeps it, and the built-in row takes the next free one rather than refusing to start. It arrives **disabled**: the endpoint its tools answer on has no authentication unless `mcp.auth_token` is set, so enabling it is the operator accepting that, and nobody acquires it by upgrading. `enabled` is the only column on it that may be changed; a delete, a refresh or any other patch is refused by the repository, so the pages and the JSON API meet the rule identically. Its operations are reconciled against the code on every start: a tool this version adds arrives *selected*, since the set is curated by the gateway rather than by an upstream, and a tool it drops goes `removed` like any other.
 
 **Rate limits.** `rate_limit_calls` over `rate_limit_seconds` caps how fast one upstream may be called. Both columns or neither: half a limit is refused by the form and by `PATCH /servers/{id}`, and read back as no limit at all. The window is a sliding one held in memory, per process, and empty after a restart — a gateway that has just come back up cannot know what the process before it sent. Enforcement is in the proxy at the point the request would leave: after the tool is resolved, its arguments validated and its credential read, so nothing that was never going to reach the upstream spends the budget. A refused call is answered immediately — never queued — with `isError: true` whose text opens with the same `HTTP 429 Too Many Requests` status line an upstream's own error arrives under, and then says that the *gateway* refused it and roughly when there will be room. It is counted as a `throttled` metric bucket and as nothing else: not a call, not an error, and nothing in `call_errors`. An upstream's own `429` stays an ordinary error, and the two are never merged.
 
@@ -262,11 +265,13 @@ Built on the official `mcp` Python SDK's low-level `Server` plus `StreamableHTTP
 - **tools/call** →
   1. Look up the operation by effective tool name; unknown or newly-disabled names return an MCP error, not an exception.
   2. Validate arguments against the stored `input_schema` (`jsonschema`). Validation failures return `isError: true` with the validation message — a model can correct itself from that.
-  3. If the server carries a rate limit and its window is full, refuse the call here — before anything is built or sent — with the `429`-shaped result described under `servers` in §4.
-  4. Build the request: substitute path params (URL-encoded), append query params, set header params, serialize `body` per the operation's media type, apply the server's credentials.
-  5. Call via a shared `httpx.AsyncClient` with the configured timeout.
-  6. Return the response body as text content. JSON is pretty-printed; non-text content types are described rather than dumped. `4xx`/`5xx` return `isError: true` with the status line and the body, since the model usually needs the upstream error detail.
-  7. Record metrics regardless of outcome.
+  3. If the tool belongs to the built-in server, run it in process and skip the rest: there is no URL to build, no credential to apply and no upstream quota to spend. It is still counted as a call, and a refusal comes back as `isError: true` with the reason in words.
+  4. If the server carries a rate limit and its window is full, refuse the call here — before anything is built or sent — with the `429`-shaped result described under `servers` in §4.
+  5. Build the request: substitute path params (URL-encoded), append query params, set header params, serialize `body` per the operation's media type, apply the server's credentials.
+  6. Call via a shared `httpx.AsyncClient` with the configured timeout.
+  7. Return the response body as text content. JSON is pretty-printed; non-text content types are described rather than dumped. `4xx`/`5xx` return `isError: true` with the status line and the body, since the model usually needs the upstream error detail.
+  8. Record metrics regardless of outcome.
+- **The built-in server's tools** — six, written by hand rather than ingested from the gateway's own document, so that adding a route does not silently add a tool: `gateway_list_servers`, `gateway_get_server`, `gateway_preview_spec`, `gateway_add_server`, `gateway_select_operations`, `gateway_refresh_server`. Each calls the same function the corresponding `/api/v1` route calls, so there is one implementation of "add a server" and not two. **Nothing deletes a server, reads a stored credential back, or edits the built-in row itself** — every caller of `/mcp` has the same rights, which is why the write tools are this set and not the whole of §7.3. Every management call logs one line at info naming what it changed.
 - **Auth**: when `mcp.auth_token` is set, a missing or wrong `Authorization: Bearer` header gets `401` with `WWW-Authenticate: Bearer` before the session manager sees the request.
 - Config changes made in the UI take effect on the next `tools/list`; connected sessions also get a `list_changed` notification.
 
@@ -276,7 +281,7 @@ Built on the official `mcp` Python SDK's low-level `Server` plus `StreamableHTTP
 
 ### 7.1 Configuration pages
 
-- **`/ui/servers`** — table of registered servers: name, base URL, enabled toggle, operation counts (`selected / total`, with `new` badged), last refresh time and result, **Needs Attention** badge, Refresh / Edit / Delete actions. A server the gateway disabled itself wears its own badge instead, carrying the reason ("Disabled by the gateway: 3 authentication failures in a row.") so it cannot be mistaken for a refresh diff waiting to be reviewed; switching the server back on is what clears it.
+- **`/ui/servers`** — table of registered servers: name, base URL, enabled toggle, operation counts (`selected / total`, with `new` badged), last refresh time and result, **Needs Attention** badge, Refresh / Edit / Delete actions. A server the gateway disabled itself wears its own badge instead, carrying the reason ("Disabled by the gateway: 3 authentication failures in a row.") so it cannot be mistaken for a refresh diff waiting to be reviewed; switching the server back on is what clears it. The built-in server (§4) appears here like any other, with its toggle and without a Delete or a Refresh action, and the row says why; enabling it while `mcp.auth_token` is unset warns, in the same words the startup banner uses, that anyone who can reach the port can now register upstreams here.
 - **`/ui/servers/new`** — step 1: spec URL, display name, API auth type and credentials, optional base URL override, and a **spec fetch auth** selector (`none` / same as API / custom, with its own credential fields revealed when `custom` is picked). Submitting fetches and parses the spec **without saving**; a `401`/`403` returns to step 1 with the spec-auth selector highlighted rather than a generic error.
 - **Step 2 (operation picker)** — every discovered operation with method, path, summary, and the tool name it will get. Select-all / select-none / filter by tag, method, or text. Saving creates the server, its operations, and the spec snapshot in one transaction.
 - **`/ui/servers/{id}`** — detail page. Same operation table plus status filters (`new`, `changed`, `removed`), inline editing of tool name and description, per-operation select toggles, and the server's own settings (name, slug/prefix, base URL, API credentials, spec fetch auth, auto-refresh checkbox, and the optional rate limit — two boxes that are one setting, both empty for no cap, taking effect on the next call with no restart). Both credential sets are write-only in the UI: the current value is never rendered back, only "set" / "not set" with a Replace action.
@@ -305,7 +310,7 @@ GET    /servers                     list
 POST   /servers                     create (spec_url, auth, spec_auth, selected op_keys)
 GET    /servers/{id}                detail incl. operations
 PATCH  /servers/{id}                name, slug, base_url, enabled, auto_refresh, rate limit, credentials, spec_auth
-DELETE /servers/{id}
+DELETE /servers/{id}                409 for the built-in server, which cannot be deleted
 POST   /servers/{id}/refresh        run a refresh, returns the diff
 POST   /servers/{id}/acknowledge    clear needs_attention
 GET    /servers/{id}/operations     filterable by status
@@ -342,6 +347,7 @@ src/mcp_gateway/
   db/            models.py  session.py  repo.py  migrate.py  migrations/
   openapi/       diagnostics.py  fetch.py  normalize.py  swagger2.py  refs.py  schema.py  diff.py
   mcpsrv/        server.py  tools.py  proxy.py  auth.py
+  builtin/       catalog.py  tools.py  seed.py
   web/           routes_ui.py  routes_api.py  auth.py  templates/  static/
 tests/           unit/  integration/  fixtures/specs/
 docs/            install.md  service-setup.md  configuration.md  security.md

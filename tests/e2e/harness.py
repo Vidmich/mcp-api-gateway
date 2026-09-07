@@ -229,6 +229,29 @@ class Gateway:
         assert response.status_code == 201, response.text
         return int(response.json()["id"])
 
+    async def servers(self) -> list[dict[str, Any]]:
+        """Every server the API reports, the gateway's own included."""
+        response = await self.http.get("/api/v1/servers")
+        assert response.status_code == 200, response.text
+        listed: list[dict[str, Any]] = response.json()["servers"]
+        return listed
+
+    async def registered_servers(self) -> list[dict[str, Any]]:
+        """The servers a scenario put there.
+
+        The built-in row is left out. It is in every database from the first
+        start, disabled and contributing nothing, and it is not a registration
+        anybody made — so a scenario asserting "nothing has been registered"
+        means what it says rather than counting the gateway itself (task 102).
+        """
+        return [server for server in await self.servers() if not server["builtin"]]
+
+    async def builtin(self) -> dict[str, Any]:
+        """The gateway's own row, which every gateway has exactly one of."""
+        rows = [server for server in await self.servers() if server["builtin"]]
+        assert len(rows) == 1, f"expected one built-in server, found {len(rows)}"
+        return rows[0]
+
     async def server(self, server_id: int) -> dict[str, Any]:
         response = await self.http.get(f"/api/v1/servers/{server_id}")
         assert response.status_code == 200, response.text

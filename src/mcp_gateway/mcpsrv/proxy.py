@@ -25,6 +25,13 @@ back in the same shape an upstream's own error does, under the same
 :func:`status_line`, and says on the next line that it was the *gateway*
 that refused it: see :mod:`mcp_gateway.limits`.
 
+**One server's tools never leave the process.** The gateway provides a server of
+its own whose tools reconfigure the gateway (task 102). A call to one of those is
+resolved and validated here exactly as any other is, and then handed to
+:mod:`mcp_gateway.builtin` instead of being turned into a request: there is no
+URL to build, no credential to apply, and no upstream quota to spend. It is
+still counted as a call, because it is one.
+
 **Two kinds of failure, and they are not the same kind.** A name that is not a
 live tool is a protocol error — the client asked for something that does not
 exist, and :class:`~mcp.shared.exceptions.MCPError` is how JSON-RPC says so.
@@ -58,6 +65,8 @@ from jsonschema.exceptions import SchemaError, UnknownType, best_match
 from mcp import types
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from mcp_gateway.builtin.tools import Console, ToolFailed, announce_nothing
+from mcp_gateway.builtin.tools import dispatch as dispatch_builtin
 from mcp_gateway.config import HttpSettings
 from mcp_gateway.crypto import Credential, CredentialCipher, CredentialUnreadable
 from mcp_gateway.db import repo
@@ -66,6 +75,7 @@ from mcp_gateway.db.repo import ToolRow
 from mcp_gateway.limits import Limit, Limiter, Refusal, RefusalRecorder, record_refusal
 from mcp_gateway.openapi.schema import BODY_ARGUMENT, EXTENSION, JSON_MEDIA_TYPE
 from mcp_gateway.outbound import credential_headers
+from mcp_gateway.refresh import Announce, RefreshLocks
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +124,11 @@ INVALID_ARGUMENTS: Final = "invalid_arguments"
 CREDENTIAL_UNREADABLE: Final = "credential_unreadable"
 UNREACHABLE: Final = "unreachable"
 HTTP_ERROR: Final = "http_error"
+#: A tool of the gateway's own server that could not do what it was asked
+#: (task 102). Its own reason rather than ``http_error``, because no HTTP
+#: happened and an operator reading the failure list should not be sent looking
+#: for an upstream that was never called.
+GATEWAY_ERROR: Final = "gateway_error"
 
 #: What a call refused by the gateway's own rate limit is answered with. Not
 #: one of the failures above, because it is not one: no request was made, so
@@ -201,6 +216,16 @@ class Upstream:
     limiter: Limiter | None = None
     #: Where a refusal goes, mirroring ``record``. The default only logs it.
     refuse: RefusalRecorder = record_refusal
+    #: The registry that keeps two refreshes of one server apart (spec §8), which
+    #: the built-in server's refresh tool takes a turn in. ``None`` gives that
+    #: call a registry of its own, which keeps nothing apart — the honest answer
+    #: for a proxy exercised outside an app, where there is nothing to keep it
+    #: apart from.
+    locks: RefreshLocks | None = None
+    #: How a change made by a built-in tool tells clients the tool list moved.
+    #: The default tells nobody, which is what an app with no MCP endpoint would
+    #: do anyway.
+    announce: Announce = announce_nothing
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,6 +350,12 @@ async def _attempt(upstream: Upstream, row: ToolRow, arguments: dict[str, Any]) 
     if reason is not None:
         return _Attempt(error_result(reason), failure=INVALID_ARGUMENTS)
 
+    if row.builtin:
+        # Before the credential and before the limiter, because it has neither:
+        # there is no stored secret on this server to read and no upstream quota
+        # for it to spend (task 102).
+        return await _in_process(upstream, row, arguments)
+
     try:
         server = await repo.require_server(upstream.session, row.server_id)
         credential = repo.credential_for(server, upstream.cipher)
@@ -362,6 +393,34 @@ async def _attempt(upstream: Upstream, row: ToolRow, arguments: dict[str, Any]) 
         response_bytes=len(received.body),
         failure=None if received.ok else HTTP_ERROR,
     )
+
+
+async def _in_process(upstream: Upstream, row: ToolRow, arguments: dict[str, Any]) -> _Attempt:
+    """Run one of the gateway's own tools, on the session this call opened.
+
+    Counted as a call like any other, with no bytes either way, because none
+    moved. Writing the length of the answer there instead would put traffic on
+    the bytes chart that never crossed a wire, which is the one thing that chart
+    claims to be about.
+
+    A refusal comes back as ``isError`` with the sentence the refusal already
+    carried, under a failure reason of its own: the model gets something it can
+    act on, and an operator reading the failure list is not sent looking for an
+    upstream that was never called.
+    """
+    console = Console(
+        session=upstream.session,
+        cipher=upstream.cipher,
+        http=upstream.http,
+        client=upstream.client,
+        locks=upstream.locks or RefreshLocks(),
+        announce=upstream.announce,
+    )
+    try:
+        answer = await dispatch_builtin(console, row.path, arguments)
+    except ToolFailed as refused:
+        return _Attempt(error_result(str(refused)), failure=GATEWAY_ERROR)
+    return _Attempt(_result(answer))
 
 
 def _refuse(upstream: Upstream, row: ToolRow, server: Server) -> Refusal | None:
@@ -715,6 +774,7 @@ __all__ = [
     "BROKEN_SCHEMA",
     "CREDENTIAL_UNREADABLE",
     "FORM_MEDIA_TYPE",
+    "GATEWAY_ERROR",
     "HTTP_ERROR",
     "INVALID_ARGUMENTS",
     "NO_BODY",

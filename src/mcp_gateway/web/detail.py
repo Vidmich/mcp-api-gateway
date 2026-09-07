@@ -225,6 +225,16 @@ DELETE_OPERATION: Final = (
     "Delete {op_key}? The upstream no longer has it, and the name {name} becomes free."
 )
 
+#: What stands in for the settings form on the gateway's own server. It says
+#: the two things an operator needs: nothing here is theirs to change, and
+#: what turning it on actually does (task 102).
+BUILTIN_SETTINGS: Final = (
+    "This server is part of the gateway. Its name, its tool prefix and its tools "
+    "come with the version, and it has no spec URL, no base URL and no stored "
+    "credentials. Switching it on lets an MCP client register and configure "
+    "upstream services here."
+)
+
 #: Under the Enabled switch. The second sentence appears only for a server the
 #: gateway turned off itself (task 100): this switch is where it is fixed, so
 #: this is where the reason belongs.
@@ -331,6 +341,22 @@ class SettingsView:
     errors: Mapping[str, str] = field(default_factory=dict)
     #: Everything wrong with the form as a whole: collisions, mostly.
     alerts: tuple[str, ...] = ()
+
+    @property
+    def editable(self) -> bool:
+        """Whether this server has settings an operator may change.
+
+        False for the one the gateway provides itself, whose name, prefix and
+        tools are the gateway's and whose two URLs are not URLs (task 102).
+        The switch is still offered; it is the only thing about that row
+        anybody decides.
+        """
+        return not self.server.builtin
+
+    @property
+    def uneditable_note(self) -> str:
+        """What stands in for the form when there is nothing in it to change."""
+        return BUILTIN_SETTINGS
 
     @property
     def enabled(self) -> bool:
@@ -1209,6 +1235,7 @@ __all__ = [
     "AUTO_REFRESH_FIELD",
     "BASE_URL_FIELD",
     "BASE_URL_REQUIRED",
+    "BUILTIN_SETTINGS",
     "CREDENTIAL_LABELS",
     "CREDENTIAL_NOTES",
     "CUSTOM_NEEDS_CREDENTIAL",

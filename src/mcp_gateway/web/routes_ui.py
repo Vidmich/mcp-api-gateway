@@ -78,6 +78,7 @@ from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import RedirectResponse, Response
 
+from mcp_gateway.builtin.seed import OPEN_TO_ANYONE
 from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
@@ -221,6 +222,15 @@ DISABLED_TITLE: Final = (
 FAILING_TITLE: Final = (
     "The gateway would have turned this server off, but health.auto_disable is off, "
     "so it is still serving."
+)
+
+#: What the built-in server's row says instead of a base URL and a delete
+#: button (task 102). The list is where an operator meets this server, so it
+#: is where the two things that make it unlike the others are said: its tools
+#: run here, and it is the gateway's rather than theirs to remove.
+BUILTIN_ROW_NOTE: Final = "Provided by the gateway; its tools run in this process."
+BUILTIN_UNDELETABLE: Final = (
+    "This server is part of the gateway and cannot be deleted. Switch it off instead."
 )
 
 #: An upstream's error text can be a whole HTML page. The tooltip gets the start
@@ -377,6 +387,40 @@ class ServerRow:
         return f"{SERVERS_PATH}/{self.server.id}"
 
     @property
+    def refreshable(self) -> bool:
+        """Whether this row offers a Refresh button.
+
+        The built-in server has no document to re-read: its tools are
+        reconciled against the code at startup, which is the only refresh they
+        get (task 102). :func:`~mcp_gateway.refresh.refresh_server` refuses it
+        outright; this is why the button is not there to press.
+        """
+        return not self.server.builtin
+
+    @property
+    def deletable(self) -> bool:
+        """Whether this row offers a Delete button at all.
+
+        The rule itself is in :func:`~mcp_gateway.db.repo.delete_server`, which
+        is what the API and this page both go through. Hiding the button is the
+        courtesy on top of it: an action an operator cannot take should not be
+        one they have to press to find out about.
+        """
+        return not self.server.builtin
+
+    @property
+    def origin_note(self) -> str | None:
+        """What stands where a base URL would, for a server that has none."""
+        return BUILTIN_ROW_NOTE if self.server.builtin else None
+
+    @property
+    def undeletable_note(self) -> str:
+        """What stands where the Delete button would, for the one row that has
+        none. Spelled here rather than in the template, beside the rule that
+        decides whether the button is shown."""
+        return BUILTIN_UNDELETABLE
+
+    @property
     def refresh_path(self) -> str:
         return f"{SERVERS_PATH}/{self.server.id}/refresh"
 
@@ -520,6 +564,21 @@ def _no_operation(request: Request, operation_id: int) -> HTTPException:
         detail=f"No operation with id {operation_id} on this server.",
         headers=headers,
     )
+
+
+def _open_to_anyone(request: Request, row: ServerRow) -> str | None:
+    """The sentence to show when the gateway's own tools have just been opened.
+
+    Only for the built-in server, only when it has just been switched on, and
+    only while ``mcp.auth_token`` is unset — which is exactly the state where
+    anyone who can reach the port can now register upstreams here. The same
+    words the startup banner uses, at the moment the operator can still do
+    something about it (task 102).
+    """
+    if not (row.server.builtin and row.server.enabled):
+        return None
+    settings: Settings = request.app.state.settings
+    return None if settings.mcp.auth_required else OPEN_TO_ANYONE.format(path=settings.mcp.path)
 
 
 def _back_to_the_list(request: Request, message: str) -> Response:
@@ -674,6 +733,10 @@ def _detail_context(
         "detail_path": path,
         "prefix_path": f"{path}/prefix",
         "refresh_path": f"{path}/refresh",
+        # Where the built-in server's card posts its one switch: the same
+        # route the list page's toggle uses, because it is the same decision
+        # (task 102).
+        "enabled_path": f"{path}/enabled",
         "rename_id": RENAME_ID,
         "rename_target": RENAME_TARGET,
         "servers_path": SERVERS_PATH,
@@ -998,6 +1061,10 @@ def ui_router() -> APIRouter:
         fields = await _submitted(request)
         try:
             saved = await save_settings(session, server_id, fields, cipher=cipher)
+        except repo.BuiltinServer as refused:
+            # The page renders no form for that row, so this is a submission
+            # nothing on it produced (task 102).
+            raise HTTPException(status_code=409, detail=str(refused)) from None
         except SettingsInvalid as invalid:
             return _detail_page(
                 request,
@@ -1188,6 +1255,11 @@ def ui_router() -> APIRouter:
                 )
         except repo.ServerNotFound:
             raise _gone(request, server_id) from None
+        except repo.BuiltinServer as refused:
+            # Neither page offers the button on that row, so this took a
+            # request nothing rendered. Answered in the repository's own
+            # words, and with the code the API gives it (task 102).
+            raise HTTPException(status_code=409, detail=str(refused)) from None
 
         where = SERVERS_PATH if back == BACK_TO_LIST else f"{SERVERS_PATH}/{server_id}"
         response = RedirectResponse(where, status_code=303)
@@ -1210,13 +1282,28 @@ def ui_router() -> APIRouter:
         # the row shows counts, and only a query knows those.
         row = to_row(await repo.server_detail(session, server_id))
         logger.info("Server %r %s", row.server.name, "enabled" if enabled else "disabled")
+        # Every enabled server's operations are in the tool list, so this is
+        # the moment a connected client's copy of it stopped being true. Said
+        # here rather than only for the built-in server: the toggle is one
+        # route, and a stale listing is stale whichever row moved.
+        await app_announcer(request.app)()
+        warning = _open_to_anyone(request, row)
 
         if HTMX_REQUEST not in request.headers:
             state = "enabled" if enabled else "disabled"
-            return _back_to_the_list(request, f"{row.server.name} is now {state}.")
-        return _shell(request).render(
+            response = _back_to_the_list(request, f"{row.server.name} is now {state}.")
+            if warning is not None:
+                _shell(request).flash(request, response, warning, level="warning")
+            return response
+        rendered = _shell(request).render(
             request, ROW_TEMPLATE, {"row": row, "list_target": LIST_TARGET}
         )
+        if warning is not None:
+            # A swapped row leaves no page to carry a flash, so it is set on
+            # this response and shown by the next render — which is what the
+            # operator gets as soon as they touch anything else.
+            _shell(request).flash(request, rendered, warning, level="warning")
+        return rendered
 
     @router.delete(f"{SERVERS_PATH}/{{server_id}}")
     async def remove_server(request: Request, server_id: int, session: Session) -> Response:
@@ -1226,6 +1313,11 @@ def ui_router() -> APIRouter:
             await repo.delete_server(session, server_id)
         except repo.ServerNotFound:
             raise _gone(request, server_id) from None
+        except repo.BuiltinServer as refused:
+            # The row shows no Delete button, so getting here took a request
+            # nothing on the page issues. Answered rather than crashed, and in
+            # the repository's own words (task 102).
+            raise HTTPException(status_code=409, detail=str(refused)) from None
         logger.info(
             "Deleted server %r and its %s", doomed.name, plural(doomed.counts.total, "operation")
         )
@@ -1257,6 +1349,8 @@ __all__ = [
     "ACKNOWLEDGE_PATH",
     "BACK_FIELD",
     "BACK_TO_LIST",
+    "BUILTIN_ROW_NOTE",
+    "BUILTIN_UNDELETABLE",
     "DETAIL_PATH",
     "DETAIL_TEMPLATE",
     "DISABLED_LABEL",

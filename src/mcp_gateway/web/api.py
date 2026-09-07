@@ -42,19 +42,22 @@ import datetime as dt
 import time
 from typing import Any, Final
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway import __version__
-from mcp_gateway.config import Settings
-from mcp_gateway.crypto import Credential
+from mcp_gateway.config import HttpSettings, Settings
+from mcp_gateway.crypto import Credential, CredentialCipher
 from mcp_gateway.db import repo
-from mcp_gateway.db.models import SpecAuthMode
+from mcp_gateway.db.models import Server, SpecAuthMode
 from mcp_gateway.limits import MAX_RATE_CALLS, MAX_WINDOW_SECONDS
 from mcp_gateway.naming import sanitize, server_slug
 from mcp_gateway.openapi.diagnostics import SpecWarning
-from mcp_gateway.openapi.ingest import SpecPreview
+from mcp_gateway.openapi.ingest import SpecPreview, preview_spec
 from mcp_gateway.refresh import OperationChange, RefreshReport
-from mcp_gateway.web.picker import FALLBACK_SLUG
+from mcp_gateway.web.detail import SettingsInvalid
+from mcp_gateway.web.picker import FALLBACK_SLUG, NO_BASE_URL, register
 from mcp_gateway.web.wizard import (
     BASE_URL_SCHEME,
     NOTHING_TO_REUSE,
@@ -442,6 +445,66 @@ class ServerCreate(_SpecRequest):
         return list(self.selected)
 
 
+async def create_from_spec(
+    session: AsyncSession,
+    body: ServerCreate,
+    *,
+    cipher: CredentialCipher,
+    http: HttpSettings,
+    client: httpx.AsyncClient | None = None,
+) -> Server:
+    """Fetch the document ``body`` names, then register what it describes.
+
+    The wizard's two steps in one call, running through the wizard's own
+    functions: the fetch is
+    :func:`~mcp_gateway.openapi.ingest.preview_spec` and the write is
+    :func:`~mcp_gateway.web.picker.register`, which is what makes the row this
+    leaves behind the row step 2 would have left.
+
+    It lives here, beside the model it reads, because it has two callers:
+    ``POST /api/v1/servers`` and the built-in server's ``add_server`` tool
+    (task 102). One of them is a script and the other is an agent, and
+    "adding a server" had better not mean two different things depending on
+    which of them asked.
+
+    The two refusals it raises itself are :class:`SettingsInvalid`, keyed by
+    the field that can fix them: a document that never said where its API
+    lives and nobody supplied a base URL, and a selection naming operations
+    the document does not have. Everything else comes from underneath —
+    :class:`~mcp_gateway.openapi.diagnostics.SpecError` for a document that
+    could not be read, :class:`~mcp_gateway.naming.NamesTaken` for a tool name
+    another server publishes.
+    """
+    form = body.as_form(name=body.name.strip())
+    preview = await preview_spec(
+        form.spec_url,
+        spec_credential=form.fetch_credential,
+        api_credential=form.credential,
+        http=http,
+        # Whatever pool the process shares (spec §2); ``None`` where there is
+        # none, and a client is made for the call.
+        client=client,
+    )
+    pending = PendingServer(form=form, preview=preview)
+    if not pending.base_url:
+        # A document that never said where its API lives, and a caller who did
+        # not say either. Refused here rather than stored as a server whose
+        # tools would have nowhere to call.
+        raise SettingsInvalid({"base_url": NO_BASE_URL})
+    try:
+        selection = body.selection(pending)
+    except ValueError as unknown:
+        raise SettingsInvalid({"selected": str(unknown)}) from None
+
+    return await register(
+        session,
+        pending,
+        prefix=body.prefix_for(pending),
+        selection=selection,
+        cipher=cipher,
+    )
+
+
 #: The fields of :class:`ServerUpdate` that :class:`~mcp_gateway.db.repo.ServerPatch`
 #: has too. Named rather than derived, so a field added to one of them does not
 #: silently start being written by the other.
@@ -561,6 +624,7 @@ __all__ = [
     "SpecPreviewIn",
     "SpecPreviewOut",
     "WarningOut",
+    "create_from_spec",
     "health_report",
     "previewed",
     "refreshed",

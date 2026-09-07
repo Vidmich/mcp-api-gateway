@@ -29,10 +29,13 @@
   <h1 class="toolbar__title">{{ settings.server.name }}</h1>
   {{ status_badge("enabled" if settings.server.enabled else "disabled") }}
   {# A whole-page action, deliberately: a refresh moves the summary below, every
-     row's status, the counts and the flag at once (spec §5.4). #}
+     row's status, the counts and the flag at once (spec §5.4). Absent on the
+     gateway's own server, which has no document to re-read (task 102). #}
+  {% if settings.editable %}
   <form method="post" action="{{ refresh_path }}">
     <button class="button" type="submit">Refresh</button>
   </form>
+  {% endif %}
   <a class="button" href="{{ servers_path }}">All servers</a>
 </div>
 
@@ -67,6 +70,21 @@
   </div>
 </dl>
 
+{# Nothing on the gateway's own server is an operator's to change but the
+   switch, so that is the whole of its card. The rule underneath is in the
+   repository, which refuses a patch of anything else however it arrives
+   (task 102). #}
+{% if not settings.editable %}
+<form class="card form" method="post" action="{{ enabled_path }}">
+  <h2 class="card__title">Settings</h2>
+  <p class="form__note">{{ settings.uneditable_note }}</p>
+  {{ switch("enabled", "Enabled", checked=settings.enabled, hint=settings.enabled_hint) }}
+  <div class="form-actions">
+    <a class="button" href="{{ servers_path }}">Cancel</a>
+    <button class="button button--primary" type="submit">Save</button>
+  </div>
+</form>
+{% else %}
 <form class="card form" method="post" action="{{ detail_path }}">
   <h2 class="card__title">Settings</h2>
 
@@ -201,6 +219,7 @@
     <button class="button button--primary" type="submit">Save settings</button>
   </div>
 </form>
+{% endif %}
 
 <div class="toolbar">
   <h2 class="toolbar__title">Operations</h2>

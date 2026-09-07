@@ -260,5 +260,5 @@ async def test_a_document_that_cannot_be_read_registers_nothing(
     assert "#/components/schemas/Pet" in body["message"]
     assert "spec_url" in body["fields"]
 
-    assert (await gateway.http.get("/api/v1/servers")).json()["servers"] == []
+    assert await gateway.registered_servers() == []
     assert await gateway.tool_names() == []

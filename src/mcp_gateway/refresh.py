@@ -283,12 +283,22 @@ async def refresh_server(
 
     Refreshes whatever server it is given, disabled or not: only the scheduler
     decides who is due (task 027), and an operator checking a disabled server
-    before turning it back on is asking a reasonable question.
+    before turning it back on is asking a reasonable question. The one
+    exception is the built-in server, refused with
+    :class:`~mcp_gateway.db.repo.BuiltinServer`: there is no document behind it
+    to re-read, and its tools are reconciled against the code at startup
+    instead (task 102).
 
     ``at`` is the moment recorded as ``last_refresh_at``; it is a parameter so
     that a test, and the scheduler's backoff arithmetic, can say what time it is.
     """
     server = await repo.require_server(session, server_id)
+    if server.builtin:
+        # Not a document that could be re-read: its tools are reconciled
+        # against the code at startup, which is the only refresh they have
+        # (task 102). Refused here rather than in each caller, so the button,
+        # the API and the built-in tool itself all say the same thing.
+        raise repo.BuiltinServer(server.name, repo.CANNOT_BE_REFRESHED)
     moment = at or _now()
     before = await tool_signature(session)
 

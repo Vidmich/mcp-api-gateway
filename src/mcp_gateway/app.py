@@ -29,6 +29,7 @@ from uvicorn.server import HANDLED_SIGNALS
 
 from mcp_gateway import __version__
 from mcp_gateway.bootstrap import Keys
+from mcp_gateway.builtin.seed import builtin_service
 from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
@@ -211,6 +212,9 @@ def create_app(
     #: never overlap (spec §8). Built here rather than by the scheduler service,
     #: because the button on the page needs it in an app that runs no scheduler.
     app.state.refresh_locks = RefreshLocks()
+    #: What seeding the built-in server found or did (task 102); ``None`` in an
+    #: app that does not run that service, which is one with no built-in row.
+    app.state.builtin = None
 
     app.add_middleware(RequestLog)
     app.include_router(router)
@@ -250,6 +254,11 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     The scheduler comes last, since a sweep uses all three, and it is the first
     thing stopped on the way out for the same reason.
 
+    The built-in server is seeded straight after the database and before
+    anything that could serve a tool list, so that no client ever sees its
+    operations half-written (task 102). It has nothing to stop, and unwinds in
+    its turn without doing anything.
+
     The metrics writer goes *before* the MCP endpoint, which is the same as
     saying it is torn down after it: services unwind in reverse, so the last
     flush of the counters happens once nothing is serving calls that could still
@@ -268,6 +277,7 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     """
     return (
         database_service(settings),
+        builtin_service,
         outbound_service(settings.http),
         metrics_service,
         mcp_service,

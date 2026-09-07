@@ -66,19 +66,19 @@ call depend on the listener it is trying to reconfigure.
 
 ## Acceptance
 
-- [ ] A fresh database comes up with exactly one built-in server, disabled, and none of its tools in
+- [x] A fresh database comes up with exactly one built-in server, disabled, and none of its tools in
       `tools/list`.
-- [ ] Enabling it puts its tools in the next `tools/list`, and `list_changed` fired.
-- [ ] Restarting creates no second row, does not re-enable one the operator disabled, and does not
+- [x] Enabling it puts its tools in the next `tools/list`, and `list_changed` fired.
+- [x] Restarting creates no second row, does not re-enable one the operator disabled, and does not
       disable one the operator enabled.
-- [ ] Deleting it fails through the JSON API and through the UI, and the row survives both attempts.
-- [ ] Disabling it removes its tools from the next `tools/list` and leaves every other server alone.
-- [ ] An agent calls preview then add against a spec fixture, and the new server's selected operations
+- [x] Deleting it fails through the JSON API and through the UI, and the row survives both attempts.
+- [x] Disabling it removes its tools from the next `tools/list` and leaves every other server alone.
+- [x] An agent calls preview then add against a spec fixture, and the new server's selected operations
       appear as tools on the following `tools/list` — the whole point, end to end.
-- [ ] A credential passed to the add tool is stored encrypted and is not readable back through any tool
+- [x] A credential passed to the add tool is stored encrypted and is not readable back through any tool
       or any API response.
-- [ ] No built-in tool can delete a server, disable the built-in row, or modify it.
-- [ ] Starting with the built-in server enabled and no `mcp.auth_token` prints the warning; starting
+- [x] No built-in tool can delete a server, disable the built-in row, or modify it.
+- [x] Starting with the built-in server enabled and no `mcp.auth_token` prints the warning; starting
       with it disabled does not.
-- [ ] Upgrading to a version with one more built-in tool adds it selected, and drops a retired one to
+- [x] Upgrading to a version with one more built-in tool adds it selected, and drops a retired one to
       `removed`, without touching any other server.

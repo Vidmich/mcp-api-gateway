@@ -143,6 +143,13 @@ class Server(Base):
 
     #: A disabled server contributes no tools and is never refreshed.
     enabled: Mapped[bool] = mapped_column(default=True)
+    #: True for the one server the gateway provides itself, whose tools
+    #: reconfigure the gateway and run in process rather than over HTTP
+    #: (task 102). It cannot be deleted, and ``enabled`` is the only
+    #: column on it an operator may change — see
+    #: :mod:`mcp_gateway.builtin`. Exactly one row carries it, seeded at
+    #: startup; there is no mechanism for a second.
+    builtin: Mapped[bool] = mapped_column(default=False)
     #: Set by a refresh that found changes; cleared when the user reviews them.
     needs_attention: Mapped[bool] = mapped_column(default=False)
     #: Why the *gateway* raised the flag, when it was the gateway rather than a

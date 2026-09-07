@@ -64,6 +64,17 @@ with `401` and `WWW-Authenticate: Bearer` before a session is created. There is
 one token, shared by every client; rotating it means restarting the process and
 updating each client.
 
+This is why the built-in **Gateway** server is disabled until you switch it on.
+Its tools register upstreams and store their credentials in this gateway, and
+they arrive on the endpoint above — so with no token set, enabling it means
+anyone who can reach the port can configure the gateway. The startup log says
+so, and so does the toggle at the moment you flip it. Enabling it and setting a
+token is a reasonable thing to do; enabling it without one is a decision to make
+on purpose. Even then, no tool it exposes deletes a server, reads a stored
+credential back, or switches itself off: an agent that can add an upstream is
+not thereby an agent that can remove one or read the tokens of the ones already
+there.
+
 ### 3. Anyone holding `keys.json` can read every stored credential
 
 Upstream credentials are encrypted in the database with a Fernet key kept in

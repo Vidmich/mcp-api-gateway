@@ -220,6 +220,13 @@ def app_upstreams(app: FastAPI) -> Upstreams:
                 record=note,
                 limiter=app.state.limits,
                 refuse=refused,
+                # Only the built-in server's tools use these two, and only
+                # the ones that change the configuration (task 102). They
+                # are the app's own, not new ones: a refresh started from a
+                # tool has to queue behind the scheduler's, and a change made
+                # by an agent has to reach the clients holding a tool list.
+                locks=app.state.refresh_locks,
+                announce=app_announcer(app),
             )
 
     return open_upstream

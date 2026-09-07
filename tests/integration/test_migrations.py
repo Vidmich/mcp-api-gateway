@@ -15,8 +15,9 @@ from sqlalchemy import Connection, select, text
 
 from mcp_gateway.app import HEALTH_PATH, create_app, default_services
 from mcp_gateway.config import Settings, load_settings
+from mcp_gateway.db import repo
 from mcp_gateway.db.migrate import current_revision, head_revision, upgrade_to_head
-from mcp_gateway.db.models import Base, Setting
+from mcp_gateway.db.models import Base, Server, Setting
 from mcp_gateway.db.session import create_engine, database_path, database_url, open_database
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -126,15 +127,16 @@ async def test_an_existing_database_keeps_its_rows_across_a_migration(tmp_path: 
     with closing(sqlite3.connect(database)) as connection:
         rows = connection.execute(
             "SELECT name, enabled, attention_reason, disabled_at, "
-            "rate_limit_calls, rate_limit_seconds FROM servers"
+            "rate_limit_calls, rate_limit_seconds, builtin FROM servers"
         ).fetchall()
         schema = connection.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'servers'"
         ).fetchone()[0]
 
-    # Null in every column a later revision added, which is what makes an
-    # upgrade change nothing about how an already-registered server behaves.
-    assert rows == [("Petstore", 1, None, None, None, None)]
+    # Null — or, for the one flag that cannot be, false — in every column a
+    # later revision added, which is what makes an upgrade change nothing about
+    # how an already-registered server behaves.
+    assert rows == [("Petstore", 1, None, None, None, None, 0)]
     assert "AUTOINCREMENT" in schema
 
 
@@ -185,6 +187,39 @@ def test_starting_the_app_twice_is_a_no_op_the_second_time(tmp_path: Path) -> No
 
     # A second start migrates nothing, so it does not even rewrite the file.
     assert database_path(settings).stat().st_mtime_ns == stamp
+
+
+async def test_a_restart_leaves_the_built_in_server_where_the_operator_left_it(
+    tmp_path: Path,
+) -> None:
+    """Task 102's idempotence, asserted across two real lifespans.
+
+    Seeding it is the first start's doing and switching it on is the operator's,
+    and a start that revisited either would be a gateway that changes its own
+    configuration on upgrade.
+    """
+    settings = settings_for(tmp_path)
+
+    async def rows(app: object) -> list[Server]:
+        database = app.state.db  # type: ignore[attr-defined]
+        async with database.session() as session:
+            found = await session.scalars(select(Server).where(Server.builtin.is_(True)))
+            return list(found)
+
+    with TestClient(create_app(settings, services=default_services(settings))) as client:
+        seeded = await rows(client.app)
+        assert len(seeded) == 1
+        assert seeded[0].enabled is False
+        database = client.app.state.db  # type: ignore[attr-defined]
+        async with database.session() as session:
+            await repo.set_server_enabled(session, seeded[0].id, enabled=True)
+
+    with TestClient(create_app(settings, services=default_services(settings))) as client:
+        again = await rows(client.app)
+
+    assert len(again) == 1
+    assert again[0].id == seeded[0].id
+    assert again[0].enabled is True
 
 
 async def test_data_written_by_one_run_is_there_for_the_next(tmp_path: Path) -> None:

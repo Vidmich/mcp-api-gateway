@@ -25,7 +25,16 @@
     {{ status_badge("attention", title=row.unreviewed_title) }}
     {% endif %}
   </td>
-  <td><code>{{ row.server.base_url }}</code></td>
+  <td>
+    {# The built-in server has no base URL because it makes no request. The
+       cell says what it does instead, rather than showing an empty box the
+       operator would read as a broken row (task 102). #}
+    {% if row.origin_note %}
+    <span class="cell-note">{{ row.origin_note }}</span>
+    {% else %}
+    <code>{{ row.server.base_url }}</code>
+    {% endif %}
+  </td>
   <td>
     <form
       class="toggle"
@@ -65,15 +74,25 @@
        of it. ``back`` says which of the two pages offering this button it was
        pressed on, and is two literals rather than a path — a redirect target
        taken from a form is a redirect target an attacker can write. #}
+    {% if row.refreshable %}
     <form class="toggle" method="post" action="{{ row.refresh_path }}">
       <input type="hidden" name="back" value="list" />
       <button class="button" type="submit">Refresh</button>
     </form>
+    {% endif %}
+    {# No Delete for the gateway's own server, and a sentence saying why:
+       an action nobody can take should not be one they press to find out
+       about. The rule that refuses it lives in the repository, so a
+       hand-made request is refused too (task 102). #}
+    {% if row.deletable %}
     {{ confirm(
          row.delete_path,
          "Delete",
          row.delete_question,
          target=list_target,
          swap="outerHTML") }}
+    {% else %}
+    <span class="cell-note">{{ row.undeletable_note }}</span>
+    {% endif %}
   </td>
 </tr>

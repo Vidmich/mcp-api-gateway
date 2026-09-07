@@ -68,6 +68,15 @@ from mcp_gateway.limits import (
     half_a_limit,
 )
 
+#: Why the built-in server refuses a delete, and why it refuses an edit.
+#: Each is the second half of :class:`BuiltinServer`'s sentence.
+CANNOT_BE_DELETED: Final = "cannot be deleted"
+CANNOT_BE_REFRESHED: Final = "has no document to re-read"
+ONLY_ENABLED: Final = "can only be switched on and off"
+
+#: The one field of a patch the built-in row accepts.
+ENABLED_FIELD: Final = "enabled"
+
 #: Statuses that mean the operator has something to look at (spec §5.4).
 UNREVIEWED: Final[frozenset[str]] = frozenset({"new", "changed"})
 
@@ -107,6 +116,22 @@ class OperationNotFound(LookupError):  # noqa: N818
         super().__init__(f"No operation with id {operation_id}.")
 
 
+class BuiltinServer(Exception):  # noqa: N818
+    """Something was asked of the built-in server that it does not do.
+
+    Raised here rather than checked by each interface, so that
+    ``DELETE /api/v1/servers/{id}`` and the delete button fail the same way
+    and neither has to remember the rule (task 102). The page hides the
+    action as well, but hiding a button is a courtesy and this is the rule.
+    """
+
+    def __init__(self, name: str, what: str) -> None:
+        self.server_name = name
+        super().__init__(
+            f"{name} is provided by the gateway itself and {what}. Switch it off instead."
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Read models
 # --------------------------------------------------------------------------- #
@@ -142,6 +167,10 @@ class ServerSummary(BaseModel):
     spec_format: str
     base_url: str
     enabled: bool
+    #: True for the one server the gateway provides itself (task 102). A
+    #: client reading this knows why the row offers no delete and no
+    #: refresh, without having to infer it from an empty spec URL.
+    builtin: bool = False
     needs_attention: bool
     #: Why the gateway itself raised the flag, or ``None`` when the flag above
     #: is a refresh diff's doing. Composed by :mod:`mcp_gateway.health`, and
@@ -248,6 +277,13 @@ class ToolRow(BaseModel):
     id: int
     server_id: int
     server_name: str
+    #: True for a tool of the built-in server, which is dispatched in
+    #: process instead of being turned into an HTTP request (task 102).
+    #: Carried here so that neither the description a client is shown nor
+    #: the proxy's choice of path needs a second query to find out. False
+    #: unless said otherwise, because a tool that came from a document is
+    #: what a tool ordinarily is.
+    builtin: bool = False
     base_url: str
     tool_name: str
     method: str
@@ -597,6 +633,47 @@ async def get_server_by_prefix(session: AsyncSession, tool_prefix: str) -> Serve
     return (await session.scalars(select(Server).where(Server.tool_prefix == tool_prefix))).first()
 
 
+async def builtin_server(session: AsyncSession) -> Server | None:
+    """The row the gateway provides itself, or ``None`` before it is seeded.
+
+    Found by the flag rather than by the slug: the slug is what the row is
+    called and the flag is what it *is*, and a database that somehow held
+    two rows claiming the slug should not decide which one is the gateway.
+    """
+    return (
+        await session.scalars(select(Server).where(Server.builtin.is_(True)).order_by(Server.id))
+    ).first()
+
+
+async def create_builtin_server(
+    session: AsyncSession, *, name: str, slug: str, tool_prefix: str, spec_format: str
+) -> Server:
+    """Write the built-in row for the first time. Disabled, and empty of URLs.
+
+    Off is the whole of the decision this makes: it is the one server whose
+    tools change the gateway's own configuration, and nobody should acquire
+    it by upgrading (task 102). Every later start finds the row and leaves
+    ``enabled`` alone, whichever way the operator has since set it.
+
+    Separate from :func:`create_server` rather than a flag on it: that one
+    takes a spec URL, a format and a credential, and this row has none of
+    the three.
+    """
+    server = Server(
+        name=name,
+        slug=slug,
+        tool_prefix=tool_prefix,
+        spec_url="",
+        spec_format=spec_format,
+        base_url="",
+        enabled=False,
+        builtin=True,
+    )
+    session.add(server)
+    await session.flush()
+    return server
+
+
 async def create_server(
     session: AsyncSession, new: NewServer, *, cipher: CredentialCipher
 ) -> Server:
@@ -626,9 +703,17 @@ async def create_server(
 async def update_server(
     session: AsyncSession, server_id: int, patch: ServerPatch, *, cipher: CredentialCipher
 ) -> Server:
-    """Apply the fields the caller actually set. See :class:`ServerPatch`."""
+    """Apply the fields the caller actually set. See :class:`ServerPatch`.
+
+    The built-in server takes ``enabled`` and nothing else (task 102): its
+    name, its prefix and its tools are the gateway's, its spec URL and base
+    URL are not URLs at all, and a credential on a server that makes no
+    request would be a stored secret with no use.
+    """
     server = await require_server(session, server_id)
     provided = {name: getattr(patch, name) for name in patch.model_fields_set}
+    if server.builtin and provided.keys() - {ENABLED_FIELD}:
+        raise BuiltinServer(server.name, ONLY_ENABLED)
 
     for field in (
         "name",
@@ -795,8 +880,14 @@ async def delete_server(session: AsyncSession, server_id: int) -> None:
     Metric rows keep pointing at the id on purpose: usage history outlives the
     server it describes, and ``servers`` is ``AUTOINCREMENT`` so the id is never
     handed to a replacement (spec §4).
+
+    The built-in server is refused: it is not a registration anybody made,
+    and deleting it would take away tools the next start would put back
+    (task 102). Switching it off is the thing that was meant.
     """
     server = await require_server(session, server_id)
+    if server.builtin:
+        raise BuiltinServer(server.name, CANNOT_BE_DELETED)
     await session.delete(server)
     await session.flush()
 
@@ -835,6 +926,7 @@ def _summary_fields(server: Server, counts: OperationCounts) -> dict[str, Any]:
         "spec_format": server.spec_format,
         "base_url": server.base_url,
         "enabled": server.enabled,
+        "builtin": server.builtin,
         "needs_attention": server.needs_attention,
         "attention_reason": server.attention_reason,
         "disabled_at": server.disabled_at,
@@ -918,7 +1010,14 @@ async def auto_refresh_servers(session: AsyncSession) -> list[RefreshCandidate]:
     """
     rows = await session.scalars(
         select(Server)
-        .where(Server.auto_refresh.is_(True), Server.enabled.is_(True))
+        .where(
+            Server.auto_refresh.is_(True),
+            Server.enabled.is_(True),
+            # Belt as well as braces: ``auto_refresh`` cannot be set on the
+            # built-in row, and there is no document behind it to re-read
+            # even if it could (task 102).
+            Server.builtin.is_(False),
+        )
         .order_by(Server.id)
     )
     return [
@@ -1171,6 +1270,7 @@ def _to_tool(operation: Operation, server: Server) -> ToolRow:
         id=operation.id,
         server_id=server.id,
         server_name=server.name,
+        builtin=server.builtin,
         base_url=server.base_url,
         tool_name=operation.effective_tool_name,
         method=operation.method,
@@ -1481,6 +1581,7 @@ __all__ = [
     "KEPT_ERRORS",
     "RECENT_ERRORS",
     "BucketDelta",
+    "BuiltinServer",
     "CallErrorView",
     "CallFailure",
     "MetricSlice",
@@ -1503,7 +1604,9 @@ __all__ = [
     "add_metrics",
     "all_settings",
     "auto_refresh_servers",
+    "builtin_server",
     "count_unreviewed",
+    "create_builtin_server",
     "create_server",
     "credential_for",
     "delete_metrics_before",

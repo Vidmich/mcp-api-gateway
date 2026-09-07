@@ -11,6 +11,11 @@ model choosing between forty tools from four upstreams has nothing else to tell
 them apart once the names have been prefixed and truncated. And an operator's
 override replaces the spec's text rather than joining it: an override exists
 precisely because the spec's own wording was not good enough.
+
+The gateway's own tools get a different origin line, because the usual one
+would be a lie: they make no HTTP request at all (task 102). Saying so is worth
+the branch — a model that has been told a tool reconfigures the gateway it is
+talking to knows something about it that no method and path could convey.
 """
 
 from __future__ import annotations
@@ -26,6 +31,14 @@ from mcp_gateway.db.repo import ToolRow
 #: Between the prose and the origin line, and between summary and description.
 PARAGRAPH: Final = "\n\n"
 
+#: The origin line of a tool the gateway provides itself (task 102). It names
+#: no method and no host because there is neither: the call is answered inside
+#: this process, by the same code the configuration pages run on.
+BUILTIN_ORIGIN: Final = (
+    "(a tool of the gateway itself: it changes this gateway's own configuration "
+    "and makes no request to any upstream)"
+)
+
 #: What a tool advertises when its stored schema is unusable. MCP requires an
 #: object at the root of ``inputSchema``; ingestion always produces one, so this
 #: stands in only for a row that was written by something else — and it costs one
@@ -35,6 +48,8 @@ NO_ARGUMENTS: Final[dict[str, Any]] = {"type": "object", "properties": {}}
 
 def origin(row: ToolRow) -> str:
     """Where this tool goes when it is called, in one line."""
+    if row.builtin:
+        return BUILTIN_ORIGIN
     return f"(HTTP {row.method} {row.path} on {row.server_name})"
 
 
@@ -75,6 +90,7 @@ async def list_tools(session: AsyncSession) -> types.ListToolsResult:
 
 
 __all__ = [
+    "BUILTIN_ORIGIN",
     "NO_ARGUMENTS",
     "PARAGRAPH",
     "describe",

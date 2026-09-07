@@ -66,6 +66,7 @@ from mcp_gateway.web.api import (
     ServerUpdate,
     SpecPreviewIn,
     SpecPreviewOut,
+    create_from_spec,
     health_report,
     previewed,
     refreshed,
@@ -73,6 +74,7 @@ from mcp_gateway.web.api import (
 from mcp_gateway.web.auth import API_PREFIX, require_session
 from mcp_gateway.web.detail import SettingsInvalid, apply_operation, apply_patch
 from mcp_gateway.web.errors import (
+    BUILTIN_SERVER,
     INVALID_REQUEST,
     NAME_TAKEN,
     NOT_FOUND,
@@ -81,12 +83,10 @@ from mcp_gateway.web.errors import (
     api_error,
     field_faults,
 )
-from mcp_gateway.web.picker import NO_BASE_URL, register
 from mcp_gateway.web.routes_ui import NO_CIPHER
 from mcp_gateway.web.shell import under
 from mcp_gateway.web.wizard import (
     NOTHING_TO_REUSE,
-    PendingServer,
     failure_field,
     failure_message,
 )
@@ -111,9 +111,12 @@ HEALTH_PATH: Final = f"{API_PREFIX}/health"
 def answered() -> Iterator[None]:
     """Turn what the rules raise into the envelope a caller reads.
 
-    The four things any write here can raise, and the status each one means:
+    The five things any write here can raise, and the status each one means:
 
     * a row that is not there — 404, because the URL named nothing;
+    * something asked of the built-in server that it does not do — 409, since
+      the request is well formed and it is the row it names that refuses it
+      (task 102);
     * a request that could not be read — 422, with the offending fields, since
       the same body sent again would fail the same way;
     * a tool name another server publishes — 409, because the request is fine
@@ -128,6 +131,8 @@ def answered() -> Iterator[None]:
         raise ApiFault(404, NOT_FOUND, str(missing)) from None
     except repo.OperationNotFound as missing:
         raise ApiFault(404, NOT_FOUND, str(missing)) from None
+    except repo.BuiltinServer as refused:
+        raise ApiFault(409, BUILTIN_SERVER, str(refused)) from None
     except SettingsInvalid as invalid:
         raise ApiFault(
             422, INVALID_REQUEST, "; ".join(invalid.errors.values()), fields=dict(invalid.errors)
@@ -198,44 +203,20 @@ def api_router() -> APIRouter:
     ) -> repo.ServerDetail:
         """Fetch the document, then register what it describes — or none of it.
 
-        The wizard's two steps in one call, running through the wizard's own
-        save: the fetch is :func:`~mcp_gateway.openapi.ingest.preview_spec` and
-        the write is :func:`~mcp_gateway.web.picker.register`, which is what
-        makes the row this leaves behind the row step 2 would have left.
+        Every part of that is :func:`~mcp_gateway.web.api.create_from_spec`,
+        which the built-in server's ``add_server`` tool also calls (task 102).
+        What is left here is the two things only HTTP has an opinion about: the
+        status code and where the new row can be read.
         """
         cipher = _cipher(request)
         settings: Settings = request.app.state.settings
-        form = body.as_form(name=body.name.strip())
         with answered():
-            preview = await preview_spec(
-                form.spec_url,
-                spec_credential=form.fetch_credential,
-                api_credential=form.credential,
-                http=settings.http,
-                # Whatever pool the process shares (spec §2); ``None`` in an app
-                # built without services, where a client is made for the call.
-                client=request.app.state.http_client,
-            )
-        pending = PendingServer(form=form, preview=preview)
-        if not pending.base_url:
-            # A document that never said where its API lives, and a caller who
-            # did not say either. Refused here rather than stored as a server
-            # whose tools would have nowhere to call.
-            raise ApiFault(422, INVALID_REQUEST, NO_BASE_URL, fields={"base_url": NO_BASE_URL})
-        try:
-            selection = body.selection(pending)
-        except ValueError as unknown:
-            raise ApiFault(
-                422, INVALID_REQUEST, str(unknown), fields={"selected": str(unknown)}
-            ) from None
-
-        with answered():
-            server = await register(
+            server = await create_from_spec(
                 session,
-                pending,
-                prefix=body.prefix_for(pending),
-                selection=selection,
+                body,
                 cipher=cipher,
+                http=settings.http,
+                client=request.app.state.http_client,
             )
         response.headers["Location"] = f"{SERVERS_PATH}/{server.id}"
         return await repo.server_detail(session, server.id)
@@ -262,7 +243,12 @@ def api_router() -> APIRouter:
             _spec_auth_is_coherent(body, server)
             _rate_limit_is_coherent(body, server)
             await apply_patch(session, server, body.as_patch(), cipher=cipher)
-            return await repo.server_detail(session, server_id)
+            detail = await repo.server_detail(session, server_id)
+        # A patch can move the tool list in three ways — enabling a server,
+        # disabling one, renaming a prefix — so a client holding a listing is
+        # told, as it is when the page's own toggle does the same thing.
+        await app_announcer(request.app)()
+        return detail
 
     @router.delete(SERVER_PATH, status_code=204, summary="Delete a server")
     async def delete_server(server_id: int, session: Session) -> Response:

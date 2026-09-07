@@ -17,6 +17,9 @@ live on the next `tools/list`.
   changed.
 - **Monitoring page** — calls, bytes in and out, failures and throttled calls
   over time, total and per server.
+- **A built-in server, off by default** — switch it on and an MCP client can
+  preview a spec, register an upstream and choose its operations without a
+  human opening the UI. It cannot delete a server or read a stored credential.
 - **`/api/v1`** — the same configuration actions as JSON, for scripts.
 
 Self-hosted, single process, SQLite. No Node build step, no external services.

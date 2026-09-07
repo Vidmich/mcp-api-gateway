@@ -53,6 +53,11 @@ INVALID_REQUEST: Final = "invalid_request"
 NAME_TAKEN: Final = "name_taken"
 #: A spec URL could not be fetched, or what came back was not a spec.
 SPEC_UNREADABLE: Final = "spec_unreadable"
+#: Something was asked of the server the gateway provides itself that it does
+#: not do — deleted, refreshed, or edited beyond its switch (task 102). A 409
+#: rather than a 403: the caller is allowed to ask, and it is what the row *is*
+#: that says no.
+BUILTIN_SERVER: Final = "builtin_server"
 #: The gateway is up but cannot serve this: no database, or no encryption key.
 UNAVAILABLE: Final = "unavailable"
 INTERNAL_ERROR: Final = "internal_error"
@@ -193,6 +198,7 @@ def _message(exc: StarletteHTTPException) -> str:
 
 
 __all__ = [
+    "BUILTIN_SERVER",
     "BY_STATUS",
     "FALLBACK_CODE",
     "INTERNAL_ERROR",

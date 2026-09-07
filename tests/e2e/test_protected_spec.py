@@ -79,7 +79,7 @@ async def test_registering_a_private_document_without_the_credential_is_refused(
     assert "spec_auth_mode" in body["fields"]
 
     assert spec.authorized == [False]
-    assert (await gateway.http.get("/api/v1/servers")).json()["servers"] == []
+    assert await gateway.registered_servers() == []
 
 
 async def test_registering_it_with_the_credential_converts_the_document(

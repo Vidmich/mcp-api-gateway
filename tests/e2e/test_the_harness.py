@@ -16,9 +16,15 @@ from harness import Gateway, GatewayFactory, World
 
 
 async def test_a_gateway_starts_with_nothing_registered(gateway: Gateway) -> None:
-    """The clean database every scenario begins from."""
-    assert (await gateway.http.get("/api/v1/servers")).json()["servers"] == []
+    """The clean database every scenario begins from.
+
+    Not an empty one: every gateway carries the built-in server from its first
+    start. It is disabled, so it contributes no tools, and it is not a
+    registration — which is the whole of the difference (task 102).
+    """
+    assert await gateway.registered_servers() == []
     assert await gateway.tool_names() == []
+    assert (await gateway.builtin())["enabled"] is False
 
 
 async def test_two_gateways_in_one_test_do_not_share_a_database(
@@ -31,8 +37,8 @@ async def test_two_gateways_in_one_test_do_not_share_a_database(
 
     await one.registered("https://specs.test/petstore-3.1.yaml", tool_prefix="petstore")
 
-    assert len((await one.http.get("/api/v1/servers")).json()["servers"]) == 1
-    assert (await two.http.get("/api/v1/servers")).json()["servers"] == []
+    assert len(await one.registered_servers()) == 1
+    assert await two.registered_servers() == []
     assert one.settings.server.data_dir != two.settings.server.data_dir
 
 
