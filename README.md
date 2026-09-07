@@ -232,8 +232,11 @@ python -m venv .venv
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy src
 ```
 
-Tests are unit tests plus integration tests that run a real server against a
-stubbed upstream. Nothing in the suite needs the network.
+Three layers. Unit tests; end-to-end scenarios in `tests/e2e` that drive the
+whole path — register a document, tick operations, list tools over `/mcp`,
+call one — against a stubbed upstream; and integration tests that run a real
+server on a real port and point the official MCP client at it. Nothing in the
+suite needs the network.
 
 ## License
 

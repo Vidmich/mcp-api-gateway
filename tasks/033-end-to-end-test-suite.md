@@ -24,6 +24,6 @@ Prove the whole path works, not just the pieces.
 
 ## Acceptance
 
-- [ ] All four scenarios pass from a clean database.
-- [ ] The suite runs offline and is deterministic across repeated runs.
-- [ ] Total runtime stays under a minute so it can gate every commit.
+- [x] All four scenarios pass from a clean database.
+- [x] The suite runs offline and is deterministic across repeated runs.
+- [x] Total runtime stays under a minute so it can gate every commit.

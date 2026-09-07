@@ -1,0 +1,57 @@
+# A document that is broken on purpose (spec §10).
+#
+# Everything about it is plausible. It declares a version the gateway reads, its
+# paths are well formed, its operations have ids, and a validator skimming the
+# structure would find nothing to say. The fault is one `$ref`: `POST /pets`
+# asks for `#/components/schemas/Pet`, and `components.schemas` holds only
+# `Animal`. A pointer into thin air is not something ingestion can degrade
+# around — there is no honest guess at what the author meant — so this is the
+# shape of document that has to stop the import rather than warn about it.
+#
+# The version key is deliberately intact. A file with no `openapi` and no
+# `swagger` would be refused by the first gate, and the point of this fixture is
+# to get past that gate and fail at the resolver.
+openapi: 3.0.3
+info:
+  title: Petstore
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com/broken
+
+paths:
+  /pets:
+    get:
+      operationId: listPets
+      summary: List pets
+      responses:
+        "200":
+          description: A list of pets.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Animal"
+    post:
+      operationId: createPet
+      summary: Add a pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            # The whole of the fault. Nothing defines Pet.
+            schema:
+              $ref: "#/components/schemas/Pet"
+      responses:
+        "201":
+          description: Created.
+
+components:
+  schemas:
+    Animal:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
