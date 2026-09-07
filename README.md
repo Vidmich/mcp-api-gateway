@@ -1,5 +1,7 @@
 # mcp-gateway
 
+[![CI](https://github.com/Vidmich/mcp-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Vidmich/mcp-gateway/actions/workflows/ci.yml)
+
 Turn any number of OpenAPI or Swagger services into a single MCP server.
 
 Register a service by pointing the gateway at its spec URL, tick the operations
@@ -32,14 +34,17 @@ Self-hosted, single process, SQLite. No Node build step, no external services.
 
 Requires Python 3.11 or newer, on Linux, macOS or Windows.
 
-The project is not published to PyPI yet, and the name `mcp-gateway` is taken
-there by an unrelated project — so build a wheel and install that:
+Nothing is on PyPI yet — build a wheel and install that:
 
 ```bash
 python -m pip install build && python -m build --wheel
-pipx install ./dist/mcp_gateway-0.1.0-py3-none-any.whl
+pipx install ./dist/mcp_spec_gateway-0.1.0-py3-none-any.whl
 mcp-gateway --version
 ```
+
+The distribution will be `mcp-spec-gateway`; the command it installs is
+`mcp-gateway`. They differ because the obvious name was taken on PyPI before
+this project existed, and the command was the wrong half to change.
 
 [docs/install.md](docs/install.md) covers pip, pipx, editable checkouts, what the
 first run creates, and upgrades.
@@ -217,6 +222,7 @@ back into a page or an API response — only `set` / `not set` and the auth type
 | [docs/configuration.md](docs/configuration.md) | every setting, its default, its environment variable, its flag |
 | [docs/service-setup.md](docs/service-setup.md) | systemd, launchd, NSSM, Task Scheduler, Docker, reverse proxy |
 | [docs/security.md](docs/security.md) | the deliberate v1 gaps, stated plainly, and how to run it anyway |
+| [docs/releasing.md](docs/releasing.md) | for whoever publishes it: tags, trusted publishing, what CI checks |
 | [SPEC.md](SPEC.md) | what the thing is meant to be, in full |
 
 ## Development
@@ -237,6 +243,11 @@ whole path — register a document, tick operations, list tools over `/mcp`,
 call one — against a stubbed upstream; and integration tests that run a real
 server on a real port and point the official MCP client at it. Nothing in the
 suite needs the network.
+
+All of it runs on every commit against CPython 3.11 through 3.14 on Linux,
+macOS and Windows, and every commit also builds the wheel, installs it into an
+empty virtualenv, and starts it. [docs/releasing.md](docs/releasing.md) covers
+the rest of the pipeline.
 
 ## License
 

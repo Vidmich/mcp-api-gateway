@@ -213,6 +213,12 @@ DELETE_OPERATION: Final = (
     "Delete {op_key}? The upstream no longer has it, and the name {name} becomes free."
 )
 
+#: Under the Enabled switch. The second sentence appears only for a server the
+#: gateway turned off itself (task 100): this switch is where it is fixed, so
+#: this is where the reason belongs.
+ENABLED_HINT: Final = "A disabled server contributes no tools and is never refreshed."
+SWITCH_BACK_ON: Final = "Switching it back on clears this."
+
 #: The line above the review strip, when a refresh has left something to decide.
 REVIEW_WAITING: Final = "{count} operations are waiting for a decision."
 REVIEW_WAITING_ONE: Final = "One operation is waiting for a decision."
@@ -296,6 +302,12 @@ class SettingsView:
     @property
     def enabled(self) -> bool:
         return bool(self.fields.get(ENABLED_FIELD))
+
+    @property
+    def enabled_hint(self) -> str:
+        """What the switch says under it, and why it is off if the gateway did it."""
+        reason = self.server.attention_reason
+        return f"{reason} {SWITCH_BACK_ON}" if reason else ENABLED_HINT
 
     @property
     def auto_refresh(self) -> bool:
@@ -849,13 +861,19 @@ class Operations:
 
     @property
     def flagged(self) -> bool:
-        """Whether this server is currently wearing **Needs Attention**.
+        """Whether a refresh diff is holding **Needs Attention** up.
 
         Read from the row rather than inferred from the statuses below it: the
         flag and the operations are two facts, and a page that computed one from
         the other could never show a server that is flagged with nothing on it.
+
+        The gateway's own flag is deliberately not this. It is not something
+        this strip can settle — a server that stopped answering is answered by
+        switching it back on, not by reviewing operations (task 100) — so it is
+        shown beside that switch instead, and a strip offering to take it off
+        would be offering something it cannot do.
         """
-        return self.server.needs_attention
+        return self.server.needs_attention and self.server.attention_reason is None
 
     @property
     def review_note(self) -> str:
@@ -1095,6 +1113,7 @@ __all__ = [
     "DELETE_OPERATION",
     "DESCRIPTION_FIELD",
     "ENABLED_FIELD",
+    "ENABLED_HINT",
     "KEPT",
     "MAX_NAME",
     "MAX_PREVIEW_ROWS",
@@ -1132,6 +1151,7 @@ __all__ = [
     "STATUSES",
     "STATUS_FIELD",
     "STATUS_LABELS",
+    "SWITCH_BACK_ON",
     "TOOL_NAME_FIELD",
     "WOULD_RENAME",
     "WOULD_RENAME_ONE",

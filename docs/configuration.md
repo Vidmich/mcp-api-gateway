@@ -99,6 +99,11 @@ This is the layer to reach for when a secret should not sit in a file — see
 | `refresh.auto_refresh_interval_minutes` | `1440` | `MCP_GATEWAY_REFRESH__AUTO_REFRESH_INTERVAL_MINUTES` | — |
 | `metrics.bucket_seconds` | `60` | `MCP_GATEWAY_METRICS__BUCKET_SECONDS` | — |
 | `metrics.retention_days` | `30` | `MCP_GATEWAY_METRICS__RETENTION_DAYS` | — |
+| `health.auto_disable` | `true` | `MCP_GATEWAY_HEALTH__AUTO_DISABLE` | — |
+| `health.auth_failures_before_disable` | `3` | `MCP_GATEWAY_HEALTH__AUTH_FAILURES_BEFORE_DISABLE` | — |
+| `health.failure_window_minutes` | `5` | `MCP_GATEWAY_HEALTH__FAILURE_WINDOW_MINUTES` | — |
+| `health.failure_minimum_calls` | `10` | `MCP_GATEWAY_HEALTH__FAILURE_MINIMUM_CALLS` | — |
+| `health.failure_threshold` | `0.5` | `MCP_GATEWAY_HEALTH__FAILURE_THRESHOLD` | — |
 | `http.timeout_seconds` | `30.0` | `MCP_GATEWAY_HTTP__TIMEOUT_SECONDS` | — |
 | `http.max_response_bytes` | `5242880` | `MCP_GATEWAY_HTTP__MAX_RESPONSE_BYTES` | — |
 | `http.user_agent` | `"mcp-gateway/<version>"` | `MCP_GATEWAY_HTTP__USER_AGENT` | — |
@@ -254,6 +259,51 @@ it does not change what the charts look like at 30 days.
 keeps. The failure list under the charts is bounded separately, by count rather
 than age: the newest 500 rows, however old they are.
 
+### `[health]`
+
+```toml
+[health]
+auto_disable = true
+auth_failures_before_disable = 3
+failure_window_minutes = 5
+failure_minimum_calls = 10
+failure_threshold = 0.5
+```
+
+When a registered server's calls stop working, the gateway takes it out of the
+tool list and badges it **Disabled by the gateway** on `/ui/servers`, with the
+counts that got it there. Every model calling through the gateway then stops
+being offered tools that cannot work, which is the point: a tool that always
+fails is worse than a tool that is not there.
+
+There are two triggers, because there are two failures.
+
+`auth_failures_before_disable` counts `401` and `403` answers, and credentials
+the gateway cannot decrypt, **in a row**. Three by default. A wrong or expired
+credential does not start working because it was tried again, so this one does
+not wait for a pattern. A call that succeeds sets the count back to zero.
+
+The other three describe a rate. Over the last `failure_window_minutes`, a
+server is disabled once the window holds at least `failure_minimum_calls` and
+at least `failure_threshold` of them failed — half of ten, by default. Both
+halves matter: the minimum is what stops a server called twice a day from being
+disabled on the strength of one bad answer, and the window is what lets a busy
+server that has just fallen over go in under a minute. What counts here is a
+`5xx`, or a call that never reached the upstream at all — a timeout, a name
+that would not resolve, a refused connection.
+
+A `400`, `404`, `409` or `422`, and arguments that did not match the tool's
+schema, count toward neither trigger and are not in the window at all. They mean
+the call was wrong, not that the server is down.
+
+**Nothing comes back on its own.** There are no probes and no cool-off: the
+usual cause is a credential, and no amount of retrying fixes one. Fix what is
+wrong and switch the server back on, which also clears the badge.
+
+`auto_disable = false` keeps the counting, the badge, the recorded reason and
+the log line, and leaves the server serving — for an operator who would rather
+be told than have it decided for them.
+
 ### `[http]`
 
 ```toml
@@ -280,6 +330,7 @@ cannot take the gateway down with it.
 | Which operations are exposed, and what each tool is called | the database, on a server's detail page |
 | Whether a server auto-refreshes | the database, per server |
 | The auto-refresh interval, once changed in the UI | the database, overriding `refresh.auto_refresh_interval_minutes` |
+| Whether a server is enabled, including after the gateway disabled it | the database, toggled at `/ui/servers` |
 
 There is no reload: the file is read once, at startup, so changing it means
 restarting the process. Everything in the table above changes without one.

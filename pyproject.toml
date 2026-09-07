@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "mcp-gateway"
+name = "mcp-spec-gateway"
 dynamic = ["version"]
 description = "Turn any number of OpenAPI/Swagger services into a single MCP server."
 readme = "README.md"
@@ -22,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
 ]
 dependencies = [
@@ -59,8 +60,8 @@ dev = [
 mcp-gateway = "mcp_gateway.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/vidmich/mcp-server"
-Repository = "https://github.com/vidmich/mcp-server"
+Homepage = "https://github.com/Vidmich/mcp-gateway"
+Repository = "https://github.com/Vidmich/mcp-gateway"
 
 [tool.hatch.version]
 path = "src/mcp_gateway/__init__.py"

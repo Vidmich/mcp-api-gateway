@@ -113,8 +113,7 @@
            hint="Where every tool call this server exposes goes.",
            error=settings.errors.get("base_url")) }}
 
-  {{ switch("enabled", "Enabled", checked=settings.enabled,
-            hint="A disabled server contributes no tools and is never refreshed.") }}
+  {{ switch("enabled", "Enabled", checked=settings.enabled, hint=settings.enabled_hint) }}
 
   {{ switch("auto_refresh", "Refresh automatically", checked=settings.auto_refresh,
             hint="Re-read the spec on the gateway's schedule. Changes are flagged, never applied.") }}

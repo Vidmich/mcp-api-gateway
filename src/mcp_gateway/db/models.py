@@ -143,6 +143,16 @@ class Server(Base):
     enabled: Mapped[bool] = mapped_column(default=True)
     #: Set by a refresh that found changes; cleared when the user reviews them.
     needs_attention: Mapped[bool] = mapped_column(default=False)
+    #: Why the *gateway* raised the flag, when it was the gateway rather than a
+    #: refresh diff: one sentence, shown on the server list. Null means the flag
+    #: above, if it is up at all, is about operations waiting to be reviewed.
+    #: Only re-enabling the server clears this - see
+    #: :mod:`mcp_gateway.health`.
+    attention_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    #: When auto-disable took this server out of service. Null when an operator
+    #: turned it off, and null when it was flagged without being disabled
+    #: because ``health.auto_disable`` is off.
+    disabled_at: Mapped[dt.datetime | None] = mapped_column(Timestamp, default=None)
 
     auth_type: Mapped[str] = mapped_column(String(20), default="none")
     #: Fernet blob holding JSON; null while ``auth_type`` is ``none``.

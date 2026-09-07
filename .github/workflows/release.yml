@@ -1,0 +1,65 @@
+# Publish to PyPI, on a tag, with no token anywhere.
+#
+# Trusted publishing means PyPI is configured to trust *this repository and this
+# workflow file*, and the upload is authenticated with a short-lived OIDC token
+# GitHub mints for the job. There is no API token in the repository secrets to
+# leak, rotate, or forget about. docs/releasing.md has the one-time setup.
+#
+# Releasing is: bump `__version__`, commit, tag `v<that version>`, push the tag.
+# The build refuses a tag that says anything else, so the version in the source
+# tree stays the single source of truth task 001 made it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # A dry run: everything a real release does except the upload. Give it the tag
+  # a release *would* carry, and it will build the artifacts, check them, check
+  # the tag against the source tree, and install the wheel on all three
+  # platforms — leaving the distributions attached to the run to inspect.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The tag to rehearse, e.g. v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package
+    uses: ./.github/workflows/package.yml
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+
+  publish:
+    name: Publish to PyPI
+    # Only a tag publishes. A workflow_dispatch run stops after the line above,
+    # which is what makes it a rehearsal rather than a release.
+    if: github.event_name == 'push'
+    needs: package
+    runs-on: ubuntu-latest
+
+    # The environment is the second gate: PyPI's trusted publisher is bound to
+    # it by name, and GitHub can require a human approval on it. Neither is
+    # something the workflow can grant itself.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mcp-spec-gateway
+
+    permissions:
+      # Mints the OIDC token PyPI checks. Nothing else in this repository has
+      # it, and it is why there is no password here.
+      id-token: write
+
+    steps:
+      # The artifacts the package workflow built and installed, not a rebuild:
+      # what goes to PyPI is the exact bytes that passed.
+      - uses: actions/download-artifact@v8
+        with:
+          name: distributions
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

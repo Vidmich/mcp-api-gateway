@@ -206,6 +206,23 @@ DAY_MINUTES: Final = 24 * HOUR_MINUTES
 
 NEVER_REFRESHED: Final = "This server has never been refreshed."
 
+#: What the flag means when a refresh diff put it up.
+UNREVIEWED_TITLE: Final = "A refresh found changes nobody has reviewed yet."
+
+#: What it says when the *gateway* put it up (task 100). Two labels rather than
+#: one, because "we turned this off" and "we would have" are different news, and
+#: both have to be told apart from the refresh diff's badge at a glance.
+DISABLED_LABEL: Final = "Disabled by the gateway"
+FAILING_LABEL: Final = "Failing"
+DISABLED_TITLE: Final = (
+    "The gateway turned this server off {when} because its calls were failing. "
+    "Fix what is wrong upstream and switch it back on."
+)
+FAILING_TITLE: Final = (
+    "The gateway would have turned this server off, but health.auto_disable is off, "
+    "so it is still serving."
+)
+
 #: An upstream's error text can be a whole HTML page. The tooltip gets the start
 #: of it; the detail page (task 023) is where the whole thing belongs.
 MAX_ERROR_IN_TITLE: Final = 200
@@ -367,6 +384,40 @@ class ServerRow:
     def counts_title(self) -> str:
         counts = self.server.counts
         return f"{counts.selected} of {plural(counts.total, 'operation')} exposed as tools."
+
+    @property
+    def flagged_by_gateway(self) -> bool:
+        """Whether this row's flag is the gateway's doing rather than a diff's.
+
+        Read off ``attention_reason`` rather than off ``disabled_at``: with
+        ``health.auto_disable`` off there is a reason and no disable, and that
+        row still has something to say.
+        """
+        return self.server.attention_reason is not None
+
+    @property
+    def unreviewed_title(self) -> str:
+        """What the other badge in that column means. Spelled here, not in the
+        template, so the two flags' wordings live side by side."""
+        return UNREVIEWED_TITLE
+
+    @property
+    def attention_label(self) -> str:
+        """What the gateway's badge says. Never the refresh diff's wording."""
+        return DISABLED_LABEL if self.server.disabled_at else FAILING_LABEL
+
+    @property
+    def attention_status(self) -> str:
+        """Which badge it wears: the red one once tools have actually gone."""
+        return "error" if self.server.disabled_at else "attention"
+
+    @property
+    def attention_title(self) -> str:
+        """The tooltip: when it happened, and what to do about it."""
+        if self.server.disabled_at is None:
+            return FAILING_TITLE
+        when = exact_time(self.server.disabled_at) or "automatically"
+        return DISABLED_TITLE.format(when=when)
 
     @property
     def refresh_title(self) -> str:
@@ -1208,6 +1259,10 @@ __all__ = [
     "BACK_TO_LIST",
     "DETAIL_PATH",
     "DETAIL_TEMPLATE",
+    "DISABLED_LABEL",
+    "DISABLED_TITLE",
+    "FAILING_LABEL",
+    "FAILING_TITLE",
     "LIST_ID",
     "LIST_TARGET",
     "LIST_TEMPLATE",
@@ -1236,6 +1291,7 @@ __all__ = [
     "ROW_TEMPLATE",
     "SERVERS_PATH",
     "SERVERS_TEMPLATE",
+    "UNREVIEWED_TITLE",
     "ServerRow",
     "mount_ui",
     "report_level",

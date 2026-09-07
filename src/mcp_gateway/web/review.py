@@ -206,7 +206,9 @@ async def acknowledge(session: AsyncSession, server_id: int) -> Reviewed:
     """
     server = await repo.acknowledge_server(session, server_id)
     logger.info("Server %r was marked reviewed", server.name)
-    return Reviewed(REVIEWED.format(name=server.name), cleared=True)
+    # Not necessarily cleared: a server the gateway disabled keeps the badge
+    # until somebody turns it back on, and the note would be a lie (task 100).
+    return Reviewed(REVIEWED.format(name=server.name), cleared=not server.needs_attention)
 
 
 async def settle_attention(session: AsyncSession, server_id: int) -> bool:
@@ -218,7 +220,10 @@ async def settle_attention(session: AsyncSession, server_id: int) -> bool:
     server = await repo.require_server(session, server_id)
     if not server.needs_attention or await repo.count_unreviewed(session, server_id):
         return False
-    await repo.acknowledge_server(session, server_id)
+    if (await repo.acknowledge_server(session, server_id)).needs_attention:
+        # Nothing is left to review, but the gateway is holding the flag up for
+        # a server that stopped answering, and only the toggle answers that.
+        return False
     logger.info("Server %r has nothing left to review", server.name)
     return True
 

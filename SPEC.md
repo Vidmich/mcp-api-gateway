@@ -104,6 +104,13 @@ auto_refresh_interval_minutes = 1440   # applies to servers with auto-refresh on
 bucket_seconds = 60
 retention_days = 30
 
+[health]
+auto_disable = true                # take a failing server out of the tool list
+auth_failures_before_disable = 3   # consecutive 401/403 answers
+failure_window_minutes = 5         # how far back the failure share is measured
+failure_minimum_calls = 10         # below this, no share is large enough
+failure_threshold = 0.5            # of the calls in the window
+
 [http]
 timeout_seconds = 30
 max_response_bytes = 5242880
@@ -138,7 +145,9 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 | `spec_format` | `openapi-3.1` / `openapi-3.0` / `swagger-2.0` (detected) |
 | `base_url` | resolved from the spec's `servers` or `host`+`basePath`, user-overridable |
 | `enabled` | per-server on/off; disabled servers contribute no tools |
-| `needs_attention` | set by a refresh that found changes |
+| `needs_attention` | set by a refresh that found changes, or by auto-disable |
+| `attention_reason` | why the *gateway* raised the flag, in one sentence; null when a refresh diff did |
+| `disabled_at` | when auto-disable took the server out of service; null when a person turned it off |
 | `auth_type` | `none` / `bearer` / `api_key` / `basic` / `headers` |
 | `auth_config_encrypted` | Fernet blob; JSON inside (token, header name+value, user+pass, or header map) |
 | `spec_auth_mode` | `none` (default) / `same_as_api` / `custom` — how the spec URL itself is authenticated |
@@ -166,6 +175,8 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 | `tool_name_override`, `description_override` | user edits from the UI |
 | `effective_tool_name` | computed + persisted; unique across all servers |
 | `first_seen_at`, `last_seen_at` | |
+
+**Auto-disable.** The outcome of every `tools/call` is watched per server, off the same in-memory counters the metrics writer drains, so the call path takes no extra query and no extra write. A server is taken out of the tool list on either of two triggers: `health.auth_failures_before_disable` consecutive `401`/`403` answers (or credentials that would not decrypt), which a successful call resets; or, over `health.failure_window_minutes`, a window holding at least `health.failure_minimum_calls` of which at least `health.failure_threshold` were `5xx` or never reached the upstream. A `400`, `404`, `409`, `422` or an argument-validation failure counts toward neither, and is not in the window at all. Tripping sets `enabled = false` and `needs_attention = true`, writes `attention_reason` and `disabled_at`, records one `call_errors` row, logs one warning naming the server, the trigger and the counts — never the credential — and emits `notifications/tools/list_changed`. Nothing comes back on its own: the operator fixes the cause and re-enables the server, which is what clears `attention_reason`. `health.auto_disable = false` keeps all of that except `enabled = false`.
 
 `removed` operations are retained (never silently deleted) so renames and selections survive an upstream that briefly drops an endpoint; they are excluded from `tools/list`.
 
@@ -260,7 +271,7 @@ Built on the official `mcp` Python SDK's low-level `Server` plus `StreamableHTTP
 
 ### 7.1 Configuration pages
 
-- **`/ui/servers`** — table of registered servers: name, base URL, enabled toggle, operation counts (`selected / total`, with `new` badged), last refresh time and result, **Needs Attention** badge, Refresh / Edit / Delete actions.
+- **`/ui/servers`** — table of registered servers: name, base URL, enabled toggle, operation counts (`selected / total`, with `new` badged), last refresh time and result, **Needs Attention** badge, Refresh / Edit / Delete actions. A server the gateway disabled itself wears its own badge instead, carrying the reason ("Disabled by the gateway: 3 authentication failures in a row.") so it cannot be mistaken for a refresh diff waiting to be reviewed; switching the server back on is what clears it.
 - **`/ui/servers/new`** — step 1: spec URL, display name, API auth type and credentials, optional base URL override, and a **spec fetch auth** selector (`none` / same as API / custom, with its own credential fields revealed when `custom` is picked). Submitting fetches and parses the spec **without saving**; a `401`/`403` returns to step 1 with the spec-auth selector highlighted rather than a generic error.
 - **Step 2 (operation picker)** — every discovered operation with method, path, summary, and the tool name it will get. Select-all / select-none / filter by tag, method, or text. Saving creates the server, its operations, and the spec snapshot in one transaction.
 - **`/ui/servers/{id}`** — detail page. Same operation table plus status filters (`new`, `changed`, `removed`), inline editing of tool name and description, per-operation select toggles, and the server's own settings (name, slug/prefix, base URL, API credentials, spec fetch auth, auto-refresh checkbox). Both credential sets are write-only in the UI: the current value is never rendered back, only "set" / "not set" with a Replace action.
@@ -309,6 +320,7 @@ Started in the FastAPI lifespan, cancelled cleanly on shutdown:
 - **Refresh scheduler** — wakes every 60s, refreshes servers whose `auto_refresh` is on and whose `last_refresh_at` is older than the global interval. Serialized per server; failures are recorded and retried on the next tick with exponential backoff up to 6 hours.
 - **Metrics writer** — buffers counters in memory and flushes to `metric_buckets` every 10s, so a burst of tool calls doesn't turn into a write storm.
 - **Retention purge** — daily, deletes buckets older than `metrics.retention_days` and trims `call_errors`.
+- **Auto-disabler** — waits on a queue the call path pushes to, so that taking a failing server out of service is one write a moment after it trips rather than work inside the call that tripped it.
 
 ---
 

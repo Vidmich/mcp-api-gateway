@@ -24,5 +24,5 @@ Ship it to PyPI reproducibly.
 
 - [ ] CI is green on all platform and version combinations.
 - [ ] A dry-run publish from a tag produces the expected artifacts.
-- [ ] The clean-venv install of the built wheel serves `/healthz` and renders a styled page.
-- [ ] A mismatched tag fails the build.
+- [x] The clean-venv install of the built wheel serves `/healthz` and renders a styled page.
+- [x] A mismatched tag fails the build.

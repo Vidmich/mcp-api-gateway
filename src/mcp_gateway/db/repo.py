@@ -137,6 +137,13 @@ class ServerSummary(BaseModel):
     base_url: str
     enabled: bool
     needs_attention: bool
+    #: Why the gateway itself raised the flag, or ``None`` when the flag above
+    #: is a refresh diff's doing. Composed by :mod:`mcp_gateway.health`, and
+    #: safe to render: it is built from counts, never from an upstream's words.
+    attention_reason: str | None = None
+    #: When auto-disable took the server out of service; ``None`` when a person
+    #: did, and ``None`` when it was flagged without being disabled.
+    disabled_at: dt.datetime | None = None
 
     auth_type: str
     #: ``none`` / ``stored`` / ``missing`` — see :func:`~mcp_gateway.crypto.credential_state`.
@@ -617,15 +624,74 @@ async def update_server(
     # Runs whether or not spec auth was touched: switching the mode alone has to
     # drop a credential the mode no longer uses.
     _settle_spec_auth(server)
+    if provided.get("enabled"):
+        await _clear_auto_attention(session, server)
 
     await session.flush()
     return server
 
 
 async def set_server_enabled(session: AsyncSession, server_id: int, *, enabled: bool) -> Server:
-    """The list page's toggle. Takes no cipher, because it touches no secret."""
+    """The list page's toggle. Takes no cipher, because it touches no secret.
+
+    Turning a server back on is also how the gateway's own flag is taken off it
+    (task 100): the badge exists to send somebody to this toggle, so flipping it
+    is the acknowledgement. Nothing else clears it — reviewing the operations
+    does not, because an unreviewed diff and a server that stopped answering are
+    two different things to have seen.
+    """
     server = await require_server(session, server_id)
     server.enabled = enabled
+    if enabled:
+        await _clear_auto_attention(session, server)
+    await session.flush()
+    return server
+
+
+async def _clear_auto_attention(session: AsyncSession, server: Server) -> bool:
+    """Forget that the gateway disabled this server; say whether it had.
+
+    ``needs_attention`` only comes down with it when there is nothing waiting to
+    be reviewed. The one flag stands for two claims, and re-enabling a server
+    answers exactly one of them.
+    """
+    if server.attention_reason is None:
+        return False
+    server.attention_reason = None
+    server.disabled_at = None
+    if not await count_unreviewed(session, server.id):
+        server.needs_attention = False
+    return True
+
+
+async def flag_failing_server(
+    session: AsyncSession,
+    server_id: int,
+    *,
+    reason: str,
+    at: dt.datetime,
+    disable: bool,
+) -> Server | None:
+    """Record that the gateway has judged a server to have stopped working.
+
+    ``disable`` is ``health.auto_disable``: when it is off the flag and the
+    reason are still written and the server keeps serving, which is the whole
+    of what that setting changes.
+
+    Answers ``None`` — having written nothing — when the server already carries
+    a reason. The watcher that produced this may go on tripping for as long as
+    the calls go on failing, and a flag that is already up does not need saying
+    twice: not in this column, not in the log, and not as another row in the
+    failure ring. Re-enabling the server is what makes the next one land.
+    """
+    server = await require_server(session, server_id)
+    if server.attention_reason is not None:
+        return None
+    server.needs_attention = True
+    server.attention_reason = reason
+    if disable:
+        server.enabled = False
+        server.disabled_at = at
     await session.flush()
     return server
 
@@ -643,7 +709,9 @@ async def acknowledge_server(session: AsyncSession, server_id: int) -> Server:
 
     ``new`` and ``changed`` rows become ``active``; ``removed`` rows are left
     alone, since deleting them is a separate decision. Only this — never a
-    refresh — clears **Needs Attention** (spec §5.4).
+    refresh — clears the **Needs Attention** a diff put up (spec §5.4), and it
+    does not clear the one the gateway put up for a server that stopped working
+    (task 100): that one comes off with the enabled toggle.
     """
     server = await require_server(session, server_id)
     operations = await session.scalars(
@@ -651,7 +719,10 @@ async def acknowledge_server(session: AsyncSession, server_id: int) -> Server:
     )
     for operation in operations:
         operation.status = "active"
-    server.needs_attention = False
+    # The flag stays up if the gateway is the one holding it: reviewing a diff
+    # says nothing about an upstream that stopped answering, and only the
+    # enabled toggle answers that (see :func:`_clear_auto_attention`).
+    server.needs_attention = server.attention_reason is not None
     await session.flush()
     return server
 
@@ -731,6 +802,8 @@ def _summary_fields(server: Server, counts: OperationCounts) -> dict[str, Any]:
         "base_url": server.base_url,
         "enabled": server.enabled,
         "needs_attention": server.needs_attention,
+        "attention_reason": server.attention_reason,
+        "disabled_at": server.disabled_at,
         "auth_type": server.auth_type,
         "auth": _api_auth_state(server),
         "spec_auth_mode": server.spec_auth_mode,
@@ -1401,6 +1474,7 @@ __all__ = [
     "delete_operation",
     "delete_server",
     "delete_setting",
+    "flag_failing_server",
     "get_operation",
     "get_server",
     "get_server_by_prefix",

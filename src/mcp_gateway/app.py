@@ -32,6 +32,7 @@ from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
+from mcp_gateway.health import Watcher, health_service
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
 from mcp_gateway.metrics import Meter, metrics_service
 from mcp_gateway.outbound import outbound_service
@@ -192,6 +193,12 @@ def create_app(
     app.state.metrics = Meter(settings.metrics.bucket_seconds)
     #: Set by the metrics service; ``None`` in an app that does not run one.
     app.state.metrics_writer = None
+    #: The health counters, beside the meter and for the same reason: calls are
+    #: watched from the moment the route exists (task 100).
+    app.state.health = Watcher(settings.health)
+    #: Set by the health service; ``None`` in an app that does not run one, and
+    #: then a server that fails is counted but never disabled.
+    app.state.health_service = None
     #: Set by the retention service; ``None`` in an app that does not run one.
     app.state.retention = None
     #: Held by every refresh, whoever started it, so that two of the same server
@@ -242,6 +249,11 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     flush of the counters happens once nothing is serving calls that could still
     be counted (spec §8).
 
+    The auto-disabler goes after the MCP endpoint, which is to say it is torn
+    down before it: it announces a changed tool list through that endpoint, and
+    a trip written while nothing could be told about it would leave a client
+    holding a listing that has stopped being true.
+
     The retention purge goes last, which makes it the first thing stopped.
     Nothing else needs it, deleting rows on the way out would only delay a
     shutdown, and every row it did not get to is still there for the next start.
@@ -253,6 +265,7 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
         outbound_service(settings.http),
         metrics_service,
         mcp_service,
+        health_service,
         refresh_service,
         retention_service,
     )

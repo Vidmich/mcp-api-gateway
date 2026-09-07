@@ -13,8 +13,16 @@
 <tr id="server-{{ row.server.id }}">
   <td>
     <a href="{{ row.detail_path }}">{{ row.server.name }}</a>
-    {% if row.server.needs_attention %}
-    {{ status_badge("attention", title="A refresh found changes nobody has reviewed yet.") }}
+    {# Two flags share one column, and they are not the same news. A refresh
+       diff is work waiting on the operator; a server the gateway itself took
+       out of the list is something broken upstream. The second says so in its
+       own words, under its own badge, so neither can be mistaken for the
+       other (task 100). #}
+    {% if row.flagged_by_gateway %}
+    {{ status_badge(row.attention_status, label=row.attention_label, title=row.attention_title) }}
+    <span class="cell-note">{{ row.server.attention_reason }}</span>
+    {% elif row.server.needs_attention %}
+    {{ status_badge("attention", title=row.unreviewed_title) }}
     {% endif %}
   </td>
   <td><code>{{ row.server.base_url }}</code></td>

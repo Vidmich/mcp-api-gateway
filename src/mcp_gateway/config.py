@@ -136,6 +136,28 @@ class MetricsSettings(_Section):
     retention_days: int = Field(default=30, ge=1)
 
 
+class HealthSettings(_Section):
+    """``[health]`` — when a failing upstream is taken out of the tool list.
+
+    The two triggers are deliberately different shapes, because the two failures
+    are. A wrong credential does not heal by being called again, so it trips on
+    a count; a server having a bad minute might, so that trips on a share of a
+    window and needs enough calls in it to mean anything.
+    """
+
+    #: Whether a trip disables the server, or only says so. Counting, the badge
+    #: and the log line happen either way.
+    auto_disable: bool = True
+    #: Consecutive 401/403 answers — or unreadable credentials — that trip it.
+    auth_failures_before_disable: int = Field(default=3, ge=1)
+    #: How far back the failure share is measured.
+    failure_window_minutes: int = Field(default=5, ge=1)
+    #: Below this many calls in the window, no share is large enough.
+    failure_minimum_calls: int = Field(default=10, ge=1)
+    #: The share of those calls that must have failed, as a fraction.
+    failure_threshold: float = Field(default=0.5, gt=0.0, le=1.0)
+
+
 class HttpSettings(_Section):
     """``[http]`` — limits applied to every outbound call (spec §2)."""
 
@@ -151,6 +173,7 @@ SECTION_MODELS: dict[str, type[_Section]] = {
     "security": SecuritySettings,
     "refresh": RefreshSettings,
     "metrics": MetricsSettings,
+    "health": HealthSettings,
     "http": HttpSettings,
 }
 
@@ -166,6 +189,7 @@ class Settings(BaseModel):
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     refresh: RefreshSettings = Field(default_factory=RefreshSettings)
     metrics: MetricsSettings = Field(default_factory=MetricsSettings)
+    health: HealthSettings = Field(default_factory=HealthSettings)
     http: HttpSettings = Field(default_factory=HttpSettings)
 
     #: The config file that was actually read, or ``None`` when none existed.

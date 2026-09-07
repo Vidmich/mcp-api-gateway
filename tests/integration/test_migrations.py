@@ -91,6 +91,50 @@ async def test_the_baseline_matches_the_models(tmp_path: Path) -> None:
     assert diff == [], f"models and migrations disagree: {diff}"
 
 
+async def test_an_existing_database_keeps_its_rows_across_a_migration(tmp_path: Path) -> None:
+    """What every revision after the baseline has to be true of.
+
+    An installed gateway is upgraded in place, with servers and credentials
+    already in the file, so a migration that rebuilt a table and lost a row —
+    or lost ``AUTOINCREMENT``, which is what keeps a deleted server's id away
+    from its replacement (spec §4) — would be found by an operator rather than
+    here.
+    """
+    database = tmp_path / "gateway.db"
+    url = database_url(database)
+
+    assert run_alembic(url, "upgrade", "0001_baseline").returncode == 0
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            """
+            INSERT INTO servers (
+                name, slug, tool_prefix, spec_url, spec_format, base_url,
+                enabled, needs_attention, auth_type, spec_auth_mode,
+                auto_refresh, created_at, updated_at
+            ) VALUES (
+                'Petstore', 'petstore', 'petstore', 'https://petstore.example/openapi.json',
+                'openapi-3.1', 'https://petstore.example/api',
+                1, 0, 'bearer', 'none', 0, '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00'
+            )
+            """
+        )
+        connection.commit()
+
+    upgrade = run_alembic(url, "upgrade", "head")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    with closing(sqlite3.connect(database)) as connection:
+        rows = connection.execute(
+            "SELECT name, enabled, attention_reason, disabled_at FROM servers"
+        ).fetchall()
+        schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'servers'"
+        ).fetchone()[0]
+
+    assert rows == [("Petstore", 1, None, None)]
+    assert "AUTOINCREMENT" in schema
+
+
 async def test_an_empty_database_is_migrated_to_head(tmp_path: Path) -> None:
     engine = create_engine(database_url(tmp_path / "gateway.db"))
     try:

@@ -28,11 +28,11 @@ Take a server out of the tool list when its calls have stopped working, and tell
 
 ## Acceptance
 
-- [ ] Three consecutive `401`s from one server disable it, flag it, and record the reason; a second server in the same database is untouched.
-- [ ] A single `401` between two successes disables nothing — the consecutive counter resets on success.
-- [ ] Twenty `404`s never disable anything, however fast they arrive.
-- [ ] A window of calls above the failure threshold disables the server; the same failures spread wider than the window do not.
-- [ ] A disabled server's tools are absent from the next `tools/list`, and `list_changed` fired.
-- [ ] The server list page shows the reason, and re-enabling clears it along with `needs_attention`.
-- [ ] With `health.auto_disable = false` the counters still move and the badge still appears, and `enabled` stays true.
-- [ ] No credential reaches the log line, the reason text, or the `call_errors` row.
+- [x] Three consecutive `401`s from one server disable it, flag it, and record the reason; a second server in the same database is untouched.
+- [x] A single `401` between two successes disables nothing — the consecutive counter resets on success.
+- [x] Twenty `404`s never disable anything, however fast they arrive.
+- [x] A window of calls above the failure threshold disables the server; the same failures spread wider than the window do not.
+- [x] A disabled server's tools are absent from the next `tools/list`, and `list_changed` fired.
+- [x] The server list page shows the reason, and re-enabling clears it along with `needs_attention`.
+- [x] With `health.auto_disable = false` the counters still move and the badge still appears, and `enabled` stays true.
+- [x] No credential reaches the log line, the reason text, or the `call_errors` row.

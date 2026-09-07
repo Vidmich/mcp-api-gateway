@@ -51,7 +51,7 @@ import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 from fastapi import FastAPI
@@ -76,6 +76,12 @@ from mcp_gateway.mcpsrv.auth import protect
 from mcp_gateway.mcpsrv.notify import ToolListWatchers, session_key
 from mcp_gateway.mcpsrv.proxy import Upstream
 from mcp_gateway.metrics import Meter
+
+if TYPE_CHECKING:  # pragma: no cover - imported for the annotations below
+    # Only ever read off ``app.state``, never constructed here, so the import is
+    # not needed at run time -- which is what keeps the cycle from closing:
+    # :mod:`mcp_gateway.health` imports :func:`app_announcer` from this module.
+    from mcp_gateway.health import AutoDisabler, Watcher
 
 logger = logging.getLogger(__name__)
 
@@ -159,15 +165,27 @@ def app_upstreams(app: FastAPI) -> Upstreams:
     """
 
     def note(outcome: proxy.CallOutcome) -> None:
-        """The debug line and the counter, at the one boundary both want.
+        """The debug line, the counter and the health watch, at one boundary.
 
-        Composed here rather than inside either of them: the proxy does not
-        need to know what a meter is, and the meter does not need to know how
-        a call is logged.
+        Composed here rather than inside any of them: the proxy does not need
+        to know what a meter is, the meter does not need to know how a call is
+        logged, and neither needs to know that a run of failures takes a server
+        out of the list.
+
+        Nothing here awaits or writes. A trip is handed to the auto-disabler,
+        which has a task of its own, so the call that tripped it is answered
+        without waiting for a row to be written (task 100). An app running no
+        health service simply counts: the trip is dropped, and the same server
+        trips again on its next run of failures.
         """
         proxy.record_call(outcome)
         meter: Meter = app.state.metrics
         meter.call(outcome)
+        watcher: Watcher = app.state.health
+        trip = watcher.record(outcome)
+        disabler: AutoDisabler | None = app.state.health_service
+        if trip is not None and disabler is not None:
+            disabler.submit(trip)
 
     @asynccontextmanager
     async def open_upstream() -> AsyncIterator[Upstream]:
