@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from mcp_gateway.config import load_settings
 from mcp_gateway.crypto import CredentialCipher, CredentialUnreadable, generate_key
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import Base, MetricBucket, Operation, Server
 from mcp_gateway.db.repo import (
+    BucketDelta,
     CallFailure,
     NewServer,
     OperationInput,
@@ -814,6 +816,154 @@ async def test_a_failure_keeps_the_id_of_a_server_that_is_gone(session: Any) -> 
     (row,) = await repo.recent_call_errors(session)
 
     assert (row.server_id, row.status_code) == (404, None)
+
+
+# --------------------------------------------------------------------------- #
+# Pruning
+# --------------------------------------------------------------------------- #
+
+
+async def a_month_of_buckets(session: Any, *, now: dt.datetime) -> None:
+    """One bucket a day for forty days, plus a global listing bucket each day."""
+    await repo.add_metrics(
+        session,
+        [
+            BucketDelta(
+                bucket_start=now - dt.timedelta(days=age),
+                server_id=server_id,
+                kind="tool_call" if server_id else "tools_list",
+                calls=1,
+            )
+            for age in range(40)
+            for server_id in (1, None)
+        ],
+    )
+
+
+async def bucket_ages(session: Any, *, now: dt.datetime) -> set[int]:
+    """How old, in whole days, each surviving bucket is."""
+    rows = await session.scalars(select(MetricBucket))
+    return {(now - row.bucket_start).days for row in rows}
+
+
+async def test_buckets_older_than_the_cutoff_go_and_newer_ones_stay(session: Any) -> None:
+    now = dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC)
+    await a_month_of_buckets(session, now=now)
+
+    removed = await repo.delete_metrics_before(session, now - dt.timedelta(days=30))
+
+    # Forty days of rows, two a day. Everything from day 31 on is gone; the
+    # bucket that starts exactly on the cutoff is the oldest one kept, which is
+    # why the survivors run to 30 rather than to 29 (see the next test).
+    assert removed == 18
+    assert await bucket_ages(session, now=now) == set(range(31))
+
+
+async def test_a_bucket_exactly_on_the_cutoff_is_the_oldest_one_kept(session: Any) -> None:
+    # Half-open on the left, the same way ``metric_slices`` is: a bucket whose
+    # start *is* the cutoff is still inside the window the page draws.
+    now = dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC)
+    cutoff = now - dt.timedelta(days=30)
+    await repo.add_metrics(
+        session,
+        [
+            BucketDelta(bucket_start=cutoff, server_id=1, calls=1),
+            BucketDelta(bucket_start=cutoff - dt.timedelta(seconds=1), server_id=1, calls=1),
+        ],
+    )
+
+    assert await repo.delete_metrics_before(session, cutoff) == 1
+    (kept,) = list(await session.scalars(select(MetricBucket)))
+    assert kept.bucket_start == cutoff
+
+
+async def test_a_purge_with_nothing_to_delete_deletes_nothing(session: Any) -> None:
+    now = dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC)
+    await a_month_of_buckets(session, now=now)
+
+    assert await repo.delete_metrics_before(session, now - dt.timedelta(days=365)) == 0
+    assert len(await bucket_ages(session, now=now)) == 40
+
+
+async def test_the_listing_buckets_expire_on_the_same_clock(session: Any) -> None:
+    # They have no server, which is what makes them a separate index and could
+    # just as easily have made them a separate rule. It does not.
+    now = dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC)
+    await a_month_of_buckets(session, now=now)
+
+    await repo.delete_metrics_before(session, now - dt.timedelta(days=30))
+    rows = list(await session.scalars(select(MetricBucket)))
+
+    assert {row.kind for row in rows} == {"tool_call", "tools_list"}
+    assert len([row for row in rows if row.server_id is None]) == 31
+
+
+async def a_pile_of_failures(session: Any, count: int) -> dt.datetime:
+    """``count`` failures a second apart, oldest first. Returns the newest moment."""
+    newest = dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC)
+    await repo.add_call_errors(
+        session,
+        [
+            CallFailure(
+                occurred_at=newest - dt.timedelta(seconds=age),
+                server_id=1,
+                message=f"{age} seconds before the end.",
+            )
+            for age in range(count - 1, -1, -1)
+        ],
+    )
+    return newest
+
+
+async def test_the_failures_are_trimmed_to_the_newest_the_table_keeps(session: Any) -> None:
+    await a_pile_of_failures(session, repo.KEPT_ERRORS + 25)
+
+    removed = await repo.trim_call_errors(session)
+    rows = await repo.recent_call_errors(session, limit=repo.KEPT_ERRORS + 25)
+
+    assert removed == 25
+    assert len(rows) == repo.KEPT_ERRORS
+    # The newest survived, and the oldest kept is the one just inside the cap.
+    assert rows[0].message == "0 seconds before the end."
+    assert rows[-1].message == f"{repo.KEPT_ERRORS - 1} seconds before the end."
+
+
+async def test_a_table_already_under_the_cap_is_left_alone(session: Any) -> None:
+    await a_pile_of_failures(session, 5)
+
+    assert await repo.trim_call_errors(session) == 0
+    assert len(await repo.recent_call_errors(session)) == 5
+
+
+async def test_failures_that_tie_are_trimmed_by_id_like_they_are_read(session: Any) -> None:
+    # The writer flushes a batch whose timestamps tie. "Newest" has to mean the
+    # same thing here as in ``recent_call_errors``, or the row the panel shows
+    # first is one the purge has already decided to delete.
+    at = dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC)
+    await repo.add_call_errors(
+        session, [CallFailure(occurred_at=at, server_id=1, message=f"call {n}") for n in range(6)]
+    )
+
+    assert await repo.trim_call_errors(session, keep=2) == 4
+    assert [row.message for row in await repo.recent_call_errors(session)] == ["call 5", "call 4"]
+
+
+async def test_keeping_none_of_them_empties_the_table(session: Any) -> None:
+    await a_pile_of_failures(session, 4)
+
+    assert await repo.trim_call_errors(session, keep=0) == 4
+    assert await repo.recent_call_errors(session) == []
+
+
+async def test_trimming_failures_leaves_the_buckets_where_they_are(session: Any) -> None:
+    # Two limits of two different kinds. Neither is allowed to enforce the other.
+    now = dt.datetime(2026, 3, 2, 12, tzinfo=dt.UTC)
+    await a_month_of_buckets(session, now=now)
+    await a_pile_of_failures(session, 4)
+
+    await repo.trim_call_errors(session, keep=1)
+
+    assert len(await bucket_ages(session, now=now)) == 40
 
 
 # --------------------------------------------------------------------------- #

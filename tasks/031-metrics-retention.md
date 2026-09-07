@@ -22,6 +22,6 @@ Keep the database from growing without bound.
 
 ## Acceptance
 
-- [ ] Rows older than the retention window are deleted and newer ones survive.
-- [ ] `call_errors` is capped at 500 with the newest kept.
-- [ ] The task survives an error in one pass and runs again on the next.
+- [x] Rows older than the retention window are deleted and newer ones survive.
+- [x] `call_errors` is capped at 500 with the newest kept.
+- [x] The task survives an error in one pass and runs again on the next.

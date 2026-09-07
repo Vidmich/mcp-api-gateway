@@ -32,10 +32,10 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import ColumnElement, Integer, Select, case, func, select
+from sqlalchemy import ColumnElement, CursorResult, Integer, Select, case, delete, func, select
 from sqlalchemy.dialects.sqlite import Insert as SQLiteInsert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,6 +69,13 @@ UNREVIEWED: Final[frozenset[str]] = frozenset({"new", "changed"})
 #: A panel is for noticing that something is wrong and finding the first
 #: example of it; reading a thousand of them is what the log is for.
 RECENT_ERRORS: Final = 50
+
+#: How many failures the table keeps at all (spec §8), whatever their age.
+#: Ten times what the panel shows, so that scrolling past the newest few still
+#: lands on something and an afternoon of failures is still there tomorrow —
+#: and finite, because the alternative is a table that grows with every outage
+#: and is never read.
+KEPT_ERRORS: Final = 500
 
 
 # Named the way the standard library names a failed lookup — KeyError, not
@@ -1258,7 +1265,8 @@ async def add_call_errors(session: AsyncSession, failures: Iterable[CallFailure]
 
     The message is truncated here rather than trusted: the column has a size,
     and the caller is describing something that already went wrong. Nothing
-    trims the ring at this end — task 031's purge owns how long the tail lives.
+    trims the ring at this end — :func:`trim_call_errors` owns how long the
+    tail lives, on the purge's clock rather than on the traffic's.
     """
     rows = [
         CallError(
@@ -1307,7 +1315,61 @@ async def recent_call_errors(
     ]
 
 
+async def delete_metrics_before(session: AsyncSession, cutoff: dt.datetime) -> int:
+    """Drop every bucket that *starts* before ``cutoff``. Returns how many went.
+
+    Half-open on the left, matching :func:`metric_slices`: a bucket whose start
+    is exactly the cutoff is the oldest one still inside the window, and a
+    purge that took it would delete a point the monitoring page still draws.
+
+    ``synchronize_session=False`` because the caller is the retention purge,
+    running in a session of its own that has loaded nothing. The default would
+    first select every primary key it is about to delete — a month of
+    one-minute buckets across a handful of servers — in order to expire objects
+    that are not there.
+    """
+    deleted = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            delete(MetricBucket)
+            .where(MetricBucket.bucket_start < cutoff)
+            .execution_options(synchronize_session=False)
+        ),
+    )
+    await session.flush()
+    return deleted.rowcount or 0
+
+
+async def trim_call_errors(session: AsyncSession, *, keep: int = KEPT_ERRORS) -> int:
+    """Leave the newest ``keep`` failures and delete the rest. Returns how many went.
+
+    Bounded by *count* where the buckets are bounded by *age*, and the
+    difference is the point. A month is the honest answer to "what did usage
+    look like"; there is no equivalent answer for failures, because a gateway
+    that failed ten thousand times in one hour should not carry ten thousand
+    rows to say so, and one that failed twice in a year should not lose them at
+    the end of it.
+
+    "Newest" is time then id, the order :func:`recent_call_errors` reads in, so
+    the row a panel shows first is the last row this would delete.
+    """
+    survivors = (
+        select(CallError.id).order_by(CallError.occurred_at.desc(), CallError.id.desc()).limit(keep)
+    )
+    deleted = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            delete(CallError)
+            .where(CallError.id.not_in(survivors))
+            .execution_options(synchronize_session=False)
+        ),
+    )
+    await session.flush()
+    return deleted.rowcount or 0
+
+
 __all__ = [
+    "KEPT_ERRORS",
     "RECENT_ERRORS",
     "BucketDelta",
     "CallErrorView",
@@ -1335,6 +1397,7 @@ __all__ = [
     "count_unreviewed",
     "create_server",
     "credential_for",
+    "delete_metrics_before",
     "delete_operation",
     "delete_server",
     "delete_setting",
@@ -1361,6 +1424,7 @@ __all__ = [
     "spec_credential_for",
     "to_summary",
     "to_view",
+    "trim_call_errors",
     "update_operation",
     "update_server",
     "upsert_operations",

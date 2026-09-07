@@ -5,7 +5,7 @@ test can build one against a throwaway :class:`~mcp_gateway.config.Settings`
 without a server, a database, or a config file anywhere near it.
 
 Everything with a lifetime — the database engine, the refresh scheduler, the
-metrics writer — is a *service*: an async context manager
+metrics writer, the retention purge — is a *service*: an async context manager
 entered during startup and exited, in reverse order, during shutdown (spec §8).
 :func:`default_services` names the set a real gateway runs; a test that wants an
 inert app passes its own, so no future background task has to reopen the
@@ -36,6 +36,7 @@ from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
 from mcp_gateway.metrics import Meter, metrics_service
 from mcp_gateway.outbound import outbound_service
 from mcp_gateway.refresh import RefreshLocks
+from mcp_gateway.retention import retention_service
 from mcp_gateway.scheduler import refresh_service
 from mcp_gateway.web.api import Health, health_report
 from mcp_gateway.web.auth import mount_admin, signing_key
@@ -191,6 +192,8 @@ def create_app(
     app.state.metrics = Meter(settings.metrics.bucket_seconds)
     #: Set by the metrics service; ``None`` in an app that does not run one.
     app.state.metrics_writer = None
+    #: Set by the retention service; ``None`` in an app that does not run one.
+    app.state.retention = None
     #: Held by every refresh, whoever started it, so that two of the same server
     #: never overlap (spec §8). Built here rather than by the scheduler service,
     #: because the button on the page needs it in an app that runs no scheduler.
@@ -239,6 +242,10 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     flush of the counters happens once nothing is serving calls that could still
     be counted (spec §8).
 
+    The retention purge goes last, which makes it the first thing stopped.
+    Nothing else needs it, deleting rows on the way out would only delay a
+    shutdown, and every row it did not get to is still there for the next start.
+
     Tests that want an inert app pass their own list instead.
     """
     return (
@@ -247,6 +254,7 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
         metrics_service,
         mcp_service,
         refresh_service,
+        retention_service,
     )
 
 
