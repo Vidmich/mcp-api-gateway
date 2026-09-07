@@ -1,0 +1,25 @@
+{# The three numbers a page shows for one server's tools, in one place so
+   that the list and the detail page cannot come to disagree about what they
+   mean or what colour they are (task 106).
+
+   Its context is a :class:`~mcp_gateway.web.routes_ui.ToolCounts`:
+
+     {% from "partials/tool_counts.html" import tool_counts %}
+     {{ tool_counts(row.counts) }}
+
+   Colour says which number is which to most readers. The tooltip and the
+   hidden words say it to the rest — a screen reader, a grey print-out, an
+   operator who cannot tell the green from the black — which is why the numbers
+   are never left to the stylesheet alone. #}
+{% macro tool_counts(counts) -%}
+<span class="counts" title="{{ counts.title }}">
+  <span class="counts__number counts__number--active">{{ counts.active }}</span>
+  <span class="visually-hidden">active,</span>
+  <span class="counts__slash" aria-hidden="true">/</span>
+  <span class="counts__number counts__number--selected">{{ counts.selected }}</span>
+  <span class="visually-hidden">selected,</span>
+  <span class="counts__slash" aria-hidden="true">/</span>
+  <span class="counts__number counts__number--total">{{ counts.total }}</span>
+  <span class="visually-hidden">in all</span>
+</span>
+{%- endmacro %}

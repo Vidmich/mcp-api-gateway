@@ -64,7 +64,6 @@ from mcp_gateway.refresh import refresh_server
 from mcp_gateway.web.routes_ui import (
     BUILTIN_NO_SPEC,
     BUILTIN_ROW_NOTE,
-    BUILTIN_UNDELETABLE,
     to_row,
 )
 
@@ -800,13 +799,27 @@ async def test_the_row_offers_neither_delete_nor_refresh_and_says_why(
 
     assert built_in.deletable is False
     assert built_in.refreshable is False
+    # One cell says the whole of it, rather than one column saying where its
+    # tools run and another saying it cannot be deleted (task 106).
     assert built_in.origin_note == BUILTIN_ROW_NOTE
-    assert built_in.undeletable_note == BUILTIN_UNDELETABLE
+    assert "cannot be deleted" in BUILTIN_ROW_NOTE
     # And no download time, because there is no document behind it: a badge
     # there would date an event that cannot happen to this row (task 103).
     assert built_in.spec_note == BUILTIN_NO_SPEC
     assert (other.deletable, other.refreshable, other.origin_note) == (True, True, None)
     assert other.spec_note is None
+
+
+async def test_the_row_calls_the_missing_document_internal_rather_than_absent(
+    session: AsyncSession,
+) -> None:
+    """*No spec* read as a fault. *Internal* says why there is nothing to
+    fetch (task 106)."""
+    seeded = await ensure_builtin_server(session)
+
+    built_in = to_row(await repo.server_detail(session, seeded.server_id))
+
+    assert built_in.spec_note == "Internal"
 
 
 # --------------------------------------------------------------------------- #

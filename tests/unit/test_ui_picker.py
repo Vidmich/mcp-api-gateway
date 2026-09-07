@@ -559,7 +559,8 @@ def test_saving_creates_the_server_and_the_list_shows_it(
     # stops the next visit showing a list from before the save (task 103).
     assert landed.headers["cache-control"] == "no-store"
     assert "Pet Store" in listing
-    assert "2 / 3" in listing.replace("\n", " ").replace("  ", " ")
+    # Two of the three ticked, and both serving on a server that is on (task 106).
+    assert "2 active, 2 selected, 3 tools in all." in listing
     [server] = stored(settings)
     assert server["name"] == "Pet Store"
     assert server["slug"] == "pet_store"

@@ -54,6 +54,28 @@ NOW = dt.datetime(2026, 3, 4, 12, 0, tzinfo=dt.UTC)
 #: The nav entry the layout marks as current.
 ACTIVE_NAV = re.compile(r'<a\s+class="nav__item nav__item--active"\s+href="([^"]+)"')
 
+#: The three numbers of one Status cell, in the order the cell renders them.
+#: Read as text on purpose: a test that asserted a colour would be asserting the
+#: stylesheet, and an operator who cannot see the colour reads these too.
+COUNTS = re.compile(
+    r'counts__number--active">(\d+)<.*?'
+    r'counts__number--selected">(\d+)<.*?'
+    r'counts__number--total">(\d+)<',
+    re.S,
+)
+
+
+def counts_in(body: str) -> list[tuple[str, str, str]]:
+    """Every row's active, selected and total, top to bottom."""
+    return COUNTS.findall(body)
+
+
+def cells(body: str) -> list[str]:
+    """The cells of the first server row, in order."""
+    row = re.search(r'<tr id="server-\d+">(.*?)</tr>', body, re.S)
+    assert row is not None, body
+    return re.findall(r"<td[^>]*>(.*?)</td>", row.group(1), re.S)
+
 
 # --- the world the page reads ------------------------------------------------
 
@@ -228,17 +250,44 @@ def test_a_server_whose_spec_was_never_read_says_so_in_its_tooltip_too() -> None
     assert a_row().refresh_title == NEVER_DOWNLOADED
 
 
-def test_a_row_states_its_status_and_offers_the_other_one() -> None:
-    """The column says what a server is; the button says what pressing it does."""
+def test_a_row_offers_the_switch_it_is_not_in() -> None:
+    """The button says what pressing it does, not what the server already is.
+
+    It is also the only thing on the row that says which — the Status column
+    holds counts and flags, and a badge repeating the button would be a second
+    copy that could disagree (task 106).
+    """
     off = a_row(enabled=False)
     on = a_row(enabled=True)
 
-    assert (off.status, off.toggle_label, off.toggle_value) == ("disabled", "Enable", "true")
-    assert (on.status, on.toggle_label, on.toggle_value) == ("enabled", "Disable", "false")
+    assert (off.toggle_label, off.toggle_value) == ("Enable", "true")
+    assert (on.toggle_label, on.toggle_value) == ("Disable", "false")
 
 
-def test_the_counts_tooltip_counts_tools() -> None:
-    assert a_row().counts_title == "3 of 12 tools exposed."
+def test_a_running_server_is_serving_what_it_has_ticked() -> None:
+    counts = a_row(enabled=True).counts
+
+    assert (counts.active, counts.selected, counts.total) == (3, 3, 12)
+
+
+def test_a_switched_off_server_is_serving_nothing() -> None:
+    """A number that kept counting the selection would describe an intention
+    rather than a state (task 106)."""
+    counts = a_row(enabled=False).counts
+
+    assert (counts.active, counts.selected, counts.total) == (0, 3, 12)
+
+
+def test_the_counts_tooltip_names_each_number() -> None:
+    """Colour separates them for most readers; this separates them for the
+    rest, and is what this test can read."""
+    assert a_row().counts.title == "3 active, 3 selected, 12 tools in all."
+
+
+def test_the_tooltip_counts_a_lone_tool_in_the_singular() -> None:
+    assert a_row(counts={"total": 1, "selected": 1}).counts.title == (
+        "1 active, 1 selected, 1 tool in all."
+    )
 
 
 def test_a_server_with_a_document_has_no_note_where_its_download_time_goes() -> None:
@@ -264,7 +313,7 @@ def test_the_table_lists_every_registered_server(tmp_path: Path) -> None:
     assert "https://billing.example/api" in body
 
 
-def test_a_row_carries_its_selected_and_total_counts(tmp_path: Path) -> None:
+def test_a_row_carries_its_three_counts(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
 
     async def counted(session: AsyncSession) -> None:
@@ -274,7 +323,47 @@ def test_a_row_carries_its_selected_and_total_counts(tmp_path: Path) -> None:
     with client(settings) as http:
         body = http.get(SERVERS_PATH, headers=HTML).text
 
-    assert "2 / 5" in re.sub(r"\s+", " ", body)
+    assert counts_in(body) == [("2", "2", "5")]
+    assert "2 active, 2 selected, 5 tools in all." in body
+
+
+def test_a_disabled_server_shows_no_active_tools(tmp_path: Path) -> None:
+    """What the row shows is what the gateway is serving, which for a server
+    that is switched off is nothing (task 106)."""
+    settings = settings_for(tmp_path)
+
+    async def counted(session: AsyncSession) -> None:
+        await register(
+            session, "petstore", operations=5, selected=2, status="active", enabled=False
+        )
+
+    seed(settings, counted)
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+
+    assert counts_in(body) == [("0", "2", "5")]
+
+
+def test_the_green_number_is_what_the_client_would_be_offered(tmp_path: Path) -> None:
+    """The active count restates ``repo._live_tools``, so the two are checked
+    against each other rather than each against a literal (task 106)."""
+    settings = settings_for(tmp_path)
+
+    async def counted(session: AsyncSession) -> int:
+        return await register(session, "petstore", operations=5, selected=2, status="active")
+
+    server_id = seed(settings, counted)
+
+    async def listed(session: AsyncSession) -> int:
+        return len(await repo.list_tools(session))
+
+    for enabled in ("true", "false"):
+        with client(settings) as http:
+            http.post(f"{SERVERS_PATH}/{server_id}/enabled", data={"enabled": enabled})
+            body = http.get(SERVERS_PATH, headers=HTML).text
+
+        [(active, _, _)] = counts_in(body)
+        assert int(active) == in_the_database(settings, listed)
 
 
 def test_tools_nobody_has_reviewed_are_badged(tmp_path: Path) -> None:
@@ -305,20 +394,20 @@ def test_a_server_with_nothing_new_wears_no_new_badge(tmp_path: Path) -> None:
 
 
 def test_the_headings_name_what_the_columns_hold(tmp_path: Path) -> None:
-    """The operator's words, not the gateway's internal ones (task 103)."""
+    """The operator's words, not the gateway's internal ones (tasks 103, 106)."""
     settings = settings_for(tmp_path)
     seed(settings, register)
 
     with client(settings) as http:
         body = http.get(SERVERS_PATH, headers=HTML).text
 
-    for heading in ("Status", "Tools", "Last spec download"):
+    for heading in ("Name", "Base URL", "Status", "Last spec download", "Actions"):
         assert f">{heading}</th>" in body
-    for gone in ("Enabled</th>", "Operations</th>", "Last refresh</th>"):
+    for gone in ("Enabled</th>", "Operations</th>", "Tools</th>", "Last refresh</th>"):
         assert gone not in body
 
 
-def test_the_status_column_states_the_state_and_holds_no_control(tmp_path: Path) -> None:
+def test_the_status_column_holds_no_control(tmp_path: Path) -> None:
     """A live checkbox in a column of facts is a setting a reader can trip over."""
     settings = settings_for(tmp_path)
 
@@ -330,9 +419,39 @@ def test_the_status_column_states_the_state_and_holds_no_control(tmp_path: Path)
     with client(settings) as http:
         body = http.get(SERVERS_PATH, headers=HTML).text
 
-    assert 'class="badge badge--enabled"' in body
-    assert 'class="badge badge--disabled"' in body
     assert "checkbox" not in body
+
+
+def test_the_state_is_said_once_by_the_button_and_not_by_a_badge(tmp_path: Path) -> None:
+    """Two places saying whether a server is on are two places that can
+    disagree. The Actions column keeps it (task 106)."""
+    settings = settings_for(tmp_path)
+
+    async def one_of_each(session: AsyncSession) -> None:
+        await register(session, "petstore", enabled=True)
+        await register(session, "billing", enabled=False)
+
+    seed(settings, one_of_each)
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+
+    assert "badge--enabled" not in body
+    assert "badge--disabled" not in body
+    assert ">Disable</button>" in body and ">Enable</button>" in body
+
+
+def test_each_number_says_which_it_is_without_relying_on_its_colour(tmp_path: Path) -> None:
+    """A screen reader, a grey print-out, an operator who cannot tell the green
+    from the black: all three read the words, not the stylesheet."""
+    settings = settings_for(tmp_path)
+    seed(settings, register)
+
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+
+    flat = re.sub(r"\s+", " ", body)
+    for word in ("active,", "selected,", "in all"):
+        assert f'<span class="visually-hidden">{word}</span>' in flat
 
 
 def test_a_row_offers_the_switch_it_is_not_already_in(tmp_path: Path) -> None:
@@ -373,6 +492,28 @@ def test_a_server_that_needs_attention_says_so(tmp_path: Path) -> None:
         body = http.get(SERVERS_PATH, headers=HTML).text
 
     assert "Needs attention" in body
+
+
+def test_the_flags_sit_with_the_counts_and_the_name_cell_holds_a_name(tmp_path: Path) -> None:
+    """Status is one cell: the counts, then the news. The Name cell went back
+    to holding a name (task 106)."""
+    settings = settings_for(tmp_path)
+
+    async def flagged(session: AsyncSession) -> None:
+        server_id = await register(session, "petstore", operations=3, status="new")
+        await repo.mark_needs_attention(session, server_id)
+
+    seed(settings, flagged)
+    with client(settings) as http:
+        body = http.get(SERVERS_PATH, headers=HTML).text
+
+    name, base_url, status = cells(body)[:3]
+    assert "Petstore" in name
+    assert "badge" not in name
+    assert "counts__number--active" in status
+    assert "3 new" in re.sub(r"\s+", " ", status)
+    assert "Needs attention" in status
+    assert "petstore.example" in base_url
 
 
 def test_a_registered_server_shows_when_its_spec_was_downloaded(tmp_path: Path) -> None:
@@ -546,7 +687,6 @@ def test_the_swapped_row_offers_the_other_direction(tmp_path: Path) -> None:
             f"{SERVERS_PATH}/{server_id}/enabled", data={"enabled": "true"}, headers=HTMX
         ).text
 
-    assert 'class="badge badge--enabled"' in body
     assert ">Disable</button>" in body
     assert 'name="enabled" value="false"' in body
 
@@ -561,7 +701,10 @@ def test_the_toggle_answers_htmx_with_the_row_alone(tmp_path: Path) -> None:
     assert body.lstrip().startswith("<tr")
     assert "<table" not in body
     assert "<html" not in body
-    assert "Disabled" in body
+    # The switched-off row says so where it always did: in the button offering
+    # the way back, and in the 0 tools it is now serving (task 106).
+    assert ">Enable</button>" in body
+    assert counts_in(body) == [("0", "0", "0")]
 
 
 def test_a_toggle_without_htmx_returns_to_the_list_and_reports_itself(tmp_path: Path) -> None:

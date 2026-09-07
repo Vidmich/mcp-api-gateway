@@ -9,41 +9,42 @@
    route, which is also what makes the routes testable without a browser. #}
 {% from "partials/status_badge.html" import status_badge %}
 {% from "partials/confirm.html" import confirm %}
+{% from "partials/tool_counts.html" import tool_counts %}
 <tr id="server-{{ row.server.id }}">
-  <td>
-    <a href="{{ row.detail_path }}">{{ row.server.name }}</a>
-    {# Two flags share one column, and they are not the same news. A refresh
-       diff is work waiting on the operator; a server the gateway itself took
-       out of the list is something broken upstream. The second says so in its
-       own words, under its own badge, so neither can be mistaken for the
-       other (task 100). #}
-    {% if row.flagged_by_gateway %}
-    {{ status_badge(row.attention_status, label=row.attention_label, title=row.attention_title) }}
-    <span class="cell-note">{{ row.server.attention_reason }}</span>
-    {% elif row.server.needs_attention %}
-    {{ status_badge("attention", title=row.unreviewed_title) }}
-    {% endif %}
-  </td>
+  {# A name, and nothing else. The flags that used to sit here are status, and
+     they are now under the heading that says so (task 106). #}
+  <td><a href="{{ row.detail_path }}">{{ row.server.name }}</a></td>
   <td>
     {# The built-in server has no base URL because it makes no request. The
        cell says what it does instead, rather than showing an empty box the
-       operator would read as a broken row (task 102). #}
+       operator would read as a broken row (task 102) — and says the whole of
+       it here, including that it cannot be deleted, so that the Actions
+       column holds nothing but buttons (task 106). #}
     {% if row.origin_note %}
     <span class="cell-note">{{ row.origin_note }}</span>
     {% else %}
     <code>{{ row.server.base_url }}</code>
     {% endif %}
   </td>
-  {# A state, stated. The switch that changes it is an action in the Actions
-     column: a live control in a column of facts is something an operator can
-     change by mis-clicking while reading the table (task 103). #}
-  <td>{{ status_badge(row.status) }}</td>
-  <td class="numeric">
-    <span title="{{ row.counts_title }}">
-      {{ row.server.counts.selected }} / {{ row.server.counts.total }}
-    </span>
+  {# What the server is doing: the counts first, because they are true of it
+     whatever else is going on, then the news. There is no Enabled or Disabled
+     badge — the Actions column says which by offering the other one, and a
+     green 0 beside a button reading Enable is not ambiguous (task 106). #}
+  <td>
+    {{ tool_counts(row.counts) }}
     {% if row.server.counts.new %}
     {{ status_badge("new", label="%d new"|format(row.server.counts.new)) }}
+    {% endif %}
+    {# Two flags, and they are not the same news. A refresh diff is work
+       waiting on the operator; a server the gateway itself took out of the
+       list is something broken upstream. The second says so in its own words,
+       under its own badge, so neither can be mistaken for the other
+       (task 100). #}
+    {% if row.flagged_by_gateway %}
+    {{ status_badge(row.attention_status, label=row.attention_label, title=row.attention_title) }}
+    <span class="cell-note">{{ row.server.attention_reason }}</span>
+    {% elif row.server.needs_attention %}
+    {{ status_badge("attention", title=row.unreviewed_title) }}
     {% endif %}
   </td>
   <td>
@@ -87,10 +88,10 @@
       <button class="button" type="submit">Refresh</button>
     </form>
     {% endif %}
-    {# No Delete for the gateway's own server, and a sentence saying why:
-       an action nobody can take should not be one they press to find out
-       about. The rule that refuses it lives in the repository, so a
-       hand-made request is refused too (task 102). #}
+    {# No Delete for the gateway's own server, and nothing in its place: the
+       Base URL cell has already said why, and a column of buttons is a poor
+       home for a sentence (task 106). The rule that refuses it lives in the
+       repository, so a hand-made request is refused too (task 102). #}
     {% if row.deletable %}
     {{ confirm(
          row.delete_path,
@@ -98,8 +99,6 @@
          row.delete_question,
          target=list_target,
          swap="outerHTML") }}
-    {% else %}
-    <span class="cell-note">{{ row.undeletable_note }}</span>
     {% endif %}
   </td>
 </tr>

@@ -382,13 +382,6 @@ a.badge:hover {
   margin-left: 0.25rem;
 }
 
-/* The one thing in this column that is a sentence rather than a control — what
- * stands where the built-in server's Delete would be. The buttons must not
- * wrap; a sentence has to, or it sets the width of the whole table. */
-.row-actions .cell-note {
-  white-space: normal;
-}
-
 /* The checkbox column: as narrow as a checkbox, and centred over it. */
 .table th.pick,
 .table td.pick {
@@ -574,6 +567,42 @@ a.badge:hover {
   color: var(--bad);
   background: var(--bad-soft);
   border-color: #f0b4b4;
+}
+
+/* --- tool counts ---------------------------------------------------------- */
+
+/* Three numbers that mean three different things: what a server is serving
+ * now, what is ticked, and what it has altogether. Tabular figures so a column
+ * of them lines up, and no wrapping — "3 / 3 / 12" broken across two lines is
+ * three numbers nobody can read.
+ *
+ * Colour tells them apart for most readers. It is never the only thing that
+ * does: the cell carries a tooltip and each number is followed by a
+ * visually-hidden word, so the row reads correctly aloud and in grey. */
+.counts {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.counts__number {
+  font-weight: 600;
+}
+
+.counts__number--active {
+  color: var(--ok);
+}
+
+.counts__number--selected {
+  color: var(--accent-dark);
+}
+
+.counts__number--total {
+  color: var(--ink);
+}
+
+.counts__slash {
+  padding: 0 0.1rem;
+  color: var(--ink-faint);
 }
 
 /* --- badges --------------------------------------------------------------- */

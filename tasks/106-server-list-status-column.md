@@ -82,22 +82,54 @@ No route changes, no data changes, no change to what the gateway serves.
 
 ## Acceptance
 
-- [ ] The table has five columns: Name, Base URL, Status, Last spec download, Actions. Nothing on
+- [x] The table has five columns: Name, Base URL, Status, Last spec download, Actions. Nothing on
       the page renders a column headed Tools or a standalone Enabled/Disabled badge.
-- [ ] The Status cell shows three numbers in the order active, selected, total, styled green, blue
+- [x] The Status cell shows three numbers in the order active, selected, total, styled green, blue
       and black from the existing tokens, and no page uses a colour this stylesheet does not define.
-- [ ] Disabling a server changes its active count to 0 and leaves selected and total alone; enabling
+- [x] Disabling a server changes its active count to 0 and leaves selected and total alone; enabling
       it puts the number back. A test asserts the green number equals the number of tools that
       server contributes to `tools/list`, for a server that is enabled and one that is not.
-- [ ] Each number is named in the cell's tooltip and in visually-hidden text, and a test reads the
+- [x] Each number is named in the cell's tooltip and in visually-hidden text, and a test reads the
       cell's text content rather than its colours.
-- [ ] The Needs Attention badge, the auto-disabled badge and its reason render in the Status cell;
+- [x] The Needs Attention badge, the auto-disabled badge and its reason render in the Status cell;
       the Name cell contains a link and nothing else.
-- [ ] The built-in server's row explains itself once, in the Base URL cell, and its Actions cell
+- [x] The built-in server's row explains itself once, in the Base URL cell, and its Actions cell
       contains only buttons — no note where Delete would be. Deleting it through the API or by hand
       is still refused by the repository with the message it already gives.
-- [ ] The Last spec download cell says "Internal" for the built-in server, and no page says
+- [x] The Last spec download cell says "Internal" for the built-in server, and no page says
       "No spec".
-- [ ] The row still swaps in place with htmx on enable, disable and refresh, and every action still
+- [x] The row still swaps in place with htmx on enable, disable and refresh, and every action still
       works with scripting off.
-- [ ] The existing UI, API and end-to-end tests pass with only the assertions this task changes.
+- [x] The existing UI, API and end-to-end tests pass with only the assertions this task changes.
+
+## Notes
+
+**The three numbers live in one partial already.** `partials/tool_counts.html` takes a
+`ToolCounts` — active, selected, total, and the sentence naming them — and the row includes it.
+Task 107 changes the detail page's summary to the same three numbers, and this is what it includes
+rather than writing a second copy that could drift.
+
+**The detail page kept the tooltip it had.** `ServerRow.counts_title` is still there, still saying
+"3 of 12 tools exposed", because `server_detail.html` renders it and this task does not touch that
+page. Jinja here is not strict about undefined names, so removing it would have quietly emptied
+that tooltip rather than failing anything; task 107 is what takes it away, along with the cell it
+belongs to.
+
+**One sentence, not two.** The built-in row said its tools run in this process in one column and
+that it cannot be deleted in another. `BUILTIN_ROW_NOTE` now says both, in the Base URL cell, and
+the rule refusing the delete is where it always was — `repo.delete_server` — so a hand-made request
+still meets it. The stylesheet lost `.row-actions .cell-note`, which existed only to make that
+second sentence wrap.
+
+**Read as text, not as colour.** Every test here reads the numbers and the words: the tooltip, the
+`visually-hidden` spans, the rendered digits. Nothing asserts a hex value, which is what makes the
+tests survive a restyle and what makes the page survive a reader who cannot see the difference
+between the green and the black.
+
+**Checked against the tool listing rather than against a literal.**
+`test_the_green_number_is_what_the_client_would_be_offered` toggles the server and asserts the
+green number equals `len(repo.list_tools(...))` both times, so the count and `repo._live_tools`
+cannot drift apart.
+
+**SPEC §7.1 was amended** to describe the Status column, the three counts and the fact that whether
+a server is on is said once, by the action.

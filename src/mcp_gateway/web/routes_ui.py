@@ -7,11 +7,17 @@ and whether the last look at an upstream's spec worked. Everything else here is
 in service of that row.
 
 **A column of facts holds no controls.** Enabling and disabling are actions, in
-the column called Actions, beside Edit, Refresh and Delete; the Status column
-states which the server is. A live checkbox in the middle of a table is a
-setting an operator can change by mis-clicking while reading it, and a state
-shown as a control is a state they have to interpret rather than read
-(task 103).
+the column called Actions, beside Edit, Refresh and Delete. A live checkbox in
+the middle of a table is a setting an operator can change by mis-clicking while
+reading it, and a state shown as a control is a state they have to interpret
+rather than read (task 103).
+
+**One column answers "what is this server doing?"** Status holds the three
+counts and both attention flags, and nothing else on the row repeats them. It
+does not say Enabled or Disabled: the Actions column already does, by offering
+the transition the server is not in, and a green ``0`` beside a button reading
+Enable is not ambiguous. What the row is called stays in the Name cell, which is
+a name and nothing else (task 106).
 
 **Formatting happens in Python, not in the template.** "4 minutes ago", "2 of 12
 operations", the sentence the delete dialog asks — each is a function with a
@@ -219,17 +225,21 @@ FAILING_TITLE: Final = (
     "so it is still serving."
 )
 
-#: What the built-in server's row says instead of a base URL and a delete
-#: button (task 102). The list is where an operator meets this server, so it
-#: is where the two things that make it unlike the others are said: its tools
-#: run here, and it is the gateway's rather than theirs to remove.
-BUILTIN_ROW_NOTE: Final = "Provided by the gateway; its tools run in this process."
-BUILTIN_UNDELETABLE: Final = (
-    "This server is part of the gateway and cannot be deleted. Switch it off instead."
+#: What the built-in server's row says instead of a base URL (task 102). Both
+#: things that make it unlike the others in one sentence, in the one cell on
+#: the row that is prose: its tools run here, and it is the gateway's rather
+#: than the operator's to remove. It used to say the second half again where
+#: the Delete button would be, which left a column of buttons holding a
+#: paragraph; the missing button is now simply missing (task 106).
+BUILTIN_ROW_NOTE: Final = (
+    "Provided by the gateway: its tools run in this process, and it cannot be deleted. "
+    "Switch it off instead."
 )
 #: What stands where a download time would, on the one row with no document
-#: behind it. A badge there would date an event that cannot happen to it.
-BUILTIN_NO_SPEC: Final = "No spec"
+#: behind it. A badge there would date an event that cannot happen to it, and
+#: "No spec" read as an absence — a document that ought to be there and is not,
+#: which on any other row is a fault (task 106).
+BUILTIN_NO_SPEC: Final = "Internal"
 
 #: An upstream's error text can be a whole HTML page. The tooltip gets the start
 #: of it; the detail page (task 023) is where the whole thing belongs.
@@ -277,6 +287,45 @@ def report_level(report: RefreshReport) -> FlashLevel:
 
 
 @dataclass(frozen=True)
+class ToolCounts:
+    """What a server's tools add up to, in the three numbers a page shows.
+
+    ``total`` is everything the gateway has recorded for the server, including
+    operations a refresh marked ``removed`` and nobody has retired yet.
+    ``selected`` is what the operator has ticked and is still present upstream.
+    ``active`` is what the server is contributing to ``tools/list`` right now,
+    which is the selected count while it is enabled and ``0`` while it is not:
+    a switched-off server contributes nothing, and a number that kept counting
+    its selection would be describing an intention rather than a state.
+
+    The rule ``active`` restates is :func:`~mcp_gateway.db.repo._live_tools` —
+    *selected, non-removed operations of enabled servers* — which is why a test
+    can hold the green number and the tool listing together.
+    """
+
+    active: int
+    selected: int
+    total: int
+
+    @property
+    def title(self) -> str:
+        """The tooltip. Colour separates the three numbers for most readers;
+        this separates them for the rest, and is what a test reads."""
+        tools = plural(self.total, "tool")
+        return f"{self.active} active, {self.selected} selected, {tools} in all."
+
+
+def tool_counts(server: ServerSummary) -> ToolCounts:
+    """The three numbers for one server."""
+    counts = server.counts
+    return ToolCounts(
+        active=counts.selected if server.enabled else 0,
+        selected=counts.selected,
+        total=counts.total,
+    )
+
+
+@dataclass(frozen=True)
 class ServerRow:
     """One line of the table: the stored server, and everything shown about it.
 
@@ -302,11 +351,19 @@ class ServerRow:
         return f"{SERVERS_PATH}/{self.server.id}/enabled"
 
     @property
-    def status(self) -> str:
-        """Which badge the Status column wears — the same two the monitoring
-        page uses for the same fact, so one page cannot describe a server
-        differently from the other."""
-        return "enabled" if self.server.enabled else "disabled"
+    def counts(self) -> ToolCounts:
+        """The three numbers under the Status heading (task 106)."""
+        return tool_counts(self.server)
+
+    @property
+    def counts_title(self) -> str:
+        """The detail page's summary still shows two numbers and this tooltip.
+
+        The list shows three and reads :attr:`counts` instead; task 107 is what
+        brings the two pages back into one wording, and takes this with it.
+        """
+        counts = self.server.counts
+        return f"{counts.selected} of {plural(counts.total, 'tool')} exposed."
 
     @property
     def toggle_label(self) -> str:
@@ -361,23 +418,8 @@ class ServerRow:
         return BUILTIN_NO_SPEC if self.server.builtin else None
 
     @property
-    def undeletable_note(self) -> str:
-        """What stands where the Delete button would, for the one row that has
-        none. Spelled here rather than in the template, beside the rule that
-        decides whether the button is shown."""
-        return BUILTIN_UNDELETABLE
-
-    @property
     def refresh_path(self) -> str:
         return f"{SERVERS_PATH}/{self.server.id}/refresh"
-
-    @property
-    def counts_title(self) -> str:
-        """What the Tools column means. The document's word is *operation*; the
-        operator's is *tool*, because that is what their client shows them, and
-        this is a page for the operator (task 103)."""
-        counts = self.server.counts
-        return f"{counts.selected} of {plural(counts.total, 'tool')} exposed."
 
     @property
     def flagged_by_gateway(self) -> bool:
@@ -1234,7 +1276,6 @@ __all__ = [
     "BACK_TO_LIST",
     "BUILTIN_NO_SPEC",
     "BUILTIN_ROW_NOTE",
-    "BUILTIN_UNDELETABLE",
     "DETAIL_PATH",
     "DETAIL_TEMPLATE",
     "DISABLED_LABEL",
@@ -1271,8 +1312,10 @@ __all__ = [
     "SERVERS_TEMPLATE",
     "UNREVIEWED_TITLE",
     "ServerRow",
+    "ToolCounts",
     "mount_ui",
     "report_level",
     "to_row",
+    "tool_counts",
     "ui_router",
 ]
