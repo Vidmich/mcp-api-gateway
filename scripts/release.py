@@ -53,9 +53,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "src" / "mcp_gateway"
 VERSION_FILE = PACKAGE / "__init__.py"
 
-#: The console script, which is the distribution's name for the *program* and
-#: stays ``mcp-gateway`` whatever the project is called on the index.
-CONSOLE_SCRIPT = "mcp-gateway"
+#: The console script. The same name as the distribution and everything else
+#: a person types (task 105); only the import package is spelled differently.
+CONSOLE_SCRIPT = "mcp-api-gateway"
 ENTRY_POINT = f"{CONSOLE_SCRIPT} = mcp_gateway.cli:main"
 
 #: Tags are ``v0.1.0``. The prefix is not decoration: it keeps a tag
@@ -181,7 +181,7 @@ def check_wheel(wheel: Path) -> int:
         if declared != expected:
             problems.append(f"the wheel says version {declared}, the source says {expected}")
 
-        # Installing something that does not put ``mcp-gateway`` on the PATH is
+        # Installing something that does not put ``mcp-api-gateway`` on the PATH is
         # a wheel nobody can run, and it is one line of configuration away at
         # all times.
         if ENTRY_POINT not in _metadata(archive, "entry_points.txt"):
@@ -192,7 +192,7 @@ def check_wheel(wheel: Path) -> int:
     if problems:
         return 1
 
-    print(f"{wheel.name}: version {expected}, a {CONSOLE_SCRIPT} command, and all")
+    print(f"{wheel.name}: version {expected}, the {CONSOLE_SCRIPT} command, and all")
     print(f"{len(wanted)} data files: templates, stylesheet, vendored scripts, migrations.")
     return 0
 
@@ -210,7 +210,7 @@ def free_port() -> int:
 
 
 def installed_script() -> Path:
-    """The ``mcp-gateway`` that belongs to the interpreter running this.
+    """The ``mcp-api-gateway`` that belongs to the interpreter running this.
 
     Looked up beside ``sys.executable`` rather than on the PATH, so that running
     this with a venv's python tests *that* venv even when another copy is
@@ -313,7 +313,7 @@ def check_smoke(timeout: float) -> int:
     # ``ignore_cleanup_errors`` because the gateway has only just let go of its
     # database: a smoke test that everything passed must not then fail on an
     # unlink, and the directory is the operating system's to sweep up.
-    with TemporaryDirectory(prefix="mcp-gateway-smoke-", ignore_cleanup_errors=True) as scratch:
+    with TemporaryDirectory(prefix="mcp-api-gateway-smoke-", ignore_cleanup_errors=True) as scratch:
         home = Path(scratch)
         port = free_port()
         base = f"http://127.0.0.1:{port}"

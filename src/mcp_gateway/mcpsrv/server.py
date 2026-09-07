@@ -86,7 +86,7 @@ if TYPE_CHECKING:  # pragma: no cover - imported for the annotations below
 logger = logging.getLogger(__name__)
 
 #: What the gateway calls itself in the ``initialize`` handshake.
-SERVER_NAME: Final = "mcp-gateway"
+SERVER_NAME: Final = "mcp-api-gateway"
 
 #: Route name, so a future page can ask the router for the endpoint's URL.
 ROUTE_NAME: Final = "mcp"

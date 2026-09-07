@@ -2,23 +2,30 @@
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import sqlite3
 import subprocess
 import sys
 from contextlib import closing
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from fastapi.testclient import TestClient
 from sqlalchemy import Connection, select, text
 
+import mcp_gateway
 from mcp_gateway.app import HEALTH_PATH, create_app, default_services
 from mcp_gateway.config import Settings, load_settings
 from mcp_gateway.db import repo
 from mcp_gateway.db.migrate import current_revision, head_revision, upgrade_to_head
 from mcp_gateway.db.models import Base, Server, Setting
 from mcp_gateway.db.session import create_engine, database_path, database_url, open_database
+from mcp_gateway.mcpsrv.proxy import wiring_of
+from mcp_gateway.openapi.schema import EXTENSION, extract_operations, schema_hash
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ALEMBIC_INI = REPO_ROOT / "alembic.ini"
@@ -267,3 +274,203 @@ def test_the_command_line_stamps_what_it_applied(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert head_revision() in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# 0005: the vendor extension every stored schema carries
+# --------------------------------------------------------------------------- #
+
+#: One operation with a path parameter and a body, so the map under the
+#: extension has both halves to lose.
+PETS: dict[str, Any] = {
+    "openapi": "3.0.3",
+    "info": {"title": "Pets", "version": "1.0.0"},
+    "paths": {
+        "/pets/{petId}": {
+            "post": {
+                "operationId": "updatePet",
+                "parameters": [
+                    {"name": "petId", "in": "path", "required": True, "schema": {"type": "string"}}
+                ],
+                "requestBody": {"content": {"application/json": {"schema": {"type": "object"}}}},
+                "responses": {"200": {"description": "ok"}},
+            }
+        }
+    },
+}
+
+
+def revision_0005() -> ModuleType:
+    """Load the revision as a module. ``versions`` is not an import package."""
+    source = Path(mcp_gateway.__file__).parent / "db/migrations/versions/0005_extension_rename.py"
+    spec = importlib.util.spec_from_file_location("revision_0005", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def as_it_was(schema: dict[str, Any]) -> dict[str, Any]:
+    """``schema`` spelled the way every row written before 0005 spells it."""
+    old = revision_0005().OLD_KEY
+    return {(old if key == EXTENSION else key): value for key, value in schema.items()}
+
+
+def a_server_and_one_operation(database: Path, schema: dict[str, Any], op_key: str) -> None:
+    """Write the two rows by hand, at whatever revision the file is at.
+
+    By hand rather than through the repository, because the point of the
+    exercise is a row written by an *older* version of this code — and the
+    repository would write today's shape.
+    """
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            """
+            INSERT INTO servers (
+                id, name, slug, tool_prefix, spec_url, spec_format, base_url,
+                enabled, needs_attention, auth_type, spec_auth_mode,
+                auto_refresh, created_at, updated_at
+            ) VALUES (
+                1, 'Pets', 'pets', 'pets', 'https://pets.example/openapi.json',
+                'openapi-3.0', 'https://pets.example/api',
+                1, 0, 'none', 'none', 0,
+                '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO operations (
+                server_id, op_key, operation_id, method, path,
+                input_schema, input_schema_hash, selected, status,
+                effective_tool_name, first_seen_at, last_seen_at
+            ) VALUES (1, ?, 'updatePet', 'POST', '/pets/{petId}', ?, ?, 1, 'active',
+                      'pets_updatePet', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')
+            """,
+            (op_key, json.dumps(schema), schema_hash(schema)),
+        )
+        connection.commit()
+
+
+def stored_operation(database: Path) -> tuple[dict[str, Any], str]:
+    with closing(sqlite3.connect(database)) as connection:
+        raw, digest = connection.execute(
+            "SELECT input_schema, input_schema_hash FROM operations"
+        ).fetchone()
+    return json.loads(raw), str(digest)
+
+
+def a_database_written_before_the_rename(tmp_path: Path) -> tuple[Settings, Path, Any]:
+    """A gateway at revision 0004 holding one operation in the old shape."""
+    settings = settings_for(tmp_path)
+    database = database_path(settings)
+    database.parent.mkdir(parents=True, exist_ok=True)
+    operation = extract_operations(PETS).operations[0]
+
+    stamped = run_alembic(database_url(database), "upgrade", "0004_builtin")
+    assert stamped.returncode == 0, stamped.stderr
+    a_server_and_one_operation(database, as_it_was(operation.input_schema), operation.op_key)
+    return settings, database, operation
+
+
+def test_the_migrations_own_digest_is_the_one_the_gateway_computes() -> None:
+    """The copy in revision 0005 against the original it was copied from.
+
+    A migration must not import today's code, so it carries its own copy of
+    :func:`schema_hash`. This is what stops the copy drifting: if it did, the
+    migration would leave every row with a hash the next refresh disagrees
+    with, which is the exact thing revision 0005 exists to prevent.
+    """
+    operation = extract_operations(PETS).operations[0]
+
+    assert revision_0005()._hash(operation.input_schema) == schema_hash(operation.input_schema)
+
+
+def test_a_schema_written_under_the_old_extension_is_renamed_in_place(tmp_path: Path) -> None:
+    _, database, operation = a_database_written_before_the_rename(tmp_path)
+    assert revision_0005().OLD_KEY in stored_operation(database)[0], "nothing to rename"
+
+    upgrade = run_alembic(database_url(database), "upgrade", "head")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    schema, digest = stored_operation(database)
+    assert revision_0005().OLD_KEY not in schema
+    assert schema == operation.input_schema
+    # Recomputed, not carried over: the old digest was taken over the old key.
+    assert digest == schema_hash(operation.input_schema)
+
+
+def test_a_migrated_operation_still_knows_where_its_arguments_go(tmp_path: Path) -> None:
+    """The failure the migration exists to prevent, seen from the proxy's side.
+
+    ``wiring_of`` answers an empty map for a schema whose extension it does not
+    recognise — so a row left behind would raise nothing at all. It would
+    quietly call the upstream with ``petId`` missing from the URL and the body
+    dropped, which is a bug an operator finds in an upstream's 404s.
+    """
+    _, database, _ = a_database_written_before_the_rename(tmp_path)
+
+    assert run_alembic(database_url(database), "upgrade", "head").returncode == 0
+
+    wiring = wiring_of(stored_operation(database)[0])
+    assert [(item.name, item.location) for item in wiring.parameters] == [("petId", "path")]
+    assert wiring.body is not None
+
+
+async def test_a_refresh_straight_after_the_migration_reports_nothing_changed(
+    tmp_path: Path,
+) -> None:
+    """The upgrade does not fill the review queue with its own doing.
+
+    The refresh diff calls an operation changed when the hash it computes
+    differs from the stored one. A migration that renamed the key without
+    recomputing the hash would report every operation on every server as
+    changed the first time the operator refreshed anything, with nothing in the
+    diff for them to review.
+    """
+    settings, database, operation = a_database_written_before_the_rename(tmp_path)
+    assert run_alembic(database_url(database), "upgrade", "head").returncode == 0
+
+    db = open_database(settings)
+    try:
+        async with db.session() as session:
+            sync = await repo.upsert_operations(
+                session,
+                1,
+                [
+                    repo.OperationInput(
+                        op_key=operation.op_key,
+                        operation_id=operation.operation_id,
+                        method=operation.method,
+                        path=operation.path,
+                        summary=operation.summary,
+                        description=operation.description,
+                        input_schema=operation.input_schema,
+                        input_schema_hash=operation.input_schema_hash,
+                        tool_name="pets_updatePet",
+                    )
+                ],
+            )
+    finally:
+        await db.dispose()
+
+    assert sync.changed == ()
+    assert sync.unchanged == (operation.op_key,)
+
+
+def test_the_rename_is_reversible(tmp_path: Path) -> None:
+    """Downgrading puts the old key and the old hash back.
+
+    Not because anybody is expected to, but because a revision that cannot be
+    undone is one an operator cannot back out of if the release it came with
+    turns out to be broken.
+    """
+    _, database, operation = a_database_written_before_the_rename(tmp_path)
+    assert run_alembic(database_url(database), "upgrade", "head").returncode == 0
+
+    down = run_alembic(database_url(database), "downgrade", "0004_builtin")
+    assert down.returncode == 0, down.stderr
+
+    schema, digest = stored_operation(database)
+    assert schema == as_it_was(operation.input_schema)
+    assert digest == schema_hash(as_it_was(operation.input_schema))

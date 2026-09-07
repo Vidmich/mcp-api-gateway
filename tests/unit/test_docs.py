@@ -7,7 +7,7 @@ that are *checkable* against the thing they document:
 
 * every setting the loader accepts is on the configuration page, under the name
   the loader knows it by, with the environment variable that sets it;
-* the page invents nothing — every ``MCP_GATEWAY_*`` name in the docs is real;
+* the page invents nothing — every ``MCP_API_GATEWAY_*`` name in the docs is real;
 * every TOML example parses, names real keys, and shows real defaults, because
   an example is the part people copy;
 * every relative link between the documents, and every heading anchor one of
@@ -47,7 +47,7 @@ CONFIGURATION = DOCS / "configuration.md"
 SERVICE_SETUP = DOCS / "service-setup.md"
 SECURITY = DOCS / "security.md"
 
-#: ``MCP_GATEWAY_<SECTION>__<KEY>``. A section is one word; a key may hold
+#: ``MCP_API_GATEWAY_<SECTION>__<KEY>``. A section is one word; a key may hold
 #: underscores, which is why the two halves are matched separately.
 ENV_NAME = re.compile(rf"{ENV_PREFIX}([A-Z0-9]+){NESTING_SEPARATOR}([A-Z0-9_]+)")
 
@@ -163,7 +163,7 @@ def test_the_flags_that_set_nothing_are_documented_too(flag: str) -> None:
 
 @pytest.mark.parametrize("page", PAGES, ids=lambda page: page.name)
 def test_the_docs_invent_no_settings(page: Path) -> None:
-    """Every ``MCP_GATEWAY_*`` name in the prose is one the loader would read."""
+    """Every ``MCP_API_GATEWAY_*`` name in the prose is one the loader would read."""
     for section, key in ENV_NAME.findall(read(page)):
         model = SECTION_MODELS.get(section.lower())
         assert model is not None, f"{page.name} names section [{section.lower()}], which is not one"
@@ -216,7 +216,7 @@ def test_the_user_agent_example_still_looks_like_a_user_agent() -> None:
     ]
     assert shown, "the [http] example no longer shows a user agent"
     for value in shown:
-        assert value.startswith("mcp-gateway/")
+        assert value.startswith("mcp-api-gateway/")
 
 
 # --------------------------------------------------------------------------- #

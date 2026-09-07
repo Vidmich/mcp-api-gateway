@@ -100,43 +100,65 @@ async def test_the_shutdown_path_drains_in_flight_requests(tmp_path: Path) -> No
     assert log == ["start", "stop"]
 
 
-def start_server(command: list[str]) -> subprocess.Popen[str]:
-    return subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        creationflags=CREATION_FLAGS,
-    )
+def start_server(command: list[str], log: Path) -> subprocess.Popen[str]:
+    """Start a real server process with its stderr going to ``log``.
+
+    A file rather than a pipe, because nothing reads the child's stderr until it
+    has been asked to stop — and a pipe on Windows holds about 4 KB. A gateway
+    logging its migrations and its startup banner at debug level writes more
+    than that, and the child would block inside a log call *before it ever
+    listened*, leaving a health check that never passes and a failure that
+    looks like a hang in the application.
+    """
+    handle = log.open("w", encoding="utf-8")
+    try:
+        return subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=handle,
+            text=True,
+            bufsize=1,
+            creationflags=CREATION_FLAGS,
+        )
+    finally:
+        # The child holds its own descriptor; this one would otherwise keep the
+        # file open for the life of the test.
+        handle.close()
 
 
-def wait_for_health(process: subprocess.Popen[str], port: int) -> None:
+def logged(log: Path) -> str:
+    """Whatever the server has written so far."""
+    return log.read_text(encoding="utf-8", errors="replace")
+
+
+def wait_for_health(process: subprocess.Popen[str], port: int, log: Path) -> None:
     deadline = time.monotonic() + 30
     while True:
         if process.poll() is not None:
-            pytest.fail(f"server exited early: {process.communicate()[1]}")
+            pytest.fail(f"server exited early:\n{logged(log)}")
         try:
             if httpx.get(f"http://127.0.0.1:{port}{HEALTH_PATH}", timeout=1).status_code == 200:
                 return
         except httpx.HTTPError:
             pass
         if time.monotonic() > deadline:
-            pytest.fail("server never became healthy")
+            pytest.fail(f"server never became healthy:\n{logged(log)}")
         time.sleep(0.05)
 
 
 def test_a_signal_shuts_the_process_down_cleanly(tmp_path: Path) -> None:
     port = free_port()
     config = write_config(tmp_path, port)
+    log = tmp_path / "server.log"
     process = start_server(
-        [sys.executable, "-m", "mcp_gateway", "--config", str(config), "--log-level", "debug"]
+        [sys.executable, "-m", "mcp_gateway", "--config", str(config), "--log-level", "debug"],
+        log,
     )
     try:
-        wait_for_health(process, port)
+        wait_for_health(process, port, log)
 
         process.send_signal(STOP_SIGNAL)
-        _, stderr = process.communicate(timeout=30)
+        process.communicate(timeout=30)
     finally:
         if process.poll() is None:  # pragma: no cover - only on a hung server
             process.kill()
@@ -144,16 +166,17 @@ def test_a_signal_shuts_the_process_down_cleanly(tmp_path: Path) -> None:
 
     assert process.returncode == 0
     # The lifespan teardown ran, rather than the process being cut short.
-    assert "Shutdown complete" in stderr
+    assert "Shutdown complete" in logged(log)
 
 
 def test_a_signal_during_a_request_lets_it_finish_and_exits_0(tmp_path: Path) -> None:
     port = free_port()
     config = write_config(tmp_path, port)
-    process = start_server([sys.executable, str(SLOW_SERVER), str(config)])
+    log = tmp_path / "server.log"
+    process = start_server([sys.executable, str(SLOW_SERVER), str(config)], log)
     responses: list[httpx.Response] = []
     try:
-        wait_for_health(process, port)
+        wait_for_health(process, port, log)
 
         caller = threading.Thread(
             target=lambda: responses.append(httpx.get(f"http://127.0.0.1:{port}/slow", timeout=30))
@@ -166,7 +189,7 @@ def test_a_signal_during_a_request_lets_it_finish_and_exits_0(tmp_path: Path) ->
         process.send_signal(STOP_SIGNAL)
 
         caller.join(timeout=30)
-        _, stderr = process.communicate(timeout=30)
+        process.communicate(timeout=30)
     finally:
         if process.poll() is None:  # pragma: no cover - only on a hung server
             process.kill()
@@ -175,4 +198,4 @@ def test_a_signal_during_a_request_lets_it_finish_and_exits_0(tmp_path: Path) ->
     assert responses and responses[0].status_code == 200
     assert responses[0].json() == {"status": "finished"}
     assert process.returncode == 0
-    assert "Shutdown complete" in stderr
+    assert "Shutdown complete" in logged(log)

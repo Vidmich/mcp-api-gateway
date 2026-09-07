@@ -54,8 +54,8 @@ def make_wheel(
     entry_point: str = release.ENTRY_POINT,
 ) -> Path:
     """A wheel-shaped zip: everything a real one has, minus what was asked for."""
-    wheel = tmp_path / f"mcp_spec_gateway-{version}-py3-none-any.whl"
-    dist_info = f"mcp_spec_gateway-{version}.dist-info"
+    wheel = tmp_path / f"mcp_api_gateway-{version}-py3-none-any.whl"
+    dist_info = f"mcp_api_gateway-{version}.dist-info"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("mcp_gateway/__init__.py", f'__version__ = "{version}"\n')
         for name in release.data_files():
@@ -64,7 +64,7 @@ def make_wheel(
             archive.writestr(name, b"" if name in empty else FILLER)
         archive.writestr(
             f"{dist_info}/METADATA",
-            f"Metadata-Version: 2.3\nName: mcp-spec-gateway\nVersion: {version}\n\n",
+            f"Metadata-Version: 2.3\nName: mcp-api-gateway\nVersion: {version}\n\n",
         )
         archive.writestr(f"{dist_info}/entry_points.txt", f"[console_scripts]\n{entry_point}\n")
     return wheel

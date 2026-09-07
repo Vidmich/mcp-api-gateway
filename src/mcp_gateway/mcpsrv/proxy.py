@@ -5,7 +5,7 @@ method, a URL with its template filled in, a query string, headers, and a body
 in a particular media type. Putting the second back together out of the first is
 what this module does, and it is the mirror image of
 :mod:`mcp_gateway.openapi.schema`, which took the request apart: the map it left
-under ``x-mcp-gateway`` at the root of the stored schema is read back here, so
+under ``x-mcp-api-gateway`` at the root of the stored schema is read back here, so
 neither side has to guess where ``petId`` belonged.
 
 **The order of the four steps matters.** Arguments are validated before anything

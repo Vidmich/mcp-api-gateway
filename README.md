@@ -1,6 +1,6 @@
-# mcp-gateway
+# mcp-api-gateway
 
-[![CI](https://github.com/Vidmich/mcp-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Vidmich/mcp-gateway/actions/workflows/ci.yml)
+[![CI](https://github.com/Vidmich/mcp-api-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Vidmich/mcp-api-gateway/actions/workflows/ci.yml)
 
 Turn any number of OpenAPI or Swagger services into a single MCP server.
 
@@ -45,13 +45,13 @@ Nothing is on PyPI yet — build a wheel and install that:
 
 ```bash
 python -m pip install build && python -m build --wheel
-pipx install ./dist/mcp_spec_gateway-0.1.0-py3-none-any.whl
-mcp-gateway --version
+pipx install ./dist/mcp_api_gateway-0.1.0-py3-none-any.whl
+mcp-api-gateway --version
 ```
 
-The distribution will be `mcp-spec-gateway`; the command it installs is
-`mcp-gateway`. They differ because the obvious name was taken on PyPI before
-this project existed, and the command was the wrong half to change.
+The distribution will be `mcp-api-gateway`, and so is the command it installs.
+The only name spelled differently is the Python package you would import,
+`mcp_gateway`.
 
 [docs/install.md](docs/install.md) covers pip, pipx, editable checkouts, what the
 first run creates, and upgrades.
@@ -64,7 +64,7 @@ Five minutes, ending with a real MCP client listing real tools.
 
 ```bash
 mkdir gateway && cd gateway
-mcp-gateway
+mcp-api-gateway
 ```
 
 It writes `config.toml` and `data/` in that directory, migrates a fresh
@@ -72,7 +72,7 @@ database, and starts listening. Two warnings in the log say the admin pages and
 `/mcp` are open — step 5 deals with that.
 
 ```
-INFO     mcp_gateway.app: mcp-gateway 0.1.0
+INFO     mcp_gateway.app: mcp-api-gateway 0.1.0
 config file:  /home/you/gateway/config.toml
 listening on: http://127.0.0.1:8080
 data dir:     /home/you/gateway/data
@@ -168,7 +168,7 @@ curl -sS -X POST http://127.0.0.1:8080/mcp \
 
 ```
 event: message
-data: {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"experimental":{},"tools":{"listChanged":true}},"protocolVersion":"2025-06-18","serverInfo":{"name":"mcp-gateway","version":"0.1.0"}}}
+data: {"jsonrpc":"2.0","id":1,"result":{"capabilities":{"experimental":{},"tools":{"listChanged":true}},"protocolVersion":"2025-06-18","serverInfo":{"name":"mcp-api-gateway","version":"0.1.0"}}}
 ```
 
 Calling one of those Petstore tools reaches the public demo API, which is
@@ -190,7 +190,7 @@ auth_token = "a-long-random-string"
 ```
 
 The login half can also be set from `/ui/configuration` without a restart, and
-without the password ever reaching a file; `mcp-gateway --reset-admin` is the way
+without the password ever reaching a file; `mcp-api-gateway --reset-admin` is the way
 back if it is forgotten.
 
 Now `/ui` asks for a login and `/mcp` requires `Authorization: Bearer …`. See
@@ -239,7 +239,7 @@ back into a page or an API response — only `set` / `not set` and the auth type
 ## Development
 
 ```bash
-git clone <repository-url> mcp-gateway && cd mcp-gateway
+git clone <repository-url> mcp-api-gateway && cd mcp-api-gateway
 python -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest

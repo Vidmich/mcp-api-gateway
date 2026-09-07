@@ -32,7 +32,7 @@ PRECEDENCE_CASES: list[tuple[str, str, str, str, Callable[[Settings], Any], Any,
     (
         "server",
         "[server]\nport = 1111\n",
-        "MCP_GATEWAY_SERVER__PORT",
+        "MCP_API_GATEWAY_SERVER__PORT",
         "2222",
         lambda s: s.server.port,
         1111,
@@ -41,7 +41,7 @@ PRECEDENCE_CASES: list[tuple[str, str, str, str, Callable[[Settings], Any], Any,
     (
         "admin",
         '[admin]\nusername = "from-file"\npassword = "secret"\n',
-        "MCP_GATEWAY_ADMIN__USERNAME",
+        "MCP_API_GATEWAY_ADMIN__USERNAME",
         "from-env",
         lambda s: s.admin.username if s.admin else None,
         "from-file",
@@ -50,7 +50,7 @@ PRECEDENCE_CASES: list[tuple[str, str, str, str, Callable[[Settings], Any], Any,
     (
         "mcp",
         '[mcp]\npath = "/from-file"\n',
-        "MCP_GATEWAY_MCP__PATH",
+        "MCP_API_GATEWAY_MCP__PATH",
         "/from-env",
         lambda s: s.mcp.path,
         "/from-file",
@@ -59,7 +59,7 @@ PRECEDENCE_CASES: list[tuple[str, str, str, str, Callable[[Settings], Any], Any,
     (
         "security",
         '[security]\nsecret_key = "from-file"\n',
-        "MCP_GATEWAY_SECURITY__SECRET_KEY",
+        "MCP_API_GATEWAY_SECURITY__SECRET_KEY",
         "from-env",
         lambda s: s.security.secret_key,
         "from-file",
@@ -68,7 +68,7 @@ PRECEDENCE_CASES: list[tuple[str, str, str, str, Callable[[Settings], Any], Any,
     (
         "refresh",
         "[refresh]\nauto_refresh_interval_minutes = 11\n",
-        "MCP_GATEWAY_REFRESH__AUTO_REFRESH_INTERVAL_MINUTES",
+        "MCP_API_GATEWAY_REFRESH__AUTO_REFRESH_INTERVAL_MINUTES",
         "22",
         lambda s: s.refresh.auto_refresh_interval_minutes,
         11,
@@ -77,7 +77,7 @@ PRECEDENCE_CASES: list[tuple[str, str, str, str, Callable[[Settings], Any], Any,
     (
         "metrics",
         "[metrics]\nbucket_seconds = 11\n",
-        "MCP_GATEWAY_METRICS__BUCKET_SECONDS",
+        "MCP_API_GATEWAY_METRICS__BUCKET_SECONDS",
         "22",
         lambda s: s.metrics.bucket_seconds,
         11,
@@ -86,7 +86,7 @@ PRECEDENCE_CASES: list[tuple[str, str, str, str, Callable[[Settings], Any], Any,
     (
         "http",
         "[http]\ntimeout_seconds = 11\n",
-        "MCP_GATEWAY_HTTP__TIMEOUT_SECONDS",
+        "MCP_API_GATEWAY_HTTP__TIMEOUT_SECONDS",
         "22.5",
         lambda s: s.http.timeout_seconds,
         11.0,
@@ -127,8 +127,8 @@ def test_cli_beats_environment_beats_file(tmp_path: Path) -> None:
         '[server]\nport = 1111\n\n[admin]\nusername = "from-file"\npassword = "secret"\n',
     )
     environ = {
-        "MCP_GATEWAY_SERVER__PORT": "2222",
-        "MCP_GATEWAY_ADMIN__USERNAME": "from-env",
+        "MCP_API_GATEWAY_SERVER__PORT": "2222",
+        "MCP_API_GATEWAY_ADMIN__USERNAME": "from-env",
     }
 
     settings = load_settings(
@@ -154,7 +154,7 @@ def test_defaults_when_no_config_file_exists(tmp_path: Path) -> None:
     assert settings.refresh.auto_refresh_interval_minutes == 1440
     assert (settings.metrics.bucket_seconds, settings.metrics.retention_days) == (60, 30)
     assert settings.http.max_response_bytes == 5_242_880
-    assert settings.http.user_agent.startswith("mcp-gateway/")
+    assert settings.http.user_agent.startswith("mcp-api-gateway/")
 
 
 def test_admin_flags_populate_a_missing_admin_section(tmp_path: Path) -> None:
@@ -207,7 +207,7 @@ def test_config_path_resolution_prefers_the_working_directory(tmp_path: Path) ->
 
 def test_config_path_resolution_falls_back_to_the_working_directory(tmp_path: Path) -> None:
     home = tmp_path / "home"
-    (home / "mcp-gateway").mkdir(parents=True)
+    (home / "mcp-api-gateway").mkdir(parents=True)
 
     resolved = resolve_config_path(
         cwd=tmp_path, environ={"XDG_CONFIG_HOME": str(home), "APPDATA": str(home)}
@@ -236,10 +236,10 @@ def test_malformed_environment_variables_are_ignored_with_a_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.WARNING, logger="mcp_gateway.config"):
-        settings = load_settings(environ={"MCP_GATEWAY_PORT": "9000"}, cwd=tmp_path)
+        settings = load_settings(environ={"MCP_API_GATEWAY_PORT": "9000"}, cwd=tmp_path)
 
     assert settings.server.port == 8080
-    assert "MCP_GATEWAY_PORT" in caplog.text
+    assert "MCP_API_GATEWAY_PORT" in caplog.text
 
 
 def test_log_level_is_case_insensitive(tmp_path: Path) -> None:
@@ -281,13 +281,13 @@ def test_out_of_range_value_from_the_environment_names_its_variable(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("MCP_GATEWAY_SERVER__PORT", "70000")
+    monkeypatch.setenv("MCP_API_GATEWAY_SERVER__PORT", "70000")
 
     assert main([]) == 2
 
     stderr = capsys.readouterr().err
     assert "server.port" in stderr
-    assert "MCP_GATEWAY_SERVER__PORT" in stderr
+    assert "MCP_API_GATEWAY_SERVER__PORT" in stderr
 
 
 def test_an_unusable_encryption_key_exits_2(

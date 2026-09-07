@@ -12,7 +12,7 @@ between the two.
 Four sources, each overriding the ones below it:
 
 1. a command-line flag
-2. an environment variable named `MCP_GATEWAY_<SECTION>__<KEY>`
+2. an environment variable named `MCP_API_GATEWAY_<SECTION>__<KEY>`
 3. the config file
 4. the built-in default
 
@@ -21,7 +21,7 @@ merged as plain data and validated once, at the end. That is also why a bad
 value can be reported against the source carrying it —
 
 ```
-mcp-gateway: invalid configuration:
+mcp-api-gateway: invalid configuration:
   server.port (from --port): Input should be less than or equal to 65535
 ```
 
@@ -34,12 +34,21 @@ read.
 is used:
 
 1. `./config.toml`, in the working directory
-2. `%APPDATA%\mcp-gateway\config.toml` on Windows, `~/.config/mcp-gateway/config.toml`
-   elsewhere (`$XDG_CONFIG_HOME` is honoured when set)
+2. `%APPDATA%\mcp-api-gateway\config.toml` on Windows, or
+   `~/.config/mcp-api-gateway/config.toml` elsewhere (`$XDG_CONFIG_HOME` is
+   honoured when set)
+
+That directory used to be called `mcp-gateway`, before the project settled on
+one name. **Nothing moves itself.** A gateway that already has a config file and
+a database under the old directory keeps looking in the new one and finds
+nothing, so it writes a fresh config and starts empty. Either rename the
+directory once, or keep pointing at the old one with `--config` and
+`--data-dir` — but do not leave two, or you will be editing one and running the
+other.
 
 **If none exists, one is written** at the first of those paths, carrying the
 host, port and data directory the first run resolved — so a service started once
-with `--data-dir /var/lib/mcp-gateway` keeps using that directory when it is
+with `--data-dir /var/lib/mcp-api-gateway` keeps using that directory when it is
 later started without the flag. Only the settings worth changing by hand are
 written out; everything else is left to its default so the file does not go
 stale when a later release moves one.
@@ -65,17 +74,17 @@ WARNING  mcp_gateway.config: Ignoring unknown config section [cache]
 
 ## Environment variables
 
-`MCP_GATEWAY_` + the section + `__` (two underscores) + the key, upper-cased:
+`MCP_API_GATEWAY_` + the section + `__` (two underscores) + the key, upper-cased:
 
 ```bash
-export MCP_GATEWAY_SERVER__PORT=9000
-export MCP_GATEWAY_MCP__AUTH_TOKEN="a-long-random-string"
+export MCP_API_GATEWAY_SERVER__PORT=9000
+export MCP_API_GATEWAY_MCP__AUTH_TOKEN="a-long-random-string"
 ```
 
 Values arrive as strings and are converted like any other layer, so
-`MCP_GATEWAY_HTTP__TIMEOUT_SECONDS=2.5` is a number by the time anything reads
-it, and `MCP_GATEWAY_SERVER__PORT=nine` produces the exit-2 message above with
-the variable named as its source. A `MCP_GATEWAY_` name with no `__` in it is
+`MCP_API_GATEWAY_HTTP__TIMEOUT_SECONDS=2.5` is a number by the time anything
+reads it, and `MCP_API_GATEWAY_SERVER__PORT=nine` produces the exit-2 message
+above with the variable named as its source. A `MCP_API_GATEWAY_` name with no `__` in it is
 ignored, with a warning saying how the names are built.
 
 This is the layer to reach for when a secret should not sit in a file — see
@@ -85,28 +94,28 @@ This is the layer to reach for when a secret should not sit in a file — see
 
 | Key | Default | Environment variable | Flag |
 |---|---|---|---|
-| `server.host` | `"127.0.0.1"` | `MCP_GATEWAY_SERVER__HOST` | `--host` |
-| `server.port` | `8080` | `MCP_GATEWAY_SERVER__PORT` | `--port` |
-| `server.data_dir` | `"./data"` | `MCP_GATEWAY_SERVER__DATA_DIR` | `--data-dir` |
-| `server.log_level` | `"info"` | `MCP_GATEWAY_SERVER__LOG_LEVEL` | `--log-level` |
-| `admin.username` | *(no default)* | `MCP_GATEWAY_ADMIN__USERNAME` | `--admin-user` |
-| `admin.password` | *(none)* | `MCP_GATEWAY_ADMIN__PASSWORD` | `--admin-password` |
-| `admin.password_hash` | *(none)* | `MCP_GATEWAY_ADMIN__PASSWORD_HASH` | — |
-| `mcp.path` | `"/mcp"` | `MCP_GATEWAY_MCP__PATH` | — |
-| `mcp.auth_token` | `""` | `MCP_GATEWAY_MCP__AUTH_TOKEN` | — |
-| `security.secret_key` | `""` *(generated)* | `MCP_GATEWAY_SECURITY__SECRET_KEY` | — |
-| `security.encryption_key` | `""` *(generated)* | `MCP_GATEWAY_SECURITY__ENCRYPTION_KEY` | — |
-| `refresh.auto_refresh_interval_minutes` | `1440` | `MCP_GATEWAY_REFRESH__AUTO_REFRESH_INTERVAL_MINUTES` | — |
-| `metrics.bucket_seconds` | `60` | `MCP_GATEWAY_METRICS__BUCKET_SECONDS` | — |
-| `metrics.retention_days` | `30` | `MCP_GATEWAY_METRICS__RETENTION_DAYS` | — |
-| `health.auto_disable` | `true` | `MCP_GATEWAY_HEALTH__AUTO_DISABLE` | — |
-| `health.auth_failures_before_disable` | `3` | `MCP_GATEWAY_HEALTH__AUTH_FAILURES_BEFORE_DISABLE` | — |
-| `health.failure_window_minutes` | `5` | `MCP_GATEWAY_HEALTH__FAILURE_WINDOW_MINUTES` | — |
-| `health.failure_minimum_calls` | `10` | `MCP_GATEWAY_HEALTH__FAILURE_MINIMUM_CALLS` | — |
-| `health.failure_threshold` | `0.5` | `MCP_GATEWAY_HEALTH__FAILURE_THRESHOLD` | — |
-| `http.timeout_seconds` | `30.0` | `MCP_GATEWAY_HTTP__TIMEOUT_SECONDS` | — |
-| `http.max_response_bytes` | `5242880` | `MCP_GATEWAY_HTTP__MAX_RESPONSE_BYTES` | — |
-| `http.user_agent` | `"mcp-gateway/<version>"` | `MCP_GATEWAY_HTTP__USER_AGENT` | — |
+| `server.host` | `"127.0.0.1"` | `MCP_API_GATEWAY_SERVER__HOST` | `--host` |
+| `server.port` | `8080` | `MCP_API_GATEWAY_SERVER__PORT` | `--port` |
+| `server.data_dir` | `"./data"` | `MCP_API_GATEWAY_SERVER__DATA_DIR` | `--data-dir` |
+| `server.log_level` | `"info"` | `MCP_API_GATEWAY_SERVER__LOG_LEVEL` | `--log-level` |
+| `admin.username` | *(no default)* | `MCP_API_GATEWAY_ADMIN__USERNAME` | `--admin-user` |
+| `admin.password` | *(none)* | `MCP_API_GATEWAY_ADMIN__PASSWORD` | `--admin-password` |
+| `admin.password_hash` | *(none)* | `MCP_API_GATEWAY_ADMIN__PASSWORD_HASH` | — |
+| `mcp.path` | `"/mcp"` | `MCP_API_GATEWAY_MCP__PATH` | — |
+| `mcp.auth_token` | `""` | `MCP_API_GATEWAY_MCP__AUTH_TOKEN` | — |
+| `security.secret_key` | `""` *(generated)* | `MCP_API_GATEWAY_SECURITY__SECRET_KEY` | — |
+| `security.encryption_key` | `""` *(generated)* | `MCP_API_GATEWAY_SECURITY__ENCRYPTION_KEY` | — |
+| `refresh.auto_refresh_interval_minutes` | `1440` | `MCP_API_GATEWAY_REFRESH__AUTO_REFRESH_INTERVAL_MINUTES` | — |
+| `metrics.bucket_seconds` | `60` | `MCP_API_GATEWAY_METRICS__BUCKET_SECONDS` | — |
+| `metrics.retention_days` | `30` | `MCP_API_GATEWAY_METRICS__RETENTION_DAYS` | — |
+| `health.auto_disable` | `true` | `MCP_API_GATEWAY_HEALTH__AUTO_DISABLE` | — |
+| `health.auth_failures_before_disable` | `3` | `MCP_API_GATEWAY_HEALTH__AUTH_FAILURES_BEFORE_DISABLE` | — |
+| `health.failure_window_minutes` | `5` | `MCP_API_GATEWAY_HEALTH__FAILURE_WINDOW_MINUTES` | — |
+| `health.failure_minimum_calls` | `10` | `MCP_API_GATEWAY_HEALTH__FAILURE_MINIMUM_CALLS` | — |
+| `health.failure_threshold` | `0.5` | `MCP_API_GATEWAY_HEALTH__FAILURE_THRESHOLD` | — |
+| `http.timeout_seconds` | `30.0` | `MCP_API_GATEWAY_HTTP__TIMEOUT_SECONDS` | — |
+| `http.max_response_bytes` | `5242880` | `MCP_API_GATEWAY_HTTP__MAX_RESPONSE_BYTES` | — |
+| `http.user_agent` | `"mcp-api-gateway/<version>"` | `MCP_API_GATEWAY_HTTP__USER_AGENT` | — |
 
 Three flags are not settings and so are not in the table: `--config`, which
 chooses the file the other layers are merged onto; `--version`, which prints and
@@ -203,7 +212,7 @@ That leaves one way back from a password nobody remembers, and it is not a
 reinstall:
 
 ```bash
-mcp-gateway --reset-admin
+mcp-api-gateway --reset-admin
 ```
 
 It clears the saved account, prints what it did, and exits without starting the
@@ -351,7 +360,7 @@ be told than have it decided for them.
 [http]
 timeout_seconds = 30
 max_response_bytes = 5242880
-user_agent = "mcp-gateway/0.1.0"
+user_agent = "mcp-api-gateway/0.1.0"
 ```
 
 These apply to every outbound call the gateway makes — fetching a spec and

@@ -29,7 +29,7 @@ from sqlalchemy.types import TypeDecorator
 from mcp_gateway.db.models import Base
 
 #: Environment variable the command line can take its URL from. Deliberately not
-#: prefixed ``MCP_GATEWAY_``: that prefix belongs to the settings loader, which
+#: prefixed ``MCP_API_GATEWAY_``: that prefix belongs to the settings loader, which
 #: would report this one as an unknown key.
 URL_ENV_VAR = "ALEMBIC_DATABASE_URL"
 

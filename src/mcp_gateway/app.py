@@ -84,7 +84,7 @@ def startup_banner(settings: Settings, keys: Keys | None = None, *, admin: Admin
     key_file = stored or "none (keys come from the config)"
     return "\n".join(
         [
-            f"mcp-gateway {__version__}",
+            f"mcp-api-gateway {__version__}",
             f"config file:  {settings.config_path or 'none (defaults)'}",
             f"listening on: http://{settings.server.host}:{settings.server.port}",
             f"data dir:     {settings.server.data_dir}",
@@ -188,7 +188,7 @@ def create_app(
     rather than something the operator meets when they first save a credential.
     """
     app = FastAPI(
-        title="mcp-gateway",
+        title="mcp-api-gateway",
         version=__version__,
         lifespan=_build_lifespan(tuple(services), keys),
         # The gateway's own pages are the interface. FastAPI's docs would be an

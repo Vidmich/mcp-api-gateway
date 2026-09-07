@@ -26,12 +26,12 @@ Calling a tool on `/mcp` causes the gateway to make a live HTTP request to the c
 | Refresh semantics | New operations are **never** auto-enabled; they are flagged `New` and the server is flagged **Needs Attention**. |
 | Monitoring | Time-series graphs: requests and bytes in/out, total and per server, plus a separate `tools/list` graph. |
 | Web stack | FastAPI + Jinja2 + HTMX. No Node build step. |
-| Packaging | PyPI wheel + `mcp-gateway` console script, foreground process. Service setup is documented, not automated. |
+| Packaging | PyPI wheel + `mcp-api-gateway` console script, foreground process. Service setup is documented, not automated. |
 | Spec versions | OpenAPI 3.0, OpenAPI 3.1, and Swagger 2.0 — fetched by URL. |
 | Spec fetch auth | Optional, per server: `none` (default), reuse the server's API credentials, or a separate credential just for the spec URL. |
 | Server toggle | Per-server enable/disable in v1. |
 
-**Naming assumption (change freely):** distribution `mcp-gateway`, console script `mcp-gateway`, import package `mcp_gateway`.
+**Names.** The distribution on PyPI, the console script, the MCP server name, the user agent and the per-user directory are all `mcp-api-gateway`. The import package is `mcp_gateway`, and is the only one spelled differently: it is the one name that appears nowhere a user of the gateway can see it, and renaming it would rewrite every module cross-reference in the source for nobody's benefit. Environment variables are prefixed `MCP_API_GATEWAY_`; the vendor extension carried in every published input schema is `x-mcp-api-gateway`.
 
 ---
 
@@ -61,16 +61,16 @@ Basic hygiene that is *not* a feature and is included regardless: every outbound
 ### 3.1 CLI
 
 ```
-mcp-gateway [--config PATH] [--host HOST] [--port PORT]
-            [--data-dir PATH]
-            [--admin-user USER] [--admin-password PASS]
-            [--reset-admin]
-            [--log-level LEVEL] [--version]
+mcp-api-gateway [--config PATH] [--host HOST] [--port PORT]
+                [--data-dir PATH]
+                [--admin-user USER] [--admin-password PASS]
+                [--reset-admin]
+                [--log-level LEVEL] [--version]
 ```
 
-Precedence: **CLI flag > environment variable (`MCP_GATEWAY_*`) > config file > default.**
+Precedence: **CLI flag > environment variable (`MCP_API_GATEWAY_*`) > config file > default.**
 
-`--config` defaults to `./config.toml`, then the platform config dir (`%APPDATA%\mcp-gateway\config.toml`, `~/.config/mcp-gateway/config.toml`). **The config file is created on first run.** If nothing exists at the resolved path, the app writes a minimal commented `config.toml` there (creating parent directories), loads it, and logs the path. It carries only the settings worth changing — host, port, data dir, and commented-out `[admin]` and `[mcp].auth_token` blocks — with everything else omitted so defaults stay defaults and later releases can move them.
+`--config` defaults to `./config.toml`, then the platform config dir (`%APPDATA%\mcp-api-gateway\config.toml`, `~/.config/mcp-api-gateway/config.toml`). **The config file is created on first run.** If nothing exists at the resolved path, the app writes a minimal commented `config.toml` there (creating parent directories), loads it, and logs the path. It carries only the settings worth changing — host, port, data dir, and commented-out `[admin]` and `[mcp].auth_token` blocks — with everything else omitted so defaults stay defaults and later releases can move them.
 
 A generated config never enables admin login or `/mcp` auth: the app starts open and logs a warning saying exactly that, so the operator has to make a deliberate choice to lock it down. If the path is not writable, that is not fatal either — the app logs the reason and runs on defaults.
 
@@ -117,7 +117,7 @@ failure_threshold = 0.5            # of the calls in the window
 [http]
 timeout_seconds = 30
 max_response_bytes = 5242880
-user_agent = "mcp-gateway/<version>"
+user_agent = "mcp-api-gateway/<version>"
 ```
 
 **Key management.** If `security.encryption_key` / `secret_key` are unset, the app generates them on first run into `<data_dir>/keys.json` with `0600` permissions and reuses them afterwards. This means zero setup while still keeping the SQLite file useless on its own. Losing the key file means re-entering upstream credentials; the startup log says so once.

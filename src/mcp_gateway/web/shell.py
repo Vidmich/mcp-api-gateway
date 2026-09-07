@@ -82,6 +82,9 @@ FLASH_COOKIE: Final = "mcp_gateway_flash"
 #: message never resurfaces in a session the operator has forgotten about.
 FLASH_MAX_AGE: Final = 5 * 60
 
+#: Not renamed with everything else in task 105, for the reason
+#: :data:`~mcp_gateway.web.auth.SESSION_SALT` gives: a salt is read by nobody,
+#: and a new one invalidates every signature already in a browser.
 FLASH_SALT: Final = "mcp-gateway.flash"
 
 #: Caps that keep the cookie under the 4 KB a browser will store. A message that

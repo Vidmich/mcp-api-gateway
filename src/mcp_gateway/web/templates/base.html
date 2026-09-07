@@ -9,7 +9,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{% block title %}mcp-gateway{% endblock %}</title>
+    <title>{% block title %}mcp-api-gateway{% endblock %}</title>
     <link rel="stylesheet" href="{{ static_url('css/app.css') }}" />
     <script src="{{ static_url('js/htmx.min.js') }}" defer></script>
     {# How this gateway answers htmx, on every page that uses it. Deferred like
@@ -22,7 +22,7 @@
   <body class="{% block body_class %}{% endblock %}">
     {% block masthead %}
     <header class="masthead">
-      <a class="masthead__brand" href="{{ home_path }}">mcp-gateway</a>
+      <a class="masthead__brand" href="{{ home_path }}">mcp-api-gateway</a>
       <nav class="nav" aria-label="Sections">
         {% for item in nav %}
         {% set current = active is not none and active.path == item.path %}
@@ -46,6 +46,6 @@
       {% block content %}{% endblock %}
     </main>
 
-    <footer class="footer">mcp-gateway {{ version }}</footer>
+    <footer class="footer">mcp-api-gateway {{ version }}</footer>
   </body>
 </html>

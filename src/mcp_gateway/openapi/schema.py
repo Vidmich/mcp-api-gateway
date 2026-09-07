@@ -56,7 +56,7 @@ BODY_ARGUMENT: Final = "body"
 BODY_PREFIX: Final = "param_"
 
 #: Where the flattened-away detail lives on the generated schema.
-EXTENSION: Final = "x-mcp-gateway"
+EXTENSION: Final = "x-mcp-api-gateway"
 
 #: Preferred body media type, when an operation declares more than one.
 JSON_MEDIA_TYPE: Final = "application/json"

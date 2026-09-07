@@ -1,10 +1,10 @@
-# mcp-gateway configuration
+# mcp-api-gateway configuration
 #
 # Written on first run. Only the settings worth changing are listed here --
 # every other setting falls back to a built-in default, so this file does not
 # go stale when a later release adds one.
 #
-# Precedence: command-line flag > MCP_GATEWAY_* environment variable > this
+# Precedence: command-line flag > MCP_API_GATEWAY_* environment variable > this
 # file > built-in default.
 
 [server]

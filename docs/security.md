@@ -2,8 +2,8 @@
 
 Read this before you move the gateway off `127.0.0.1`.
 
-The short version: **an mcp-gateway with no admin login and no `/mcp` token is
-an unauthenticated HTTP proxy into whatever network it sits in, and that is its
+The short version: **a gateway with no admin login and no `/mcp` token is an
+unauthenticated HTTP proxy into whatever network it sits in, and that is its
 out-of-the-box state.** The startup log says so, twice, every time it starts.
 That is a reasonable way to run it on a laptop behind a firewall. It is not a
 reasonable way to run it anywhere else.
@@ -110,7 +110,7 @@ once.
 ### 6. The way back in
 
 The admin account can be set from the browser, which means it can be locked
-behind a password nobody remembers. `mcp-gateway --reset-admin` clears the saved
+behind a password nobody remembers. `mcp-api-gateway --reset-admin` clears the saved
 account and exits; afterwards `[admin]` in the config file applies again, or the
 pages are open if there is none.
 
@@ -149,7 +149,7 @@ auth_token = "a-long-random-string"
 ```
 
 Both can come from the environment instead of the file
-(`MCP_GATEWAY_ADMIN__PASSWORD_HASH`, `MCP_GATEWAY_MCP__AUTH_TOKEN`), which is
+(`MCP_API_GATEWAY_ADMIN__PASSWORD_HASH`, `MCP_API_GATEWAY_MCP__AUTH_TOKEN`), which is
 usually the better answer under a supervisor — see
 [service-setup.md](service-setup.md).
 

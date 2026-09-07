@@ -79,6 +79,10 @@ SESSION_MAX_AGE: Final = 7 * 24 * 60 * 60
 
 #: Namespaces the signature, so a value signed by this application for something
 #: else could never be replayed as a session.
+#:
+#: Left spelled the old way by task 105, which renamed everything a person
+#: reads. A salt is not one of those, and changing it would sign every open
+#: session out to alter a string nobody sees.
 SESSION_SALT: Final = "mcp-gateway.admin-session"
 
 #: The one thing a failed login is told. Identical for an unknown username and

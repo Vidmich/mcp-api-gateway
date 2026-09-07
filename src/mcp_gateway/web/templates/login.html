@@ -6,13 +6,13 @@
    signed in. #}
 {% extends "base.html" %}
 
-{% block title %}Sign in &middot; mcp-gateway{% endblock %}
+{% block title %}Sign in &middot; mcp-api-gateway{% endblock %}
 {% block body_class %}page--centred{% endblock %}
 {% block masthead %}{% endblock %}
 
 {% block content %}
 <section class="card card--narrow">
-  <h1 class="card__title">mcp-gateway</h1>
+  <h1 class="card__title">mcp-api-gateway</h1>
   {% if error %}<p class="flash flash--error" role="alert">{{ error }}</p>{% endif %}
   <form method="post" action="{{ login_path }}">
     <input type="hidden" name="next" value="{{ next }}" />

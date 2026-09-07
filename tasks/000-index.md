@@ -7,6 +7,11 @@ Dependencies are listed as a single chain, which is the safe order to work in. T
 same milestone that touch different modules can overlap in practice — 009, 010 and 011 are
 independent of each other, as are 020–023 once 019 is done.
 
+Tasks 001–104 were written while the program was called `mcp-gateway` and the distribution
+`mcp-spec-gateway`, and they still say so. Task 105 renamed both to `mcp-api-gateway`; the old
+names are left in the earlier files because they are a record of what was asked at the time, not
+instructions to follow now.
+
 | # | Task | Milestone |
 |---|---|---|
 | 001 | [Project scaffolding](001-project-scaffolding.md) | 1 · Skeleton |

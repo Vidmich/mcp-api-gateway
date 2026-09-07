@@ -562,11 +562,11 @@ def test_every_layer_names_itself(tmp_path: Path) -> None:
     settings = settings_for(
         tmp_path,
         "[server]\nport = 9001\n",
-        environ={"MCP_GATEWAY_HTTP__TIMEOUT_SECONDS": "5"},
+        environ={"MCP_API_GATEWAY_HTTP__TIMEOUT_SECONDS": "5"},
     )
 
     assert source_label(settings, "server.port") == FILE_SOURCE
-    assert source_label(settings, "http.timeout_seconds") == "MCP_GATEWAY_HTTP__TIMEOUT_SECONDS"
+    assert source_label(settings, "http.timeout_seconds") == "MCP_API_GATEWAY_HTTP__TIMEOUT_SECONDS"
     assert source_label(settings, "metrics.retention_days") == DEFAULT_SOURCE
 
 

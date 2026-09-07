@@ -21,9 +21,9 @@ Point it at both paths explicitly and it stops mattering where it was started
 from:
 
 ```bash
-/opt/mcp-gateway/bin/mcp-gateway \
-  --config /etc/mcp-gateway/config.toml \
-  --data-dir /var/lib/mcp-gateway
+/opt/mcp-api-gateway/bin/mcp-api-gateway \
+  --config /etc/mcp-api-gateway/config.toml \
+  --data-dir /var/lib/mcp-api-gateway
 ```
 
 Put the secrets in the environment rather than in the config file
@@ -31,9 +31,9 @@ Put the secrets in the environment rather than in the config file
 rule):
 
 ```bash
-MCP_GATEWAY_MCP__AUTH_TOKEN=...
-MCP_GATEWAY_ADMIN__USERNAME=admin
-MCP_GATEWAY_ADMIN__PASSWORD_HASH=pbkdf2_sha256$600000$...
+MCP_API_GATEWAY_MCP__AUTH_TOKEN=...
+MCP_API_GATEWAY_ADMIN__USERNAME=admin
+MCP_API_GATEWAY_ADMIN__PASSWORD_HASH=pbkdf2_sha256$600000$...
 ```
 
 `/healthz` is the liveness endpoint. It is never behind the admin session and
@@ -44,7 +44,7 @@ curl -fsS http://127.0.0.1:8080/healthz
 ```
 
 ```json
-{"status":"ok","version":"0.1.0","uptime_seconds":208.087,"config_path":"/etc/mcp-gateway/config.toml"}
+{"status":"ok","version":"0.1.0","uptime_seconds":208.087,"config_path":"/etc/mcp-api-gateway/config.toml"}
 ```
 
 Logs go to stderr, one line per event, with the level first. Under systemd and
@@ -54,23 +54,23 @@ request — useful while setting a service up, noisy afterwards.
 
 ## systemd
 
-`/etc/systemd/system/mcp-gateway.service`:
+`/etc/systemd/system/mcp-api-gateway.service`:
 
 ```ini
 [Unit]
-Description=mcp-gateway
-Documentation=https://github.com/vidmich/mcp-server
+Description=mcp-api-gateway
+Documentation=https://github.com/Vidmich/mcp-api-gateway
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=exec
-User=mcp-gateway
-Group=mcp-gateway
-ExecStart=/opt/mcp-gateway/bin/mcp-gateway \
-  --config /etc/mcp-gateway/config.toml \
-  --data-dir /var/lib/mcp-gateway
-EnvironmentFile=-/etc/mcp-gateway/env
+User=mcp-api-gateway
+Group=mcp-api-gateway
+ExecStart=/opt/mcp-api-gateway/bin/mcp-api-gateway \
+  --config /etc/mcp-api-gateway/config.toml \
+  --data-dir /var/lib/mcp-api-gateway
+EnvironmentFile=-/etc/mcp-api-gateway/env
 Restart=on-failure
 RestartSec=5
 # It exits 0 on SIGTERM once in-flight requests have drained; give it room to.
@@ -78,12 +78,12 @@ KillSignal=SIGTERM
 TimeoutStopSec=30
 
 # It needs one writable directory and nothing else.
-StateDirectory=mcp-gateway
+StateDirectory=mcp-api-gateway
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/mcp-gateway
+ReadWritePaths=/var/lib/mcp-api-gateway
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
@@ -92,32 +92,32 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 WantedBy=multi-user.target
 ```
 
-`/etc/mcp-gateway/env`, owned by root and mode `0600`:
+`/etc/mcp-api-gateway/env`, owned by root and mode `0600`:
 
 ```
-MCP_GATEWAY_MCP__AUTH_TOKEN=a-long-random-string
-MCP_GATEWAY_ADMIN__USERNAME=admin
-MCP_GATEWAY_ADMIN__PASSWORD_HASH=pbkdf2_sha256$600000$...
+MCP_API_GATEWAY_MCP__AUTH_TOKEN=a-long-random-string
+MCP_API_GATEWAY_ADMIN__USERNAME=admin
+MCP_API_GATEWAY_ADMIN__PASSWORD_HASH=pbkdf2_sha256$600000$...
 ```
 
 Then:
 
 ```bash
-sudo useradd --system --home /var/lib/mcp-gateway --shell /usr/sbin/nologin mcp-gateway
+sudo useradd --system --home /var/lib/mcp-api-gateway --shell /usr/sbin/nologin mcp-api-gateway
 sudo systemctl daemon-reload
-sudo systemctl enable --now mcp-gateway
-journalctl -u mcp-gateway -f
+sudo systemctl enable --now mcp-api-gateway
+journalctl -u mcp-api-gateway -f
 ```
 
-`StateDirectory=` creates `/var/lib/mcp-gateway` with the right owner on every
-start, which is what makes `ProtectSystem=strict` survivable: the gateway writes
-there and nowhere else.
+`StateDirectory=` creates `/var/lib/mcp-api-gateway` with the right owner on
+every start, which is what makes `ProtectSystem=strict` survivable: the gateway
+writes there and nowhere else.
 
 ## launchd (macOS)
 
-A user agent, at `~/Library/LaunchAgents/dev.mcp-gateway.plist`, runs while you
-are logged in — the right shape for a gateway serving MCP clients on your own
-machine. Swap in `/Library/LaunchDaemons` and add `UserName` for a system-wide
+A user agent, at `~/Library/LaunchAgents/dev.mcp-api-gateway.plist`, runs while
+you are logged in — the right shape for a gateway serving MCP clients on your
+own machine. Swap in `/Library/LaunchDaemons` and add `UserName` for a system-wide
 one.
 
 ```xml
@@ -127,18 +127,18 @@ one.
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>dev.mcp-gateway</string>
+  <string>dev.mcp-api-gateway</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/mcp-gateway</string>
+    <string>/opt/homebrew/bin/mcp-api-gateway</string>
     <string>--config</string>
-    <string>/Users/you/Library/Application Support/mcp-gateway/config.toml</string>
+    <string>/Users/you/Library/Application Support/mcp-api-gateway/config.toml</string>
     <string>--data-dir</string>
-    <string>/Users/you/Library/Application Support/mcp-gateway/data</string>
+    <string>/Users/you/Library/Application Support/mcp-api-gateway/data</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>MCP_GATEWAY_MCP__AUTH_TOKEN</key>
+    <key>MCP_API_GATEWAY_MCP__AUTH_TOKEN</key>
     <string>a-long-random-string</string>
   </dict>
   <key>RunAtLoad</key>
@@ -149,17 +149,17 @@ one.
     <false/>
   </dict>
   <key>StandardOutPath</key>
-  <string>/Users/you/Library/Logs/mcp-gateway.log</string>
+  <string>/Users/you/Library/Logs/mcp-api-gateway.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/you/Library/Logs/mcp-gateway.log</string>
+  <string>/Users/you/Library/Logs/mcp-api-gateway.log</string>
 </dict>
 </plist>
 ```
 
 ```bash
-launchctl load -w ~/Library/LaunchAgents/dev.mcp-gateway.plist
-launchctl list | grep mcp-gateway
-tail -f ~/Library/Logs/mcp-gateway.log
+launchctl load -w ~/Library/LaunchAgents/dev.mcp-api-gateway.plist
+launchctl list | grep mcp-api-gateway
+tail -f ~/Library/Logs/mcp-api-gateway.log
 ```
 
 `KeepAlive` with `SuccessfulExit: false` restarts it when it crashes but not
@@ -175,15 +175,15 @@ read the file; on a shared Mac, prefer a config file the account owns.
 which is what this needs. From an elevated prompt:
 
 ```
-nssm install mcp-gateway "C:\Program Files\mcp-gateway\Scripts\mcp-gateway.exe"
-nssm set mcp-gateway AppParameters "--config C:\ProgramData\mcp-gateway\config.toml --data-dir C:\ProgramData\mcp-gateway\data"
-nssm set mcp-gateway AppDirectory "C:\ProgramData\mcp-gateway"
-nssm set mcp-gateway AppEnvironmentExtra "MCP_GATEWAY_MCP__AUTH_TOKEN=a-long-random-string"
-nssm set mcp-gateway AppStdout "C:\ProgramData\mcp-gateway\logs\service.log"
-nssm set mcp-gateway AppStderr "C:\ProgramData\mcp-gateway\logs\service.log"
-nssm set mcp-gateway AppRotateFiles 1
-nssm set mcp-gateway Start SERVICE_AUTO_START
-nssm start mcp-gateway
+nssm install mcp-api-gateway "C:\Program Files\mcp-api-gateway\Scripts\mcp-api-gateway.exe"
+nssm set mcp-api-gateway AppParameters "--config C:\ProgramData\mcp-api-gateway\config.toml --data-dir C:\ProgramData\mcp-api-gateway\data"
+nssm set mcp-api-gateway AppDirectory "C:\ProgramData\mcp-api-gateway"
+nssm set mcp-api-gateway AppEnvironmentExtra "MCP_API_GATEWAY_MCP__AUTH_TOKEN=a-long-random-string"
+nssm set mcp-api-gateway AppStdout "C:\ProgramData\mcp-api-gateway\logs\service.log"
+nssm set mcp-api-gateway AppStderr "C:\ProgramData\mcp-api-gateway\logs\service.log"
+nssm set mcp-api-gateway AppRotateFiles 1
+nssm set mcp-api-gateway Start SERVICE_AUTO_START
+nssm start mcp-api-gateway
 ```
 
 NSSM stops a console program by sending Ctrl-C first, which is the graceful path
@@ -200,8 +200,8 @@ No extra software, and a worse fit — it starts things, it does not supervise
 them. Use it when installing NSSM is not an option:
 
 ```
-schtasks /create /tn "mcp-gateway" /sc onstart /ru "SYSTEM" /rl HIGHEST ^
-  /tr "\"C:\Program Files\mcp-gateway\Scripts\mcp-gateway.exe\" --config C:\ProgramData\mcp-gateway\config.toml --data-dir C:\ProgramData\mcp-gateway\data"
+schtasks /create /tn "mcp-api-gateway" /sc onstart /ru "SYSTEM" /rl HIGHEST ^
+  /tr "\"C:\Program Files\mcp-api-gateway\Scripts\mcp-api-gateway.exe\" --config C:\ProgramData\mcp-api-gateway\config.toml --data-dir C:\ProgramData\mcp-api-gateway\data"
 ```
 
 Then, in Task Scheduler, on the task's **Settings** tab, set *If the task fails,
@@ -214,7 +214,7 @@ them.
 ## Docker
 
 The image builds the wheel from a checkout, because the project is not on PyPI
-yet ([install.md](install.md#a-note-on-the-name)).
+yet ([install.md](install.md#the-name)).
 
 ```dockerfile
 # syntax=docker/dockerfile:1
@@ -224,30 +224,30 @@ COPY . .
 RUN pip install --no-cache-dir build && python -m build --wheel --outdir /dist
 
 FROM python:3.12-slim
-RUN useradd --system --create-home --home-dir /var/lib/mcp-gateway gateway
+RUN useradd --system --create-home --home-dir /var/lib/mcp-api-gateway gateway
 COPY --from=build /dist/*.whl /tmp/
 RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 USER gateway
-WORKDIR /var/lib/mcp-gateway
-VOLUME ["/var/lib/mcp-gateway"]
+WORKDIR /var/lib/mcp-api-gateway
+VOLUME ["/var/lib/mcp-api-gateway"]
 EXPOSE 8080
 # 0.0.0.0 inside the container only. Publish it to loopback on the host.
-ENV MCP_GATEWAY_SERVER__HOST=0.0.0.0
+ENV MCP_API_GATEWAY_SERVER__HOST=0.0.0.0
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=4).status==200 else 1)"
-ENTRYPOINT ["mcp-gateway"]
-CMD ["--config", "/var/lib/mcp-gateway/config.toml", "--data-dir", "/var/lib/mcp-gateway"]
+ENTRYPOINT ["mcp-api-gateway"]
+CMD ["--config", "/var/lib/mcp-api-gateway/config.toml", "--data-dir", "/var/lib/mcp-api-gateway"]
 ```
 
 ```bash
-docker build -t mcp-gateway .
-docker volume create mcp-gateway-data
-docker run -d --name mcp-gateway \
+docker build -t mcp-api-gateway .
+docker volume create mcp-api-gateway-data
+docker run -d --name mcp-api-gateway \
   -p 127.0.0.1:8080:8080 \
-  -v mcp-gateway-data:/var/lib/mcp-gateway \
-  -e MCP_GATEWAY_MCP__AUTH_TOKEN=a-long-random-string \
+  -v mcp-api-gateway-data:/var/lib/mcp-api-gateway \
+  -e MCP_API_GATEWAY_MCP__AUTH_TOKEN=a-long-random-string \
   --restart unless-stopped \
-  mcp-gateway
+  mcp-api-gateway
 ```
 
 Or with compose:
@@ -259,9 +259,9 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - gateway-data:/var/lib/mcp-gateway
+      - gateway-data:/var/lib/mcp-api-gateway
     environment:
-      MCP_GATEWAY_MCP__AUTH_TOKEN: a-long-random-string
+      MCP_API_GATEWAY_MCP__AUTH_TOKEN: a-long-random-string
     restart: unless-stopped
 
 volumes:

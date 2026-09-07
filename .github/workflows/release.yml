@@ -47,7 +47,7 @@ jobs:
     # something the workflow can grant itself.
     environment:
       name: pypi
-      url: https://pypi.org/p/mcp-spec-gateway
+      url: https://pypi.org/p/mcp-api-gateway
 
     permissions:
       # Mints the OIDC token PyPI checks. Nothing else in this repository has

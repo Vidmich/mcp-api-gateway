@@ -437,7 +437,7 @@ async def test_the_scheduler_never_picks_it_up(session: AsyncSession) -> None:
 
 
 def a_settings(tmp_path: Path, token: str | None = None) -> Settings:
-    environ = {"MCP_GATEWAY_MCP__AUTH_TOKEN": token} if token else {}
+    environ = {"MCP_API_GATEWAY_MCP__AUTH_TOKEN": token} if token else {}
     return load_settings(environ=environ, cwd=tmp_path)
 
 

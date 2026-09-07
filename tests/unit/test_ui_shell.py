@@ -136,7 +136,7 @@ def test_a_page_renders_into_the_layout(tmp_path: Path) -> None:
     assert "<!doctype html>" in body
     assert 'class="masthead"' in body
     assert 'class="page"' in body
-    assert f"mcp-gateway {mcp_gateway.__version__}" in body
+    assert f"mcp-api-gateway {mcp_gateway.__version__}" in body
 
 
 def test_the_layout_loads_the_stylesheet_and_htmx(tmp_path: Path) -> None:

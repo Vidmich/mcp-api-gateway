@@ -1,4 +1,4 @@
-"""Command-line entry point for the ``mcp-gateway`` console script.
+"""Command-line entry point for the ``mcp-api-gateway`` console script.
 
 Flags are the highest-precedence configuration source (spec §3.1); everything
 they collect is handed to :func:`mcp_gateway.config.load_settings`. The command
@@ -25,7 +25,7 @@ from mcp_gateway.bootstrap import bootstrap, ensure_config_file
 from mcp_gateway.config import ConfigError, Settings, load_settings, resolve_config_path
 from mcp_gateway.web.account import reset_stored_admin
 
-PROG = "mcp-gateway"
+PROG = "mcp-api-gateway"
 
 #: ``trace`` is a uvicorn level with no logging counterpart of its own.
 _LOG_LEVELS = {

@@ -3,7 +3,7 @@
 Configuration comes from four sources, each overriding the ones below it:
 
 1. CLI flags (spec §3.1)
-2. environment variables named ``MCP_GATEWAY_<SECTION>__<KEY>``
+2. environment variables named ``MCP_API_GATEWAY_<SECTION>__<KEY>``
 3. the TOML config file (spec §3.2)
 4. the defaults declared on the models here
 
@@ -35,10 +35,10 @@ from mcp_gateway import __version__
 
 logger = logging.getLogger(__name__)
 
-ENV_PREFIX = "MCP_GATEWAY_"
+ENV_PREFIX = "MCP_API_GATEWAY_"
 NESTING_SEPARATOR = "__"
 CONFIG_FILENAME = "config.toml"
-APP_DIRNAME = "mcp-gateway"
+APP_DIRNAME = "mcp-api-gateway"
 
 #: How :attr:`Settings.sources` names an environment variable, followed by the
 #: variable itself. A constant because the Configuration page reads these
@@ -169,7 +169,7 @@ class HttpSettings(_Section):
 
     timeout_seconds: float = Field(default=30.0, gt=0)
     max_response_bytes: int = Field(default=5_242_880, ge=1024)
-    user_agent: str = f"mcp-gateway/{__version__}"
+    user_agent: str = f"mcp-api-gateway/{__version__}"
 
 
 SECTION_MODELS: dict[str, type[_Section]] = {

@@ -38,13 +38,13 @@ ENCRYPTION_KEY_FIELD: Final = "encryption_key"
 
 #: Only the three keys worth editing by hand are written out; see spec §3.1.
 CONFIG_TEMPLATE: Final = """\
-# mcp-gateway configuration
+# mcp-api-gateway configuration
 #
 # Written on first run. Only the settings worth changing are listed here --
 # every other setting falls back to a built-in default, so this file does not
 # go stale when a later release adds one.
 #
-# Precedence: command-line flag > MCP_GATEWAY_* environment variable > this
+# Precedence: command-line flag > MCP_API_GATEWAY_* environment variable > this
 # file > built-in default.
 
 [server]
@@ -95,7 +95,7 @@ def _seed_values(cli: Mapping[str, Any]) -> tuple[str, int, str]:
     """Pick the host/port/data_dir to write into a generated config.
 
     Flags given on the first run are baked in, so a service started once with
-    ``--data-dir /var/lib/mcp-gateway`` keeps using it when it is later started
+    ``--data-dir /var/lib/mcp-api-gateway`` keeps using it when it is later started
     without the flag — otherwise the key file silently moves and every stored
     upstream credential becomes unreadable.
     """

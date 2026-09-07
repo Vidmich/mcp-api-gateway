@@ -5,16 +5,14 @@ For whoever publishes the project. If you only want to install or run it,
 
 ## The name
 
-The distribution is **`mcp-spec-gateway`**. The command it installs is
-**`mcp-gateway`**, and the package it imports is **`mcp_gateway`**.
+The distribution, the command it installs, and everything else a person types or
+reads are all **`mcp-api-gateway`**. The package it imports is **`mcp_gateway`**,
+and that is the only place the two spellings differ.
 
-The three do not match because `mcp-gateway` was already taken on PyPI by an
-unrelated project when this one was written. Renaming the command to match the
-index would have broken every service unit, every shell history and every page
-of these docs in exchange for nothing, so the index name is the one that gave
-way. `tests/unit/test_packaging.py` reads the distribution name out of
-`pyproject.toml` and checks the installed metadata against it, so the two cannot
-drift apart quietly.
+`tests/unit/test_packaging.py` reads the distribution name out of
+`pyproject.toml` and checks the installed metadata and the console-script entry
+point against it, so the name on the index and the name on the PATH cannot drift
+apart quietly.
 
 ## Cutting a release
 
@@ -66,8 +64,8 @@ You can run all of it yourself:
 ```bash
 python scripts/release.py version --tag v0.2.0
 python -m build
-python scripts/release.py wheel dist/mcp_spec_gateway-0.2.0-py3-none-any.whl
-python scripts/release.py smoke   # uses the mcp-gateway beside this interpreter
+python scripts/release.py wheel dist/mcp_api_gateway-0.2.0-py3-none-any.whl
+python scripts/release.py smoke   # uses the mcp-api-gateway beside this interpreter
 ```
 
 ## A dry run
@@ -91,9 +89,9 @@ GitHub publisher:
 
 | Field | Value |
 |---|---|
-| PyPI project name | `mcp-spec-gateway` |
+| PyPI project name | `mcp-api-gateway` |
 | Owner | `Vidmich` |
-| Repository name | `mcp-gateway` |
+| Repository name | `mcp-api-gateway` |
 | Workflow name | `release.yml` |
 | Environment name | `pypi` |
 
@@ -105,6 +103,12 @@ where you would add a required reviewer, if you want a release to need a human.
 
 Renaming the repository, renaming `release.yml`, or transferring the project to
 another owner all invalidate the publisher. Update it on PyPI at the same time.
+
+The table above names the repository `mcp-api-gateway`, which is what it is
+called after the rename in task 105. If the rename on github.com has not
+happened yet, do it before registering the publisher rather than registering the
+old name and correcting it later: GitHub redirects the old path for people, but
+PyPI matches the publisher on the repository as the OIDC token spells it.
 
 ## Versions
 

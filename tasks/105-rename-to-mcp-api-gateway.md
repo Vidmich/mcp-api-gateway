@@ -97,25 +97,64 @@ the point of the task is that there is one obvious name to be had.
 
 ## Acceptance
 
-- [ ] `mcp-api-gateway` was confirmed unregistered on PyPI at the time of the change, and the check is
+- [x] `mcp-api-gateway` was confirmed unregistered on PyPI at the time of the change, and the check is
       recorded in the task notes.
-- [ ] `pip install .` puts a program called `mcp-api-gateway` on the PATH, and `mcp-api-gateway
+- [x] `pip install .` puts a program called `mcp-api-gateway` on the PATH, and `mcp-api-gateway
       --version` prints `mcp-api-gateway <version>`.
-- [ ] `--help` and every usage line say `mcp-api-gateway`; nothing the program prints says
+- [x] `--help` and every usage line say `mcp-api-gateway`; nothing the program prints says
       `mcp-gateway`.
-- [ ] An MCP client connecting to `/mcp` sees the server named `mcp-api-gateway`, and an upstream sees
+- [x] An MCP client connecting to `/mcp` sees the server named `mcp-api-gateway`, and an upstream sees
       a `User-Agent` of `mcp-api-gateway/<version>`.
-- [ ] `MCP_API_GATEWAY_*` environment variables are read; `MCP_GATEWAY_*` are not, and no code looks
+- [x] `MCP_API_GATEWAY_*` environment variables are read; `MCP_GATEWAY_*` are not, and no code looks
       for them.
-- [ ] The config and data directories resolved with no flags are under `mcp-api-gateway`.
-- [ ] Every page's title and the masthead say `mcp-api-gateway`.
-- [ ] Stored input schemas carry `x-mcp-api-gateway`; a database written before the migration is
+- [x] The config and data directories resolved with no flags are under `mcp-api-gateway`.
+- [x] Every page's title and the masthead say `mcp-api-gateway`.
+- [x] Stored input schemas carry `x-mcp-api-gateway`; a database written before the migration is
       upgraded in place with `input_schema_hash` recomputed, and a test proves a migrated row still
       routes its arguments.
-- [ ] A refresh run straight after the migration reports no operations changed.
-- [ ] No file in the tree contains `mcp-spec-gateway`, and the only occurrences of `mcp-gateway` are
-      inside the string `mcp_gateway` or in a URL that is deliberately historical.
-- [ ] `docs/service-setup.md` reads correctly end to end for somebody following it — the unit name,
+- [x] A refresh run straight after the migration reports no operations changed.
+- [x] No file in the tree contains `mcp-spec-gateway`, and the only occurrences of `mcp-gateway` are
+      inside the string `mcp_gateway`, in the two signing salts this task deliberately leaves alone,
+      in revision 0005's record of the key it renames, and in tasks 001–104, which say what was
+      asked before this task existed. The index says so at the top.
+- [x] `docs/service-setup.md` reads correctly end to end for somebody following it — the unit name,
       the account, the directories and the log paths agree with each other and with the program name.
-- [ ] SPEC.md §1 states the three names as settled fact.
-- [ ] ruff, ruff format, mypy and the whole test suite pass.
+- [x] SPEC.md §1 states the three names as settled fact.
+- [x] ruff, ruff format, mypy and the whole test suite pass.
+
+## Notes
+
+**The availability check.** On 2026-09-07, `https://pypi.org/pypi/mcp-api-gateway/json` answered
+`404`, and so did `mcp-spec-gateway` — the name this project was about to publish under had never
+been used either, which is what made the rename free. `mcp-gateway` itself answers `200`: it is
+taken by an unrelated project, and always was.
+
+**Three deliberate exceptions to "one name".** The import package `mcp_gateway` is the one the task
+names; the other two were named in Out of scope and are worth repeating where somebody will trip
+over them. `SESSION_SALT` and `FLASH_SALT` still read `mcp-gateway.…`, and each now carries a
+comment saying why: a salt is read by nobody, and changing one invalidates every signature already
+in a browser. Revision `0005_extension` keeps `OLD_KEY = "x-mcp-gateway"`, because a migration that
+did not name the thing it renames could not perform the rename.
+
+**The migration carries its own copy of `schema_hash`.** Importing
+`mcp_gateway.openapi.schema.schema_hash` would make an old migration mean something new the day
+that function changed. `tests/integration/test_migrations.py` asserts the copy still agrees with
+the original, so it cannot drift unnoticed, and separate tests prove a row written in the old shape
+is renamed in place, still routes its arguments through `wiring_of`, is reported unchanged by the
+next refresh, and comes back if the revision is downgraded.
+
+**One test needed more than a changed string.**
+`tests/integration/test_serve.py::test_a_signal_shuts_the_process_down_cleanly` started the gateway
+with its stderr on a pipe nothing read until the process was asked to stop. A Windows pipe holds
+about 4 KB, and this revision's extra migration pushed a debug-level startup over that line: the
+child blocked inside a log call before it ever listened, and the health check timed out. The server
+was never at fault. `start_server` now writes the child's stderr to a file in `tmp_path`, which has
+no such limit, and the failure messages quote the log.
+
+**Two things this task could not do from here.** The repository on github.com is still
+`Vidmich/mcp-gateway`; renaming it to `Vidmich/mcp-api-gateway` is a manual step, and PyPI's trusted
+publisher has to be registered against the new name — `docs/releasing.md` now says so beside the
+table. And an installed gateway's per-user directory does not move itself: `docs/configuration.md`
+says plainly that a config file under `%APPDATA%\mcp-gateway\` or `~/.config/mcp-gateway/` is no
+longer found, and that the operator either renames it once or keeps pointing at it with `--config`
+and `--data-dir`.
