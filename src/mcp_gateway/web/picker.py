@@ -16,12 +16,22 @@ things, narrow the filter, tick more, and save: a selection cannot be lost by
 looking somewhere else. It is also what lets the same route answer htmx and a
 browser with no JavaScript at all, since the answer is the same table either way.
 
+**The names are decided here, in boxes.** The Name column is a box per row
+behind the tool prefix, and what is typed into one is stored as the operator's
+override — a decision, not a computed name, so a later prefix rename leaves it
+alone (spec §5.3, task 118). It has to be read back out of the submitted form on
+every request, because everything on this page except Save posts the whole form
+and swaps the table in: a name this module did not return would last exactly
+until the operator narrowed the filter.
+
 **Every name is planned before anything is written.** :func:`register` asks
 :mod:`mcp_gateway.naming` what each operation would be called and whether
 another server has taken it, and refuses the whole save with that module's
 :class:`~mcp_gateway.naming.NamesTaken` if anything collides (spec §5.3):
 renaming the newcomer quietly would break the prompts that had learned the older
-name, and half a server is worse than none.
+name, and half a server is worse than none. A box holding something that is not
+a name at all is refused too, and on its own row rather than above the table —
+nothing outside this page is involved in that one.
 
 **What is saved is one transaction and one review.** The server, its operations,
 the snapshot and the hash go in together, because a server whose operations
@@ -35,7 +45,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,12 +62,19 @@ from mcp_gateway.naming import (
     NamePlan,
     NamesTaken,
     conflict_alerts,
+    default_tool_name,
     name_lead,
     plan_names,
     plan_tool_names,
     sanitize,
     server_slug,
 )
+
+# The other table's words for the same three things. Imported rather than
+# restated because the two pages now offer the same control, and a box that is
+# called one thing before the server exists and another afterwards is two
+# controls to a reader who cannot see either of them (tasks 116 and 118).
+from mcp_gateway.web.detail import NAME_ILLEGAL, NAME_LABEL, NAME_LABEL_WHOLE
 from mcp_gateway.web.wizard import PendingServer
 
 if TYPE_CHECKING:  # pragma: no cover - imported for typing only
@@ -75,6 +92,17 @@ PREFIX_FIELD: Final = "tool_prefix"
 QUERY_FIELD: Final = "q"
 METHOD_FIELD: Final = "method"
 TAG_FIELD: Final = "tag"
+#: What one row's name box posts under, suffixed with the row it belongs to —
+#: its ``op_key``, which is what the row's checkbox already posts as its value.
+#: Written by :func:`name_field` in one place, because the template writes these
+#: names and the route reads them (task 118).
+TOOL_NAME_FIELD: Final = "tool_name"
+#: What the cell prints where the prefix goes, said in words. The cell shows
+#: ``<prefix>__`` and a screen reader announces neither half of it on focus, so
+#: the box's label has to say which half of the name the box is — and saying it
+#: as *the tool prefix* rather than as a value is the same promise the slot
+#: makes: this page never claims a prefix that may have been retyped since.
+PREFIX_SLOT: Final = "the tool prefix"
 #: Which bulk button was pressed, if either was.
 BULK_FIELD: Final = "bulk"
 BULK_ALL: Final = "all"
@@ -152,7 +180,14 @@ class Filter:
 
 @dataclass(frozen=True, slots=True)
 class OperationRow:
-    """One line of the picker: what it is, what it would be called, and its tick."""
+    """One line of the picker: what it is, what it will be called, and its tick.
+
+    The name is a box, and what the operator types into it is the name the
+    server is created with (task 118). The prefix in front of it is printed as
+    a *slot* rather than as a value — which is the one thing this cell does
+    differently from the same cell on the detail page, and :func:`_stem` is
+    where the reason is written down.
+    """
 
     op_key: str
     method: str
@@ -165,14 +200,46 @@ class OperationRow:
     #: :attr:`tool_name` with the server's prefix taken off the front, so the
     #: cell can print the prefix as the slot it is rather than as it stood when
     #: the page last rendered. ``None`` wherever that would be a lie — see
-    #: :func:`_stem` for the two ways it can be.
+    #: :func:`_stem` for the two ways it can be — and the cell then prints
+    #: nothing and shows the whole name in the box.
     stem: str | None
+    #: The placeholder: the generated name — which is what an empty box means —
+    #: in the shape this cell shows a name. Sliced only where the cell prints
+    #: something to slice it against, so what the operator reads across the cell
+    #: is the whole of the name that clearing the box would give them.
+    default_stem: str
     selected: bool
     #: Whether the current filter shows it. A hidden row is still in the form,
     #: still ticked or not, and still saved as such.
     shown: bool
+    #: What is in the name box: what the operator typed, exactly as they typed
+    #: it. Read back out of the submitted form on every request, because the
+    #: filter, both bulk buttons and the header tick box all post this form and
+    #: swap the table back in — a value this page did not return would be erased
+    #: by the next keystroke in the search box.
+    typed: str = ""
     #: Why this name cannot be used, if another operation has it.
     conflict: str | None = None
+    #: Why what is in the box is not a name at all. Not a clash: a clash is
+    #: about the world the name would land in, and this is about the box.
+    error: str | None = None
+
+    @property
+    def name_field(self) -> str:
+        """What this row's name box posts under."""
+        return name_field(self.op_key)
+
+    @property
+    def name_label(self) -> str:
+        """What the box is called to a reader who cannot see the cell.
+
+        The column is headed **Name** and the prefix beside the box is a slot,
+        neither of which a screen reader announces on focus, so the label is
+        where "the part after the prefix" gets said. The detail page's two
+        wordings, because it is the same box (task 116).
+        """
+        wording = NAME_LABEL if self.stem is not None else NAME_LABEL_WHOLE
+        return wording.format(op_key=self.op_key, lead=PREFIX_SLOT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,10 +261,24 @@ class Picker:
     alerts: tuple[str, ...] = ()
     #: Everything wrong with one field, keyed by its name.
     errors: Mapping[str, str] = field(default_factory=dict)
+    #: What the name boxes mean, by ``op_key``: the overrides a save would
+    #: store. Only the boxes with something in them — an empty box is not an
+    #: override and never becomes one, it is the generated name the placeholder
+    #: has been showing (task 118).
+    overrides: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def name(self) -> str:
         return self.pending.name
+
+    @property
+    def invalid(self) -> bool:
+        """Whether any box holds something that is not a name at all.
+
+        A reason to refuse the whole submission, and it is on the rows: the
+        operator has to be told which box, and there may be several.
+        """
+        return any(row.error for row in self.rows)
 
     @property
     def name_note(self) -> str | None:
@@ -275,8 +356,19 @@ def build(
     fields = fields or {}
     prefix = chosen_prefix(fields, pending)
     narrowing = Filter.from_fields(fields)
+    # Every name box, read back out of the form that was posted. Everything else
+    # on this page — the filter, the bulk buttons, the header tick box — posts
+    # this same form and swaps the table back in, so a name this did not read
+    # would survive exactly until the operator narrowed the table (task 118).
+    typed = {
+        operation.op_key: _clean(fields.get(name_field(operation.op_key)))
+        for operation in pending.operations
+    }
+    chosen, illegal = _overrides(prefix, typed)
     plan = plan_names(
-        _named(pending),
+        # Planned *with* the typed names, so the table shows the names that
+        # would be published and the clashes that would actually happen.
+        _named(pending, chosen),
         # A cleared prefix is refused by the save, but the table still has to
         # render: naming everything with no prefix at all is the closest honest
         # answer to "what would these be called".
@@ -296,18 +388,16 @@ def build(
 
     lead = name_lead(prefix)
     rows = tuple(
-        OperationRow(
-            op_key=operation.op_key,
-            method=operation.method,
-            path=operation.path,
-            summary=operation.summary or "",
-            operation_id=operation.operation_id,
-            tags=operation.tags,
-            tool_name=names.get(operation.op_key, ""),
-            stem=_stem(names.get(operation.op_key, ""), lead),
+        _row(
+            operation,
+            prefix=prefix,
+            lead=lead,
+            name=names.get(operation.op_key, ""),
+            typed=typed[operation.op_key],
             selected=everything or operation.op_key in ticked,
             shown=operation.op_key in visible,
             conflict=taken.get(operation.op_key),
+            error=illegal.get(operation.op_key),
         )
         for operation in pending.operations
     )
@@ -319,7 +409,20 @@ def build(
         rows=rows,
         alerts=conflict_alerts(collisions) + tuple(alerts),
         errors=dict(errors or {}),
+        overrides=chosen,
     )
+
+
+def name_field(op_key: str) -> str:
+    """What one row's name box posts under (task 118).
+
+    In one place, because the template writes these names and :func:`build`
+    reads them, and a table where those two spellings drift is a table whose
+    every name box silently empties itself. Keyed by ``op_key`` rather than by
+    position: a row's identity on this page is already its ``op_key``, which is
+    what its checkbox posts, and a position changes with the filter.
+    """
+    return f"{TOOL_NAME_FIELD}-{op_key}"
 
 
 def chosen_prefix(fields: Mapping[str, str], pending: PendingServer) -> str:
@@ -341,6 +444,7 @@ async def register(
     *,
     prefix: str,
     selection: Iterable[str],
+    overrides: Mapping[str, str] | None = None,
     cipher: CredentialCipher,
 ) -> Server:
     """Create the server, its operations and its snapshot, in one transaction.
@@ -350,12 +454,19 @@ async def register(
     session is the request's, so anything that raises after the first write
     still leaves nothing behind: the transaction is committed on the way out of
     the request or not at all.
+
+    ``overrides`` is what the operator typed into the table's name boxes, by
+    ``op_key``. It has to be the mapping the page was rendered from: planning
+    here against different inputs is how a table that showed no clash saves a
+    server with one (task 118).
     """
     base_url = pending.base_url
     if not base_url:
         raise ValueError(NO_BASE_URL)
 
-    plan = await plan_tool_names(session, _named(pending), prefix=prefix, server_name=pending.name)
+    plan = await plan_tool_names(
+        session, _named(pending, overrides), prefix=prefix, server_name=pending.name
+    )
     if not plan.ok:
         raise NamesTaken(plan.conflicts)
 
@@ -400,6 +511,12 @@ def operation_inputs(pending: PendingServer, plan: NamePlan) -> list[repo.Operat
     (spec §7.1).
     """
     names = plan.names
+    # Stored as an override as well as as a name, because it is one: a name the
+    # operator typed is a decision, and a decision recorded only as an effective
+    # name would be moved by the next prefix rename — the opposite of what
+    # ``naming.tool_name`` promises (spec §5.3) — and would open the detail page
+    # as an empty box under a name that looks generated (task 118).
+    chosen = {assignment.op_key: assignment.override for assignment in plan.assignments}
     return [
         repo.OperationInput(
             op_key=operation.op_key,
@@ -411,13 +528,99 @@ def operation_inputs(pending: PendingServer, plan: NamePlan) -> list[repo.Operat
             input_schema=operation.input_schema,
             input_schema_hash=operation.input_schema_hash,
             tool_name=names[operation.op_key],
+            tool_name_override=chosen.get(operation.op_key),
         )
         for operation in pending.operations
     ]
 
 
-def _named(pending: PendingServer) -> list[NamedOperation]:
-    return [NamedOperation.from_extracted(operation) for operation in pending.operations]
+def _named(
+    pending: PendingServer, overrides: Mapping[str, str] | None = None
+) -> list[NamedOperation]:
+    """Every operation as the namer wants it, carrying whatever was typed."""
+    chosen = overrides or {}
+    return [
+        replace(
+            NamedOperation.from_extracted(operation), override=chosen.get(operation.op_key) or None
+        )
+        for operation in pending.operations
+    ]
+
+
+def _overrides(prefix: str, typed: Mapping[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    """What the name boxes mean: the overrides they compose, and the ones that are not names.
+
+    Composed the way :func:`~mcp_gateway.web.detail.save_table` composes one, and
+    for the same reason: the box holds the part after the prefix beside it, so
+    the whole name is that prefix and what was typed. Where there is no prefix
+    to print — a box cleared to nothing, which the save refuses anyway — the
+    lead is empty and the name is what was typed and nothing else.
+
+    An empty box is not an override. It means the generated name, which is what
+    the placeholder has been showing all along (spec §5.3).
+
+    A box that sanitises away to nothing is neither. Nothing outside this page
+    is involved, so it is not a clash: it is answered on the row, and the save
+    is refused before anything is written.
+    """
+    lead = name_lead(prefix)
+    chosen: dict[str, str] = {}
+    illegal: dict[str, str] = {}
+    for op_key, text in typed.items():
+        if not text:
+            continue
+        # Checked on the typed half rather than on the composed name: a stem of
+        # ``"///"`` has nothing in it, and composing first would quietly publish
+        # the bare prefix instead of saying so.
+        stem = sanitize(text)
+        if not stem:
+            illegal[op_key] = NAME_ILLEGAL
+            continue
+        chosen[op_key] = f"{lead}{stem}"
+    return chosen, illegal
+
+
+def _row(
+    operation: NormalizedOperation,
+    *,
+    prefix: str,
+    lead: str,
+    name: str,
+    typed: str,
+    selected: bool,
+    shown: bool,
+    conflict: str | None,
+    error: str | None,
+) -> OperationRow:
+    """One rendered row, and the two halves its name cell is shown in."""
+    stem = _stem(name, lead)
+    default = default_tool_name(
+        prefix,
+        operation_id=operation.operation_id,
+        method=operation.method,
+        path=operation.path,
+    )
+    return OperationRow(
+        op_key=operation.op_key,
+        method=operation.method,
+        path=operation.path,
+        summary=operation.summary or "",
+        operation_id=operation.operation_id,
+        tags=operation.tags,
+        tool_name=name,
+        stem=stem,
+        # Sliced only where the cell prints a slot to slice it against, so that
+        # the placeholder and whatever is printed beside it always read together
+        # as one whole name.
+        default_stem=(
+            default[len(lead) :] if stem is not None and default.startswith(lead) else default
+        ),
+        typed=typed,
+        selected=selected,
+        shown=shown,
+        conflict=conflict,
+        error=error,
+    )
 
 
 def _stem(name: str, lead: str) -> str | None:
@@ -467,15 +670,18 @@ __all__ = [
     "MAX_CONFLICTS_SHOWN",
     "METHOD_FIELD",
     "MORE_CONFLICTS",
+    "NAME_ILLEGAL",
     "NO_BASE_URL",
     "PREFIX_FIELD",
     "PREFIX_REQUIRED",
+    "PREFIX_SLOT",
     "QUERY_FIELD",
     "SAVED",
     "SELECTION_FIELD",
     "SUMMARY",
     "SUMMARY_FILTERED",
     "TAG_FIELD",
+    "TOOL_NAME_FIELD",
     "Filter",
     "NamesTaken",
     "OperationRow",
@@ -483,6 +689,7 @@ __all__ = [
     "build",
     "chosen_prefix",
     "conflict_alerts",
+    "name_field",
     "operation_inputs",
     "register",
 ]

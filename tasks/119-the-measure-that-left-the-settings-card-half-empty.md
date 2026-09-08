@@ -98,17 +98,17 @@ argument beside it is a rule somebody reinstates next year.
 
 ## Acceptance
 
-- [ ] In reading mode the Settings card's values use the width of the card, and a long base URL no
+- [x] In reading mode the Settings card's values use the width of the card, and a long base URL no
       longer wraps with half a card empty beside it.
-- [ ] In editing mode every box fills the card, including the four inside the Rate limit, API
+- [x] In editing mode every box fills the card, including the four inside the Rate limit, API
       authentication and Spec download fieldsets, and the rename preview uses the width too.
-- [ ] Hints, errors, `form__lead`, `form__note` and `fieldset__note` still wrap at a reading
+- [x] Hints, errors, `form__lead`, `form__note` and `fieldset__note` still wrap at a reading
       measure, and that measure is written in one place.
-- [ ] The add-server wizard, the configuration page, the login card, `.page-note` and the error
+- [x] The add-server wizard, the configuration page, the login card, `.page-note` and the error
       pages are exactly as wide as they are today.
-- [ ] The comment on the `.form--wide` block states the rule this task settled and the reason for
+- [x] The comment on the `.form--wide` block states the rule this task settled and the reason for
       it.
-- [ ] Checked at a wide window and at a narrow one: nothing overflows its card, and the settings
+- [x] Checked at a wide window and at a narrow one: nothing overflows its card, and the settings
       card still shares a right edge with the summary above it.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes unchanged — no
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes unchanged — no
       test asserts a width, which is also why this one is checked by looking at it.

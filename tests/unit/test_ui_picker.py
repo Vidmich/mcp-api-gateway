@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,7 @@ from mcp_gateway.web.auth import LOGIN_PATH
 from mcp_gateway.web.picker import (
     MAX_CONFLICTS_SHOWN,
     MORE_CONFLICTS,
+    NAME_ILLEGAL,
     NO_BASE_URL,
     PREFIX_REQUIRED,
     SUMMARY,
@@ -57,6 +59,7 @@ from mcp_gateway.web.picker import (
     build,
     chosen_prefix,
     conflict_alerts,
+    name_field,
     register,
 )
 from mcp_gateway.web.routes_ui import NEW_SERVER_PATH, PREVIEW_GONE, SERVERS_PATH
@@ -103,6 +106,15 @@ DOCUMENT: dict[str, Any] = {
         },
         "/health": {"get": {"operationId": "health", "summary": "Is it up", "responses": {}}},
     },
+}
+
+#: One endpoint the document says nothing about, which is what a row with no
+#: note under its path looks like.
+UNDESCRIBED: dict[str, Any] = {
+    "openapi": "3.0.3",
+    "info": {"title": "Petstore", "version": "1.0.0"},
+    "servers": [{"url": "https://api.example.com/v2"}],
+    "paths": {"/pets": {"get": {"operationId": "listPets", "responses": {}}}},
 }
 
 #: An ``operationId`` too long to survive ``petstore__`` in front of it, so the
@@ -192,6 +204,16 @@ def preview_of(http: TestClient, **fields: str) -> str:
     return str(posted.headers["location"])
 
 
+def rows_of(body: str) -> str:
+    """The picker's table body, so a test can say what is not in a row.
+
+    The page around it holds the same words for other reasons — "pets" is a tag
+    in the filter's selector, and the display name carries a ``cell-note`` of
+    its own — and those are not what a question about the table is asking.
+    """
+    return body.split("<tbody>")[1].split("</tbody>")[0]
+
+
 def checked_ops(body: str) -> set[str]:
     """The ``op_key`` of every checkbox rendered as ticked.
 
@@ -241,6 +263,7 @@ def stored(settings: Settings) -> list[dict[str, Any]]:
                                     operation.selected,
                                     operation.status,
                                     operation.effective_tool_name,
+                                    operation.tool_name_override,
                                 )
                                 for operation in operations
                             },
@@ -450,6 +473,93 @@ def test_a_name_that_had_to_be_cut_down_has_no_honest_slot() -> None:
     assert len(row.tool_name) == MAX_TOOL_NAME
     assert row.tool_name.startswith("petstore__")
     assert row.stem is None
+
+
+def test_a_name_box_starts_empty_with_the_generated_name_behind_it() -> None:
+    # An empty box means the generated name, and the placeholder is what that
+    # name would be — so clearing the box shows what clearing it means before
+    # the operator does it.
+    picker = build(TOKEN, a_pending(), {"tool_prefix": "petstore"}, EVERYTHING)
+
+    assert [row.typed for row in picker.rows] == ["", "", ""]
+    assert [row.default_stem for row in picker.rows] == ["listPets", "addPet", "health"]
+    assert picker.overrides == {}
+
+
+def test_a_typed_name_is_planned_with_the_prefix_in_front_of_it() -> None:
+    fields = {"tool_prefix": "petstore", name_field(LIST_PETS): "every_pet"}
+    picker = build(TOKEN, a_pending(), fields, EVERYTHING)
+
+    assert picker.overrides == {LIST_PETS: "petstore__every_pet"}
+    # The table is showing the name the save would publish, not the one the
+    # document would have generated.
+    assert picker.rows[0].tool_name == "petstore__every_pet"
+    assert picker.rows[0].typed == "every_pet"
+    # And what clearing the box would give them is still under it.
+    assert picker.rows[0].default_stem == "listPets"
+
+
+def test_a_typed_name_is_sanitised_the_way_the_other_table_sanitises_one() -> None:
+    fields = {"tool_prefix": "petstore", name_field(LIST_PETS): "every pet!"}
+    picker = build(TOKEN, a_pending(), fields, EVERYTHING)
+
+    assert picker.overrides == {LIST_PETS: "petstore__every_pet"}
+    # The box comes back holding what was typed into it, not the tidied
+    # version: a box that rewrote itself under the caret would be worse than a
+    # name that says what it will become.
+    assert picker.rows[0].typed == "every pet!"
+
+
+def test_a_box_with_nothing_usable_in_it_is_not_a_name_and_not_a_clash() -> None:
+    fields = {"tool_prefix": "petstore", name_field(LIST_PETS): "///"}
+    picker = build(TOKEN, a_pending(), fields, EVERYTHING)
+
+    assert picker.invalid is True
+    assert picker.rows[0].error == NAME_ILLEGAL
+    assert picker.rows[0].conflict is None
+    # Not composed into the bare prefix, which is what publishing it would
+    # quietly have done.
+    assert picker.overrides == {}
+
+
+def test_a_name_box_with_no_prefix_to_print_holds_the_whole_name() -> None:
+    # The two rows where a slot would be a lie hold all of the name, and the
+    # placeholder is all of the generated one, so the cell reads as one name
+    # either way.
+    cleared = build(TOKEN, a_pending(), {"tool_prefix": " "}, EVERYTHING)
+    cut_down = build(TOKEN, a_pending(OVERLONG), {"tool_prefix": "petstore"}, None)
+
+    assert cleared.rows[0].stem is None
+    assert cleared.rows[0].default_stem == "listPets"
+    assert cut_down.rows[0].stem is None
+    assert cut_down.rows[0].default_stem == cut_down.rows[0].tool_name
+
+
+def test_the_box_is_labelled_by_which_half_of_the_name_it_holds() -> None:
+    # The column is headed Name and the prefix beside the box is a slot, and a
+    # screen reader announces neither on focus.
+    prefixed = build(TOKEN, a_pending(), {"tool_prefix": "petstore"}, EVERYTHING)
+    whole = build(TOKEN, a_pending(), {"tool_prefix": " "}, EVERYTHING)
+
+    assert prefixed.rows[0].name_label == "Tool name for GET /pets, the part after the tool prefix"
+    assert whole.rows[0].name_label == "Tool name for GET /pets, in full"
+
+
+def test_two_rows_given_one_name_clash_with_each_other() -> None:
+    # Which the picker has always caught between generated names; a name the
+    # operator typed is the same collision arriving a different way.
+    fields = {
+        "tool_prefix": "petstore",
+        name_field(LIST_PETS): "pets",
+        name_field(ADD_PET): "pets",
+    }
+    picker = build(TOKEN, a_pending(), fields, EVERYTHING)
+
+    # First come, first served in document order: the second is the claimant,
+    # and the claimant is the row that would have to move.
+    assert picker.rows[0].conflict is None
+    assert picker.rows[1].conflict is not None
+    assert "petstore__pets" in picker.rows[1].conflict
 
 
 def test_the_prefix_defaults_to_a_slug_of_the_name() -> None:
@@ -685,6 +795,181 @@ def test_a_ticked_operation_can_be_called_without_restarting_anything(
         # Ordered by path, which is how the tool list is served, not by the
         # order they were ticked in.
         assert tool_names(http) == ["petstore__health", "petstore__listPets"]
+
+
+def test_a_typed_name_is_what_the_server_publishes_and_is_stored_as_a_choice(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    """The names are decided on the page that decides them (task 118).
+
+    Stored as an override as well as as an effective name, because it is one: a
+    name recorded only as an effective name would be moved by the next prefix
+    rename and would open the detail page as an empty box under a name that
+    looks generated.
+    """
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path, mcp=True) as http:
+        http.post(
+            preview_of(http),
+            data={
+                "tool_prefix": "petstore",
+                "op": [LIST_PETS, HEALTH],
+                name_field(LIST_PETS): "every_pet",
+            },
+            headers=HTML,
+        )
+        published = tool_names(http)
+
+    assert "petstore__every_pet" in published
+    [server] = stored(settings)
+    assert server["operations"][LIST_PETS][2] == "petstore__every_pet"
+    assert server["operations"][LIST_PETS][3] == "petstore__every_pet"
+    # A box nobody typed in is the generated name, and no choice to record.
+    assert server["operations"][ADD_PET][2] == "petstore__addPet"
+    assert server["operations"][ADD_PET][3] is None
+
+
+def test_a_name_typed_on_step_two_opens_the_detail_page_in_its_box(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    # The two tables are the same table, and this is what says so: what was
+    # typed before the server existed is what the box holds afterwards, with
+    # the prefix printed in front of it rather than swallowed (task 118).
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        http.post(
+            preview_of(http),
+            data={
+                "tool_prefix": "petstore",
+                "op": list(EVERYTHING),
+                name_field(LIST_PETS): "every_pet",
+            },
+            headers=HTML,
+        )
+        listing = http.get(SERVERS_PATH, headers=HTML).text
+        found = re.search(rf"{SERVERS_PATH}/(\d+)", listing)
+        assert found is not None
+        detail = http.get(f"{SERVERS_PATH}/{found.group(1)}", headers=HTML).text
+
+    assert 'value="every_pet"' in detail
+    assert '<code class="name-lead">petstore__</code>' in detail
+    # And the rows nobody named still show their generated name as a
+    # placeholder behind an empty box.
+    assert 'placeholder="addPet"' in detail
+
+
+def test_a_typed_name_survives_the_filter_that_is_typed_next(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    # Every control on this page except Save posts the whole form and swaps the
+    # table back in, so a name the server did not read back would be erased by
+    # the next keystroke in the search box.
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        preview_path = preview_of(http)
+        fragment = http.post(
+            f"{preview_path}/operations",
+            data={
+                "tool_prefix": "petstore",
+                "q": "pets",
+                "op": list(EVERYTHING),
+                name_field(LIST_PETS): "every_pet",
+            },
+            headers=HTMX,
+        )
+
+    assert fragment.status_code == 200
+    assert 'value="every_pet"' in fragment.text
+    assert checked_ops(fragment.text) == set(EVERYTHING)
+
+
+def test_two_rows_given_the_same_name_refuse_the_save_with_everything_intact(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        refused = http.post(
+            preview_of(http),
+            data={
+                "tool_prefix": "petstore",
+                "op": [LIST_PETS, ADD_PET],
+                name_field(LIST_PETS): "pets",
+                name_field(ADD_PET): "pets",
+            },
+            headers=HTML,
+        )
+
+    assert refused.status_code == 409
+    assert "Name taken" in refused.text
+    # The cell beside the marker holds a box now, so the marker is what spells
+    # the name out.
+    assert "&#39;petstore__pets&#39; is already taken" in refused.text
+    # In the table rather than in the page: "pets" is also a tag, and the tag
+    # selector above the table has an option holding it.
+    assert rows_of(refused.text).count('value="pets"') == 2
+    assert checked_ops(refused.text) == {LIST_PETS, ADD_PET}
+    assert stored(settings) == []
+
+
+def test_a_name_box_holding_something_that_is_not_a_name_writes_nothing(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    # Not a clash — nothing outside this page is involved — so it is answered
+    # on the row, at 422 rather than 409.
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        refused = http.post(
+            preview_of(http),
+            data={
+                "tool_prefix": "petstore",
+                "op": [ADD_PET],
+                name_field(LIST_PETS): "///",
+            },
+            headers=HTML,
+        )
+
+    assert refused.status_code == 422
+    assert NAME_ILLEGAL in refused.text
+    assert "row--invalid" in refused.text
+    assert refused.text.count("row--invalid") == 1
+    assert checked_ops(refused.text) == {ADD_PET}
+    assert stored(settings) == []
+
+
+def test_a_name_another_server_publishes_comes_back_with_the_names_still_typed(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    # The refusal that was already here, with a name typed into one of the
+    # boxes: what it has to bring back is now the ticks and the typing.
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        http.post(preview_of(http), data={"tool_prefix": "petstore"}, headers=HTML)
+        refused = http.post(
+            preview_of(http),
+            data={
+                "tool_prefix": "petstore",
+                "op": [LIST_PETS],
+                name_field(HEALTH): "up",
+            },
+            headers=HTML,
+        )
+
+    assert refused.status_code == 409
+    assert 'value="up"' in refused.text
+    assert checked_ops(refused.text) == {LIST_PETS}
+    assert len(stored(settings)) == 1
 
 
 # --- refusing to save --------------------------------------------------------
@@ -971,10 +1256,97 @@ def test_the_name_column_is_headed_name_and_shows_the_prefix_as_a_slot(
         body = http.get(preview_of(http), headers=HTML).text
 
     assert '<th scope="col">Name</th>' in body
-    assert "Tool name" not in body
-    assert "&lt;prefix&gt;</var>__listPets" in body
+    # Not "Tool name": two headings a card apart reading "Tool prefix" and
+    # "Tool name" describe two settings rather than one name built out of the
+    # other (task 116). The label a screen reader reads on the box does say
+    # "Tool name", which is the one place it is not next to the prefix field.
+    assert '<th scope="col">Tool name</th>' not in body
+    assert "&lt;prefix&gt;</var>__</code>" in body
+    assert 'placeholder="listPets"' in body
     # The prefix as it stands is in the box above the table, and only there.
     assert "petstore__listPets" not in body
+
+
+def test_the_name_cell_is_a_box_the_operator_can_type_into(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(preview_of(http), headers=HTML).text
+
+    assert f'name="{name_field(LIST_PETS)}"' in body
+    assert 'aria-label="Tool name for GET /pets, the part after the tool prefix"' in body
+    assert body.count('class="field__input"') >= 3
+
+
+def test_the_summary_is_a_note_under_the_path_and_has_no_column_of_its_own(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(preview_of(http), headers=HTML).text
+
+    assert '<th scope="col">Summary</th>' not in body
+    assert '<span class="cell-note">List every pet</span>' in rows_of(body)
+
+
+def test_a_row_the_document_says_nothing_about_prints_nothing_under_its_path(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    # The Summary column used to fall back to the ``operationId`` rather than
+    # leave the widest column blank. Under the path that would print it twice:
+    # the box in the next cell is showing the same string.
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=UNDESCRIBED))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(preview_of(http), headers=HTML).text
+
+    assert "cell-note" not in rows_of(body)
+    assert 'placeholder="listPets"' in body
+
+
+def test_a_filter_that_matches_nothing_says_so_across_the_whole_table(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        preview_path = preview_of(http)
+        fragment = http.post(
+            f"{preview_path}/operations",
+            data={"tool_prefix": "petstore", "q": "nothing like this", "op": list(EVERYTHING)},
+            headers=HTMX,
+        )
+
+    assert 'colspan="4"' in fragment.text
+    assert "Nothing here matches the filter" in fragment.text
+    # And nothing it hid was unticked by hiding it.
+    assert checked_ops(fragment.text) == set(EVERYTHING)
+
+
+def test_step_two_names_the_server_in_its_outline_rather_than_in_a_bar(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    # The bar held the name and nothing else, three lines above the labelled
+    # row task 115 added for the same name — and that row says what it is,
+    # which is the whole reason it exists (task 120).
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(preview_of(http, name="Pet Store"), headers=HTML).text
+
+    assert '<div class="toolbar">' not in body
+    # Worded the way the title is: the name, and what is being done with it.
+    assert '<h1 class="visually-hidden">Add a server: Pet Store</h1>' in body
+    assert body.count("<h1") == 1
+    assert "Display name" in body
 
 
 def test_the_display_name_is_shown_on_the_page_that_settles_it(

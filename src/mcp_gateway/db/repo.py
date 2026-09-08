@@ -444,6 +444,13 @@ class OperationInput(BaseModel):
     #: The effective tool name for a *new* row. An existing row keeps the name it
     #: has, so a refresh can never rename a tool a client is already calling.
     tool_name: str = Field(min_length=1, max_length=128)
+    #: The operator's chosen name, when the name above is one they chose. Only
+    #: the add-server wizard sends one — a name typed on step 2 is a decision,
+    #: and a decision stored as an effective name alone would be undone by the
+    #: next prefix rename and shown on the detail page as a box nobody had
+    #: filled in (spec §5.3, task 118). Written on insert with everything else
+    #: here; like the rest of it, an existing row's is never touched.
+    tool_name_override: str | None = None
 
 
 class OperationSync(BaseModel):
@@ -1204,6 +1211,11 @@ async def upsert_operations(
                     input_schema=item.input_schema,
                     input_schema_hash=item.input_schema_hash,
                     effective_tool_name=item.tool_name,
+                    # ``None`` from a refresh and from the built-in server,
+                    # which name operations rather than letting anybody name
+                    # them; a name typed on step 2 of the wizard arrives here
+                    # (task 118).
+                    tool_name_override=item.tool_name_override,
                     selected=False,
                     status="new",
                     first_seen_at=seen_at,

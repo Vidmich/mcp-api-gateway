@@ -181,30 +181,30 @@ and marks the row.
 
 ## Acceptance
 
-- [ ] The picker's table has four columns — Pick, Method, Path, Name — and the empty state spans
+- [x] The picker's table has four columns — Pick, Method, Path, Name — and the empty state spans
       four.
-- [ ] An operation's summary is a note under its path, no row prints an `operationId` in place of a
+- [x] An operation's summary is a note under its path, no row prints an `operationId` in place of a
       missing one, and the filter still finds a row by either.
-- [ ] Every row's name cell shows `<prefix>__` as the slot it is, followed by a box holding only the
+- [x] Every row's name cell shows `<prefix>__` as the slot it is, followed by a box holding only the
       part after it, with the generated stem as its placeholder and an `aria-label` saying which
       half the box is.
-- [ ] A row whose planned name cannot honestly be split — a cleared prefix, a name that had to be
+- [x] A row whose planned name cannot honestly be split — a cleared prefix, a name that had to be
       cut down — shows the whole name in the box with nothing printed in front of it.
-- [ ] Typing a name, then filtering, ticking a column, pressing a bulk button or clearing the search
+- [x] Typing a name, then filtering, ticking a column, pressing a bulk button or clearing the search
       box, leaves every typed name where it was typed.
-- [ ] Saving publishes `<prefix>__<what was typed>`, an empty box publishes the generated name, and
+- [x] Saving publishes `<prefix>__<what was typed>`, an empty box publishes the generated name, and
       what was typed is stored as `tool_name_override` — so the detail page opens with that name in
       its box, and a later prefix rename leaves it alone.
-- [ ] A refresh and the built-in server still write operations with no override, and an existing
+- [x] A refresh and the built-in server still write operations with no override, and an existing
       row's override is still never touched by `upsert_operations`.
-- [ ] Two rows given the same name refuse the save at `409` with the second one marked, and the name
+- [x] Two rows given the same name refuse the save at `409` with the second one marked, and the name
       itself legible from the marker.
-- [ ] A name another server already publishes refuses the save at `409` exactly as it does now, with
+- [x] A name another server already publishes refuses the save at `409` exactly as it does now, with
       every tick and every typed name still on the page.
-- [ ] A name that sanitises away to nothing refuses the save at `422`, marks its own row, and writes
+- [x] A name that sanitises away to nothing refuses the save at `422`, marks its own row, and writes
       nothing.
-- [ ] The prefix, the ticks, the filter and the alerts all come back on every refusal, as they do
+- [x] The prefix, the ticks, the filter and the alerts all come back on every refusal, as they do
       today.
-- [ ] SPEC §7.1's step-2 bullet describes the table as it now is.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] SPEC §7.1's step-2 bullet describes the table as it now is.
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where this task made them wrong.

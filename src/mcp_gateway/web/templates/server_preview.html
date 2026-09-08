@@ -25,9 +25,12 @@
 {% endblock %}
 
 {% block content %}
-<div class="toolbar">
-  <h1 class="toolbar__title">{{ picker.name }}</h1>
-</div>
+{# The page's heading, in the outline and nowhere else. It sat in a bar with no
+   actions in it, repeating a name the Display name row three lines below now
+   states and labels — which is the whole reason that row exists (task 115).
+   Kept because a page with no h1 is a page a screen reader cannot summarise,
+   and worded like the title: the name, and what is being done with it. #}
+<h1 class="visually-hidden">Add a server: {{ picker.name }}</h1>
 
 {% if picker.alerts %}
 <ul class="flashes" role="alert">

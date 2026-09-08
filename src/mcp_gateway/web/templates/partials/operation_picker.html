@@ -22,7 +22,7 @@
     role="status"
     data-summary="{{ picker.summary_template }}"
   >{{ picker.summary }}</p>
-  <table class="table">
+  <table class="table table--editable">
     <thead>
       <tr>
         <th scope="col" class="pick">
@@ -44,13 +44,22 @@
         </th>
         <th scope="col">Method</th>
         <th scope="col">Path</th>
-        <th scope="col">Summary</th>
+        {# No Summary column. The cell beside it is a box now, and a column of
+           prose next to a control makes the control the narrowest thing on the
+           row — which is why the detail page lost its Description column at
+           task 116. The sentence did not go: it is under the path, where that
+           table already puts one (task 118). #}
         <th scope="col">Name</th>
       </tr>
     </thead>
     <tbody>
       {% for row in picker.rows %}
-      <tr {% if not row.shown %}hidden{% endif %}>
+      {#- One line of attributes, written so an untouched row renders exactly as
+          it always has: a class of nothing at all would be markup nobody asked
+          for on two hundred rows. #}
+      <tr
+        {%- if not row.shown %} hidden{% endif %}
+        {%- if row.error %} class="row--invalid"{% endif %}>
         <td class="pick">
           <input
             type="checkbox"
@@ -69,29 +78,53 @@
           {% for tag in row.tags %}
           <span class="badge badge--tag">{{ tag }}</span>
           {% endfor %}
+          {# What the document says this endpoint does, where the detail page
+             puts the same sentence. No fallback to the ``operationId``: the box
+             in the next cell is showing it, since sanitising only takes out
+             what a tool name may not contain (task 118). #}
+          {% if row.summary %}
+          <span class="cell-note">{{ row.summary }}</span>
+          {% endif %}
         </td>
-        <td>{{ row.summary or row.operation_id or "" }}</td>
         <td>
           {# The prefix as the slot it is rather than as it stood when this page
              last rendered: the box above is typed in without posting, and a
              name that claimed a prefix nobody has any more would be worse than
-             one that says where the prefix goes. Shown whole where a slot would
-             not be true — a cleared prefix, or a name that had to be cut down
-             (task 115). #}
-          {% if row.stem is not none %}
-          <code><var class="name-slot">&lt;prefix&gt;</var>__{{ row.stem }}</code>
-          {% else %}
-          <code>{{ row.tool_name }}</code>
-          {% endif %}
+             one that says where the prefix goes. This is the one thing this
+             cell does differently from the same cell on the detail page, where
+             the prefix is saved before the table is rendered against it. Shown
+             whole where a slot would not be true — a cleared prefix, or a name
+             that had to be cut down (tasks 115 and 118). #}
+          <span class="name-box">
+            {% if row.stem is not none %}
+            <code class="name-lead"><var class="name-slot">&lt;prefix&gt;</var>__</code>
+            {% endif %}
+            <input
+              class="field__input"
+              type="text"
+              name="{{ row.name_field }}"
+              value="{{ row.typed }}"
+              {# The generated name, shown the way the box shows one, so that
+                 clearing the box shows what clearing it means before the
+                 operator does it. #}
+              placeholder="{{ row.default_stem }}"
+              aria-label="{{ row.name_label }}"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </span>
           {% if row.conflict %}
           {{ status_badge("error", label="Name taken", title=row.conflict) }}
+          {% endif %}
+          {% if row.error %}
+          <span class="field__error" role="alert">{{ row.error }}</span>
           {% endif %}
         </td>
       </tr>
       {% endfor %}
       {% if not picker.shown %}
       <tr>
-        <td colspan="5">Nothing here matches the filter. Everything ticked is still ticked.</td>
+        <td colspan="4">Nothing here matches the filter. Everything ticked is still ticked.</td>
       </tr>
       {% endif %}
     </tbody>

@@ -977,9 +977,10 @@ def ui_router() -> APIRouter:
     async def save_server(request: Request, token: str, session: Session) -> Response:
         """Create the server and everything that belongs to it, or none of it.
 
-        The three ways this is refused all come back as the same page with the
-        same ticks: a prefix that is not a prefix, a document that never said
-        where its API lives, and a tool name another server already publishes.
+        The four ways this is refused all come back as the same page with the
+        same ticks and the same typed names: a prefix that is not a prefix, a
+        name box holding something that is not a name, a document that never
+        said where its API lives, and a tool name another server publishes.
         """
         pending = _previews(request).get(token)
         if pending is None:
@@ -996,6 +997,11 @@ def ui_router() -> APIRouter:
                 ),
                 status_code=422,
             )
+        if picker.invalid:
+            # Already marked, row by row, by the picker that was just built: the
+            # operator has to be told which box, and there may be several
+            # (task 118).
+            return _refused(request, picker, status_code=422)
         if not pending.base_url:
             return _refused(
                 request,
@@ -1009,6 +1015,7 @@ def ui_router() -> APIRouter:
                 pending,
                 prefix=picker.prefix,
                 selection=picker.selected,
+                overrides=picker.overrides,
                 cipher=cipher,
             )
         except NamesTaken as taken:

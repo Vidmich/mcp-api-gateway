@@ -392,10 +392,12 @@ def settings_card(body: str) -> str:
     """The settings card on its own, so a test can say what is not in it.
 
     Cut at the Tools heading below it, because the interesting assertions here
-    are negative and the rest of the page is full of boxes (task 113).
+    are negative and the rest of the page is full of boxes (task 113). The
+    heading is the page's landmark rather than a bar of its own since task 120,
+    but it is still what separates the card from the table.
     """
     start = body.index(f'id="{SETTINGS_ID}"')
-    return body[start : body.index('<h2 class="toolbar__title">Tools</h2>', start)]
+    return body[start : body.index('<h2 class="visually-hidden">Tools</h2>', start)]
 
 
 def edit_link(body: str) -> str | None:
@@ -1445,6 +1447,30 @@ def test_the_page_calls_them_tools_and_dates_the_download(tmp_path: Path) -> Non
     assert "Last spec download" in body
     assert ">Operations</h2>" not in body
     assert "Last refresh" not in body
+
+
+def test_the_tools_heading_is_a_landmark_rather_than_a_bar_of_its_own(
+    tmp_path: Path,
+) -> None:
+    """One word in a wrapper meant to hold buttons is not a toolbar (task 120).
+
+    The heading stays where a screen reader can find it: the page is a settings
+    card and a table two hundred rows long, and an ``h1`` on its own is one
+    landmark for both of them.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+        editing = http.get(f"{SERVERS_PATH}/{server_id}?edit=1", headers=HTML).text
+
+    for page in (body, editing):
+        assert '<h2 class="visually-hidden">Tools</h2>' in page
+        assert '<h2 class="toolbar__title">' not in page
+        # The one bar left is the page's actions, which is what a toolbar is.
+        assert page.count('<div class="toolbar">') == 1
+        assert '<h1 class="toolbar__title">' in page
 
 
 def test_the_page_offers_the_boxes_and_says_what_is_in_force(tmp_path: Path) -> None:

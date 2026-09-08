@@ -465,6 +465,76 @@ async def test_an_unchanged_spec_changes_nothing(session: Any, cipher: Credentia
     assert sync.needs_attention is False
 
 
+async def test_an_insert_carries_a_chosen_name_and_invents_none(
+    session: Any, cipher: CredentialCipher
+) -> None:
+    """Only a caller that had somebody choose one sends an override (task 118).
+
+    The add-server wizard does, because its table is a column of boxes; a
+    refresh and the built-in server name their operations rather than letting
+    anybody name them, so they send nothing and the column stays null — which
+    is what keeps a later prefix rename free to move those names.
+    """
+    server = await a_registered_server(session, cipher)
+
+    await repo.upsert_operations(
+        session,
+        server.id,
+        [
+            an_operation("GET /pets"),
+            OperationInput(
+                op_key="POST /pets",
+                operation_id="addPet",
+                method="POST",
+                path="/pets",
+                input_schema_hash="hash-1",
+                tool_name="petstore__every_pet",
+                tool_name_override="petstore__every_pet",
+            ),
+        ],
+    )
+
+    stored = {row.op_key: row for row in await repo.list_operations(session, server.id)}
+    assert stored["GET /pets"].tool_name_override is None
+    assert stored["POST /pets"].tool_name_override == "petstore__every_pet"
+    assert stored["POST /pets"].effective_tool_name == "petstore__every_pet"
+
+
+async def test_a_refresh_never_reaches_the_override_of_a_row_that_exists(
+    session: Any, cipher: CredentialCipher
+) -> None:
+    # Not even when it carries one of its own: the existing-row branch writes
+    # the spec's own text and nothing the operator decided (task 118).
+    server = await a_registered_server(session, cipher)
+    await with_operations(session, server, "GET /pets")
+    operation = (await repo.list_operations(session, server.id))[0]
+    await repo.update_operation(
+        session,
+        operation.id,
+        OperationPatch(tool_name_override="list_pets", effective_tool_name="list_pets"),
+    )
+
+    await repo.upsert_operations(
+        session,
+        server.id,
+        [
+            OperationInput(
+                op_key="GET /pets",
+                operation_id="get_pets",
+                method="GET",
+                path="/pets",
+                input_schema_hash="hash-1",
+                tool_name="petstore__get_pets",
+                tool_name_override="petstore__something_else",
+            )
+        ],
+    )
+
+    stored = (await repo.list_operations(session, server.id))[0]
+    assert stored.tool_name_override == "list_pets"
+    assert stored.effective_tool_name == "list_pets"
+
+
 async def test_a_changed_schema_keeps_the_selection_and_the_overrides(
     session: Any, cipher: CredentialCipher
 ) -> None:

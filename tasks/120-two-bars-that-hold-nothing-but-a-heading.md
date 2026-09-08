@@ -92,15 +92,15 @@ toolbar and by the four page titles above. Nothing here becomes dead.
 
 ## Acceptance
 
-- [ ] Neither page renders a `.toolbar` containing only a heading; the detail page's action toolbar
+- [x] Neither page renders a `.toolbar` containing only a heading; the detail page's action toolbar
       and the four page-title bars elsewhere are unchanged.
-- [ ] The detail page still has a second-level heading reading **Tools** in its outline, and the
+- [x] The detail page still has a second-level heading reading **Tools** in its outline, and the
       page still does not use the word *Operations* as a heading (task 103).
-- [ ] Step 2 of the wizard still has exactly one `<h1>`, it names the server and what is being done
+- [x] Step 2 of the wizard still has exactly one `<h1>`, it names the server and what is being done
       with it, and the **Display name** row is still the visible statement of the name.
-- [ ] `settings_card()` and every negative assertion that uses it still cut the page where they mean
+- [x] `settings_card()` and every negative assertion that uses it still cut the page where they mean
       to.
-- [ ] The vertical space between the settings card and the note below it, and above the summary on
+- [x] The vertical space between the settings card and the note below it, and above the summary on
       step 2, was looked at at a wide window and a narrow one and is deliberate.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where this task made them wrong.
