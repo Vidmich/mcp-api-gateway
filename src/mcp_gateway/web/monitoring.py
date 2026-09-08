@@ -516,7 +516,7 @@ def bytes_chart(report: UsageReport, labels: tuple[str, ...]) -> Chart:
         id=CHART_BYTES,
         title="Bytes transmitted",
         note="Sent to upstreams and received from them, stacked per server. "
-        "Request and response bodies only.",
+        "Whole messages — headers as well as bodies.",
         unit="bytes",
         labels=labels,
         datasets=tuple(datasets),

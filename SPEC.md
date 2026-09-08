@@ -193,7 +193,7 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 
 ### `metric_buckets`
 
-Unique on `(bucket_start, server_id, kind)`. `kind` is `tool_call`, `tools_list` or `throttled`. Columns: `calls`, `errors`, `bytes_out`, `bytes_in`, `duration_ms_sum`. `server_id` is null for `tools_list`. A `throttled` row counts refusals in `calls` and leaves every other counter at zero; what that number means is the `kind`'s business, which is why it is read back as a series of its own rather than as traffic.
+Unique on `(bucket_start, server_id, kind)`. `kind` is `tool_call`, `tools_list` or `throttled`. Columns: `calls`, `errors`, `bytes_out`, `bytes_in`, `duration_ms_sum`. The two byte counters are whole HTTP messages — request or status line, headers and body, the body counted as it arrived rather than as `http.max_response_bytes` left it — because a count of bodies alone is zero for every `GET`, which is most of an API. `server_id` is null for `tools_list`. A `throttled` row counts refusals in `calls` and leaves every other counter at zero; what that number means is the `kind`'s business, which is why it is read back as a series of its own rather than as traffic.
 
 ### `call_errors`
 

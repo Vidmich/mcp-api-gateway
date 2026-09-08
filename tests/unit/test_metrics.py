@@ -739,7 +739,12 @@ async def test_a_call_through_the_proxy_is_counted(upstream: Upstream, meter: Me
 
     (bucket,) = meter.drain().buckets
     assert (bucket.calls, bucket.errors) == (2, 0)
-    assert bucket.bytes_in == 2 * len(body)
+    # Two whole messages each way, so both counters are the two calls added up
+    # and both are more than the bodies alone — the request had none at all
+    # (task 122). What each number is made of is test_mcp_proxy's business.
+    assert bucket.bytes_in > 2 * len(body)
+    assert bucket.bytes_in % 2 == 0
+    assert bucket.bytes_out > 0
     assert bucket.server_id == 1
 
 

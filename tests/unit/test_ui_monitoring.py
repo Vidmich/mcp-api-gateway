@@ -1011,6 +1011,24 @@ def test_the_script_and_the_templates_agree_about_the_names_they_share() -> None
     assert f'"{USAGE_ID}"' in source
 
 
+def test_the_script_redraws_on_a_history_restore_as_well_as_a_swap() -> None:
+    """Back and Forward are a way to switch range, because the links push a URL.
+
+    htmx restores such an entry by replacing the body and firing
+    htmx:historyRestore — never htmx:afterSwap — so a script that redrew only on
+    the swap left four blank canvases behind every press of Back until the next
+    poll happened to fix them (task 122).
+
+    Asserted against the source text for the reason the test above gives: there
+    is no JavaScript runner here, and what a test can hold is that the script
+    listens for the event at all.
+    """
+    source = (STATIC_DIR / "js" / "monitoring.js").read_text(encoding="utf-8")
+
+    assert '"htmx:historyRestore"' in source
+    assert '"htmx:afterSwap"' in source
+
+
 # --- the guard ----------------------------------------------------------------
 
 

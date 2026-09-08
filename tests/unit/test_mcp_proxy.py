@@ -480,6 +480,99 @@ async def test_an_oversize_response_is_truncated_and_says_so(upstream: Upstream)
     assert len(text) < 9000
 
 
+def wire_size(message: httpx.Request | httpx.Response, *, start: bytes, body: int) -> int:
+    """The accounting of task 122, written out again by hand.
+
+    Deliberately not proxy.request_size: a test that calls the function it is
+    checking says only that the function is deterministic. This says what the
+    number is supposed to be.
+    """
+    headers = sum(len(name) + len(b": ") + len(value) + 2 for name, value in message.headers.raw)
+    return len(start) + 2 + headers + 2 + body
+
+
+@respx.mock
+async def test_a_get_records_the_message_it_sent_and_not_the_body_it_lacks(
+    upstream: Upstream,
+) -> None:
+    """Sent used to be zero forever on an API of GETs (task 122).
+
+    A GET has no body, so counting bodies drew the monitoring page a Bytes
+    transmitted chart with one bar on it. What is counted now is the message:
+    the request line — including the query string the arguments turned into —
+    and the headers, of which the gateway's own Authorization is most of a
+    small request.
+    """
+    recorded: list[proxy.CallOutcome] = []
+    counted = dataclasses.replace(upstream, record=recorded.append)
+    name = await register(
+        counted,
+        schema=a_schema(
+            {"status": {"type": "string"}},
+            parameters=[{"name": "status", "in": "query", "argument": "status"}],
+        ),
+        auth={"credential": {"type": "bearer", "token": API_TOKEN}},
+    )
+    route = respx.get(f"{BASE_URL}/pets").mock(return_value=httpx.Response(200, json=[]))
+
+    await proxy.call_tool(counted, name, {"status": "available"})
+
+    [outcome] = recorded
+    request = route.calls.last.request
+    assert request.content == b""
+    assert outcome.request_bytes == wire_size(
+        request, start=b"GET " + request.url.raw_path + b" HTTP/1.1", body=0
+    )
+    # Which is a real number, and one the argument moved: the query string is
+    # in the request line, and the credential is in a header.
+    assert outcome.request_bytes > len(b"GET /api/pets?status=available HTTP/1.1")
+    assert request.headers["Authorization"] == f"Bearer {API_TOKEN}"
+
+
+@respx.mock
+async def test_a_response_is_counted_by_what_arrived_not_by_what_was_kept(
+    upstream: Upstream,
+) -> None:
+    """A cap is the gateway's decision, and must not look like the upstream's.
+
+    The body handed to the model stops at http.max_response_bytes; the number
+    on the bytes chart is what came off the wire before the gateway hung up.
+    """
+    recorded: list[proxy.CallOutcome] = []
+    counted = dataclasses.replace(upstream, record=recorded.append)
+    name = await register(counted)
+    limit = counted.http.max_response_bytes
+    route = respx.get(f"{BASE_URL}/pets").mock(
+        return_value=httpx.Response(200, headers={"content-type": "text/plain"}, text="x" * 9000)
+    )
+
+    await proxy.call_tool(counted, name, {})
+
+    [outcome] = recorded
+    response = route.calls.last.response
+    assert outcome.response_bytes == wire_size(response, start=b"HTTP/1.1 200 OK", body=9000)
+    assert outcome.response_bytes > limit
+
+
+@respx.mock
+async def test_a_call_that_never_connected_reports_what_it_had_built(
+    upstream: Upstream,
+) -> None:
+    # Today's rule kept on purpose: the alternative makes the number depend on
+    # how far into the connection the failure got (task 122).
+    recorded: list[proxy.CallOutcome] = []
+    counted = dataclasses.replace(upstream, record=recorded.append)
+    name = await register(counted)
+    respx.get(f"{BASE_URL}/pets").mock(side_effect=httpx.ConnectError("no route"))
+
+    await proxy.call_tool(counted, name)
+
+    [outcome] = recorded
+    assert outcome.failure == proxy.UNREACHABLE
+    assert outcome.request_bytes > 0
+    assert outcome.response_bytes == 0
+
+
 @respx.mock
 async def test_a_body_is_sent_with_the_arguments_it_was_given(upstream: Upstream) -> None:
     name = await register(
@@ -524,7 +617,8 @@ async def test_a_call_is_recorded_whatever_the_outcome(upstream: Upstream) -> No
         (503, proxy.HTTP_ERROR),
     ]
     assert all(outcome.tool_name == name for outcome in recorded)
-    assert recorded[1].response_bytes == len(b"down")
+    # The whole message, so more than the four bytes of its body (task 122).
+    assert recorded[1].response_bytes > len(b"down")
 
 
 async def test_a_proxy_given_no_recorder_still_makes_the_call(upstream: Upstream) -> None:

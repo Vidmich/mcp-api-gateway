@@ -94,16 +94,16 @@ everything in it are untouched. This is two class attributes, one comment and tw
 
 ## Acceptance
 
-- [ ] The Admin login and Automatic refresh cards end at the same right edge as the section below
+- [x] The Admin login and Automatic refresh cards end at the same right edge as the section below
       them, at a wide window and at a narrow one.
-- [ ] The boxes in both fill their card, including Username and Password when the switch opens the
+- [x] The boxes in both fill their card, including Username and Password when the switch opens the
       reveal panel and when there is no script to open it.
-- [ ] The lead sentence, the switch's label and the refresh interval's hint still wrap at the
+- [x] The lead sentence, the switch's label and the refresh interval's hint still wrap at the
       measure, from the rules task 119 wrote and not from new ones.
-- [ ] The comment on `.form--wide` gives both reasons the modifier exists.
-- [ ] Step 1 of the wizard, the login card, the server detail page and the monitoring page are
+- [x] The comment on `.form--wide` gives both reasons the modifier exists.
+- [x] Step 1 of the wizard, the login card, the server detail page and the monitoring page are
       exactly as wide as they are today.
-- [ ] The assertion that the configuration page has no wide card is replaced by one saying it has
+- [x] The assertion that the configuration page has no wide card is replaced by one saying it has
       two, and the detail page's test still holds that the wizard's form does not.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass and the suite passes; the width itself
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass and the suite passes; the width itself
       is checked by looking at the page, since no test parses the stylesheet.

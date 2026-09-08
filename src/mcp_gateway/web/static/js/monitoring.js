@@ -12,6 +12,14 @@
  * Chart keeps its listeners and its animation frames, and a page that refreshes
  * itself every thirty seconds would accumulate them all afternoon.
  *
+ * There are three ways the region can be replaced, not two. A swap is the
+ * obvious pair — a range clicked, a poll answered — and the third is the
+ * browser's own Back and Forward, which the range links are part of because
+ * they push their URL. htmx restores those entries without swapping anything:
+ * it replaces the body and fires htmx:historyRestore, and nothing else. Drawing
+ * only on htmx:afterSwap left four blank canvases behind every press of Back
+ * until the next poll happened to fix them (task 122).
+ *
  * If Chart.js is missing, or a chart throws, the fallback line the template
  * rendered is left where it is. That line says the numbers are in the tables
  * below, which they are: nothing on this page exists only as a drawing.
@@ -152,12 +160,26 @@
     return !!target && !!target.closest && !!target.closest("#" + REGION_ID);
   }
 
+  /* Both ways in end here, so neither can drift from the other: whatever put
+   * this region on the page, it is current as of now and it has no drawings on
+   * it yet. */
+  function refreshed() {
+    alerting(false);
+    render();
+  }
+
   document.addEventListener("htmx:afterSwap", function (event) {
     if (event.target && event.target.id === REGION_ID) {
-      alerting(false);
-      render();
+      refreshed();
     }
   });
+
+  /* Back and Forward. Fired on the body rather than on the region, and fired
+   * whether htmx had the page cached or had to re-fetch it, so there is no
+   * target to check here — if this page is being restored, its charts need
+   * drawing. render() destroys before it draws, which is also what clears the
+   * instances the restored page left pointing at canvases that are gone. */
+  document.addEventListener("htmx:historyRestore", refreshed);
 
   /* A poll that did not arrive leaves the region as it was, showing figures
    * that are no longer current without saying so. This is what says so. */

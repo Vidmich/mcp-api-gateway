@@ -256,6 +256,23 @@ def test_the_page_is_in_the_navigation(tmp_path: Path) -> None:
     assert "Configuration" in body
 
 
+def test_both_forms_share_a_right_edge_with_the_table_under_them(tmp_path: Path) -> None:
+    """Three cards down one page, ending in one place (task 121).
+
+    Asserted as the class the stylesheet keys off, because the width itself is
+    a rule in a file no test parses. The section below them carries no width of
+    its own and never did, which is why only the two forms are named here.
+    """
+    with client(settings_for(tmp_path)) as http:
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert '<form class="card form form--wide"' in body
+    assert '<form class="card card--below form form--wide"' in body
+    # And nothing was left behind at the measure on the way past.
+    assert '<form class="card form"' not in body
+    assert '<form class="card card--below form"' not in body
+
+
 def test_the_page_needs_a_session_when_login_is_on(tmp_path: Path) -> None:
     with client(locked(tmp_path)) as http:
         response = http.get(CONFIGURATION_PATH, headers=HTML, follow_redirects=False)

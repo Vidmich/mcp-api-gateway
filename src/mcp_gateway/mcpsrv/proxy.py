@@ -40,6 +40,13 @@ a model that asked for the wrong thing, or an upstream that answered 422, can do
 something useful with the message. A raised exception could not be read by
 anybody.
 
+**What the bytes chart counts is a whole message, not a body.** An outbound
+request is built before it is sent so that it can be measured — see
+:func:`request_size` — and a response is measured the same way, including the
+part of an over-long body that was read and thrown away. Counting bodies alone
+made the *Sent* total on the monitoring page structurally zero for an API of
+``GET`` operations, which is most of them (task 122).
+
 **Redirects are not followed.** The client is built with ``follow_redirects``
 off for the reason spec §5.1 gives — httpx strips ``Authorization`` across
 origins but cannot know that an ``api_key`` header is a secret too — so a 3xx
@@ -85,6 +92,12 @@ PARAGRAPH: Final = "\n\n"
 #: What a 204 — or any other empty answer — reads as. Something has to be in the
 #: content list, and "nothing came back" is a better answer than "".
 NO_BODY: Final = "(no response body)"
+
+#: One CRLF, and the blank line that ends a header block is a second. Named
+#: because the arithmetic in :func:`request_size` *is* the definition of what
+#: the monitoring page's bytes chart counts, and a bare ``2`` in a definition is
+#: a definition nobody can check.
+CRLF: Final = 2
 
 #: Appended when the upstream sent more than ``http.max_response_bytes``.
 TRUNCATED: Final = (
@@ -286,6 +299,11 @@ class Received:
     body: bytes
     content_type: str | None = None
     truncated: bool = False
+    #: The whole message as it arrived — status line, headers and every byte of
+    #: the body, including the part the cap threw away. ``body`` above is what
+    #: the model gets to read; this is what crossed the wire, and the two are
+    #: different numbers for a truncated response (task 122).
+    size: int = 0
 
     @property
     def ok(self) -> bool:
@@ -375,13 +393,20 @@ async def _attempt(upstream: Upstream, row: ToolRow, arguments: dict[str, Any]) 
     if refusal is not None:
         return _Attempt(error_result(throttled_text(refusal)), refusal=refusal)
 
-    request = build_request(row, arguments, credential=credential)
-    sent = len(request.content or b"")
+    outbound = build_request(row, arguments, credential=credential)
+    # What a call that never connected reports is what the gateway assembled and
+    # tried to send, which is today's rule kept deliberately: the alternative
+    # makes the number depend on how far into the connection the failure got.
+    # A URL too malformed to build at all is the one case that counts nothing,
+    # because there was no message.
+    sent = 0
     try:
+        request = prepare(upstream, outbound)
+        sent = request_size(request)
         received = await _send(upstream, request)
     except (httpx.HTTPError, httpx.InvalidURL) as exc:
         return _Attempt(
-            error_result(f"Could not reach {request.url}: {_reason(exc, upstream.http)}"),
+            error_result(f"Could not reach {outbound.url}: {_reason(exc, upstream.http)}"),
             request_bytes=sent,
             failure=UNREACHABLE,
         )
@@ -390,7 +415,7 @@ async def _attempt(upstream: Upstream, row: ToolRow, arguments: dict[str, Any]) 
         to_result(received, limit=upstream.http.max_response_bytes),
         status_code=received.status_code,
         request_bytes=sent,
-        response_bytes=len(received.body),
+        response_bytes=received.size,
         failure=None if received.ok else HTTP_ERROR,
     )
 
@@ -624,9 +649,17 @@ def serialize(value: Any, media_type: str) -> bytes:
 # --------------------------------------------------------------------------- #
 
 
-async def _send(upstream: Upstream, request: OutboundRequest) -> Received:
-    """Make the request and read as much of the answer as the limit allows."""
-    async with upstream.client.stream(
+def prepare(upstream: Upstream, request: OutboundRequest) -> httpx.Request:
+    """The request httpx will actually send, built one step early.
+
+    ``client.stream`` would assemble this internally and never show it to
+    anybody, which is why the gateway used to be able to count only the part of
+    it that it had written itself. Built here instead, the headers httpx merges
+    in — ``Host``, ``Accept-Encoding``, ``Content-Length``, its own
+    ``User-Agent`` — are on the object before it goes out, so :func:`request_size`
+    measures the message rather than an idea of it.
+    """
+    return upstream.client.build_request(
         request.method,
         request.url,
         params=list(request.params),
@@ -635,21 +668,65 @@ async def _send(upstream: Upstream, request: OutboundRequest) -> Received:
         # Applied per request, so a caller's client cannot widen the configured
         # timeout by having been built with a laxer one.
         timeout=httpx.Timeout(upstream.http.timeout_seconds),
-    ) as response:
-        body, truncated = await _read_capped(response, limit=upstream.http.max_response_bytes)
+    )
+
+
+def _header_bytes(headers: httpx.Headers) -> int:
+    """``name: value`` and a CRLF each, then the blank line that ends them."""
+    return sum(len(name) + len(b": ") + len(value) + CRLF for name, value in headers.raw) + CRLF
+
+
+def request_size(request: httpx.Request) -> int:
+    """One outbound request, as many bytes as it is on the wire (spec §7.2).
+
+    Request line, headers, body. An HTTP/1.1-shaped count of a message the
+    transport may in fact have sent compressed, multiplexed over HTTP/2, or
+    inside a TLS record, and that is deliberate: the number's job is comparing
+    one server against another and this week against last, not billing. What it
+    must not be is a number that cannot move, which is what counting the body
+    alone gave every ``GET`` in the world (task 122).
+    """
+    line = request.method.encode("ascii") + b" " + request.url.raw_path + b" HTTP/1.1"
+    return len(line) + CRLF + _header_bytes(request.headers) + len(request.content)
+
+
+def response_size(response: httpx.Response, *, body: int) -> int:
+    """One answer, counted the way :func:`request_size` counts a request.
+
+    ``body`` is what came off the wire rather than what was kept: a response the
+    cap cut short still cost what it cost, and reporting the size of the part
+    the gateway decided to keep would make ``http.max_response_bytes`` look like
+    a property of the upstream.
+    """
+    line = f"HTTP/1.1 {response.status_code} {response.reason_phrase}".rstrip()
+    return len(line.encode("utf-8", "replace")) + CRLF + _header_bytes(response.headers) + body
+
+
+async def _send(upstream: Upstream, request: httpx.Request) -> Received:
+    """Make the request and read as much of the answer as the limit allows."""
+    response = await upstream.client.send(request, stream=True)
+    try:
+        body, read, truncated = await _read_capped(response, limit=upstream.http.max_response_bytes)
         return Received(
             status_code=response.status_code,
             body=body,
             content_type=response.headers.get("content-type"),
             truncated=truncated,
+            size=response_size(response, body=read),
         )
+    finally:
+        # What ``client.stream`` did on the way out of its ``with``: an upstream
+        # cut off mid-body is a connection that has to be closed, not returned.
+        await response.aclose()
 
 
-async def _read_capped(response: httpx.Response, *, limit: int) -> tuple[bytes, bool]:
-    """Read up to ``limit`` bytes, and say whether there was more.
+async def _read_capped(response: httpx.Response, *, limit: int) -> tuple[bytes, int, bool]:
+    """Read up to ``limit`` bytes; say how many arrived, and whether there was more.
 
     Leaving the loop leaves the streaming context, which closes the connection;
     an upstream that answers a tool call with a gigabyte does not get to send it.
+    The count returned is of what was read before that happened, which is what
+    the bytes chart wants and what this used to work out and throw away.
     """
     chunks: list[bytes] = []
     total = 0
@@ -658,7 +735,7 @@ async def _read_capped(response: httpx.Response, *, limit: int) -> tuple[bytes, 
         total += len(chunk)
         if total > limit:
             break
-    return b"".join(chunks)[:limit], total > limit
+    return b"".join(chunks)[:limit], total, total > limit
 
 
 def to_result(received: Received, *, limit: int) -> types.CallToolResult:

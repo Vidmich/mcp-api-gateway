@@ -22,7 +22,7 @@
   <h1 class="toolbar__title">Configuration</h1>
 </div>
 
-<form class="card form" method="post" action="{{ admin.path }}">
+<form class="card form form--wide" method="post" action="{{ admin.path }}">
   <h2 class="card__title">Admin login</h2>
   <p class="form__lead">{{ admin.lead }}</p>
   {{ switch(admin.enabled_field, "Require a login for the configuration and monitoring pages",
@@ -38,7 +38,7 @@
   </div>
 </form>
 
-<form class="card card--below form" method="post" action="{{ auto_refresh.path }}">
+<form class="card card--below form form--wide" method="post" action="{{ auto_refresh.path }}">
   <h2 class="card__title">Automatic refresh</h2>
   {{ field(auto_refresh.field, "Minutes between refreshes", value=auto_refresh.typed,
            type="number", placeholder=auto_refresh.configured, hint=auto_refresh.hint,

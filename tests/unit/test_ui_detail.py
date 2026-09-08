@@ -1858,7 +1858,11 @@ def test_the_settings_card_is_as_wide_as_the_summary_above_it(tmp_path: Path) ->
 
     Asserted as the class the stylesheet keys off, because the width itself is
     a rule in a file no test parses; what a test can hold is that the card asks
-    for it and that the narrow forms elsewhere do not.
+    for it and that a form with nothing to line up against does not.
+
+    That second half is step 1 of the wizard, and only step 1: the configuration
+    page's two forms now ask for the same card, because they are stacked over a
+    table that was already the width of the page (task 121).
     """
     settings = settings_for(tmp_path)
     server_id = seeded(settings, lambda session: register(session))
@@ -1866,14 +1870,14 @@ def test_the_settings_card_is_as_wide_as_the_summary_above_it(tmp_path: Path) ->
     with client(settings, tmp_path) as http:
         page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
         editing = http.get(f"{SERVERS_PATH}/{server_id}?edit=1", headers=HTML).text
-        configuration = http.get("/ui/configuration", headers=HTML).text
         wizard = http.get("/ui/servers/new", headers=HTML).text
 
     # Both modes: the card that reads and the card that types are one box in
     # one place, and a summary lined up over one is lined up over both.
     assert 'class="card form form--wide"' in page
     assert 'class="card form form--wide"' in editing
-    assert "form--wide" not in configuration
+    # A card alone on its page has no ragged edge to fix, so it keeps the
+    # measure .form gives every form by default.
     assert "form--wide" not in wizard
 
 

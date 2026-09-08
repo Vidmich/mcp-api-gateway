@@ -151,16 +151,16 @@ available.
 
 ## Acceptance
 
-- [ ] A GET tool call records a non-zero `request_bytes`, and a test calls one and asserts it.
-- [ ] `response_bytes` reports what came off the wire, including the part a truncated response threw
+- [x] A GET tool call records a non-zero `request_bytes`, and a test calls one and asserts it.
+- [x] `response_bytes` reports what came off the wire, including the part a truncated response threw
       away.
-- [ ] What the two numbers count is written down in one place, in terms of the message on the wire,
+- [x] What the two numbers count is written down in one place, in terms of the message on the wire,
       with the HTTP/1.1 approximation stated rather than implied.
-- [ ] The bytes chart's note and its screen-reader summary say what is now counted, and agree.
-- [ ] A built-in tool call still records `0` / `0`, and a refused call still records nothing.
-- [ ] After Back or Forward between two ranges, every chart is drawn for the range in the URL — with
+- [x] The bytes chart's note and its screen-reader summary say what is now counted, and agree.
+- [x] A built-in tool call still records `0` / `0`, and a refused call still records nothing.
+- [x] After Back or Forward between two ranges, every chart is drawn for the range in the URL — with
       a warm history cache and with an empty one.
-- [ ] No orphaned `Chart` instance survives a history restore.
-- [ ] A test holds that the script redraws on a history restore, in the way the other facts about
+- [x] No orphaned `Chart` instance survives a history restore.
+- [x] A test holds that the script redraws on a history restore, in the way the other facts about
       that script are held.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes.
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes.

@@ -244,9 +244,11 @@ pre {
   max-width: var(--measure);
 }
 
-/* A form whose card has to share an edge with the summary above it: two
- * stacked boxes stopping at different right edges read as a rendering fault
- * (task 107). */
+/* A form whose card has to share an edge with something it is stacked with:
+ * the summary above the settings card (task 107), and the table of everything
+ * in force below the two forms on the configuration page (task 121). Two
+ * stacked boxes stopping at different right edges read as a rendering fault,
+ * whichever of them is the wider one. */
 .form--wide {
   max-width: none;
 }
