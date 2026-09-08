@@ -4,7 +4,7 @@ The wizard is a one-way street — fetch, pick, save — and everything an opera
 gets wrong on it, or changes their mind about later, is put right here. Two
 halves, and they are deliberately unlike each other.
 
-**The settings form is one write, announced.** Name, slug, prefix, base URL,
+**The settings form is one write, announced.** Name, tool prefix, base URL,
 auto-refresh, enabled, and the two credentials, all saved together by one
 button. Nothing on it posts as you type, because every field on it changes how
 the whole server behaves.
@@ -62,7 +62,6 @@ from mcp_gateway.naming import (
     conflict_alerts,
     default_tool_name,
     sanitize,
-    server_slug,
 )
 from mcp_gateway.naming import (
     rename_server as recompute_names,
@@ -85,7 +84,6 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 
 NAME_FIELD: Final = "name"
-SLUG_FIELD: Final = "slug"
 PREFIX_FIELD: Final = "tool_prefix"
 BASE_URL_FIELD: Final = "base_url"
 ENABLED_FIELD: Final = "enabled"
@@ -122,7 +120,6 @@ SELECTED_FIELD: Final = "selected"
 #: the boxes inside it still empty.
 KEPT: Final = (
     NAME_FIELD,
-    SLUG_FIELD,
     PREFIX_FIELD,
     BASE_URL_FIELD,
     ENABLED_FIELD,
@@ -165,10 +162,6 @@ MAX_NAME: Final = 200
 
 NAME_REQUIRED: Final = "A display name is needed. It is what this server is called everywhere else."
 NAME_TOO_LONG: Final = f"A display name may be at most {MAX_NAME} characters."
-SLUG_REQUIRED: Final = (
-    "A slug is needed. Letters, digits, hyphens and underscores are what it may be made of."
-)
-SLUG_TAKEN: Final = "Another server already uses the slug {slug!r}."
 PREFIX_TAKEN: Final = "Another server already uses the tool prefix {prefix!r}."
 BASE_URL_REQUIRED: Final = (
     "A base URL is needed. It is where every tool call this server exposes goes."
@@ -413,7 +406,6 @@ def stored_fields(server: repo.ServerSummary) -> dict[str, str]:
     """
     return {
         NAME_FIELD: server.name,
-        SLUG_FIELD: server.slug,
         PREFIX_FIELD: server.tool_prefix,
         BASE_URL_FIELD: server.base_url,
         ENABLED_FIELD: ON if server.enabled else "",
@@ -481,16 +473,10 @@ def parse_settings(fields: Mapping[str, str], server: Server) -> repo.ServerPatc
     else:
         values["name"] = name
 
-    # Both identifiers are sanitised rather than refused: the operator typed a
-    # name and these are derived from names, so "Pet Store" meaning ``pet_store``
-    # is the reading that does what they asked. Only a value with nothing usable
-    # left in it is an error.
-    slug = server_slug(_clean(fields.get(SLUG_FIELD)))
-    if not slug:
-        errors[SLUG_FIELD] = SLUG_REQUIRED
-    else:
-        values["slug"] = slug[:MAX_SLUG]
-
+    # Sanitised rather than refused: the operator typed a name and a prefix is
+    # derived from names, so "Pet Store" meaning ``Pet_Store`` is the reading
+    # that does what they asked. Only a value with nothing usable left in it is
+    # an error.
     prefix = sanitize(_clean(fields.get(PREFIX_FIELD)))
     if not prefix:
         errors[PREFIX_FIELD] = PREFIX_REQUIRED
@@ -670,7 +656,7 @@ async def apply_patch(
     landing under rules a prefix change made by hand would have been refused by.
     """
     server_id = server.id
-    await _identifiers_are_free(session, patch, server_id)
+    await _prefix_is_free(session, patch, server_id)
 
     prefix = patch.tool_prefix
     moving = prefix is not None and prefix != server.tool_prefix
@@ -691,19 +677,13 @@ async def apply_patch(
     return Saved(server=server, renamed=renamed)
 
 
-async def _identifiers_are_free(
-    session: AsyncSession, patch: repo.ServerPatch, server_id: int
-) -> None:
-    """Refuse a slug or a prefix another server holds, in words rather than in SQL.
+async def _prefix_is_free(session: AsyncSession, patch: repo.ServerPatch, server_id: int) -> None:
+    """Refuse a prefix another server holds, in words rather than in SQL.
 
-    Both columns are unique, so without this the answer would be an
+    The column is unique, so without this the answer would be an
     ``IntegrityError`` from inside the save — true, and no use to anybody.
     """
     errors: dict[str, str] = {}
-    if patch.slug is not None:
-        other = await repo.get_server_by_slug(session, patch.slug)
-        if other is not None and other.id != server_id:
-            errors[SLUG_FIELD] = SLUG_TAKEN.format(slug=patch.slug)
     if patch.tool_prefix is not None:
         other = await repo.get_server_by_prefix(session, patch.tool_prefix)
         if other is not None and other.id != server_id:
@@ -1278,9 +1258,6 @@ __all__ = [
     "SAVED_RENAMED",
     "SAVED_RENAMED_ONE",
     "SELECTED_FIELD",
-    "SLUG_FIELD",
-    "SLUG_REQUIRED",
-    "SLUG_TAKEN",
     "SPEC_MODE_FIELD",
     "SPEC_TYPE_FIELD",
     "STATUSES",

@@ -349,7 +349,6 @@ async def register(
         upstream.session,
         NewServer(
             name="Petstore",
-            slug="petstore",
             tool_prefix="petstore",
             spec_url="https://petstore.example/openapi.json",
             spec_format="openapi-3.1",

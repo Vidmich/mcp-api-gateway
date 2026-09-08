@@ -44,7 +44,6 @@ from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
 from mcp_gateway.naming import (
     MAX_CONFLICTS_SHOWN,
-    MAX_SLUG,
     MORE_CONFLICTS,
     PREFIX_REQUIRED,
     NameConflict,
@@ -79,8 +78,8 @@ BULK_FIELD: Final = "bulk"
 BULK_ALL: Final = "all"
 BULK_NONE: Final = "none"
 
-#: What the row's ``slug`` becomes when a name has nothing usable in it — a
-#: display name of ``???`` is legal and its slug is empty.
+#: What the row's tool prefix becomes when a name has nothing usable in it —
+#: a display name of ``???`` is legal and slugifies to nothing at all.
 FALLBACK_SLUG: Final = "server"
 
 #: Refused at the save rather than at the form: a document can perfectly well
@@ -334,7 +333,6 @@ async def register(
         session,
         repo.NewServer(
             name=pending.name,
-            slug=await free_slug(session, pending.name),
             tool_prefix=prefix,
             spec_url=pending.form.spec_url,
             spec_format=preview.spec_format,
@@ -387,24 +385,6 @@ def operation_inputs(pending: PendingServer, plan: NamePlan) -> list[repo.Operat
     ]
 
 
-async def free_slug(session: AsyncSession, name: str) -> str:
-    """A slug for ``name`` that no server is using yet.
-
-    Derived rather than asked for: the slug is an identifier, the operator gave
-    a display name, and the detail page (task 023) is where one is edited. A
-    second Petstore becomes ``petstore-2`` rather than being refused, because
-    two teams running the same service is a normal thing and a unique-constraint
-    failure at the end of a wizard is not a useful answer to it.
-    """
-    base = server_slug(name) or FALLBACK_SLUG
-    candidate, suffix = base, 1
-    while await repo.get_server_by_slug(session, candidate) is not None:
-        suffix += 1
-        tail = f"-{suffix}"
-        candidate = f"{base[: MAX_SLUG - len(tail)]}{tail}"
-    return candidate
-
-
 def _named(pending: PendingServer) -> list[NamedOperation]:
     return [NamedOperation.from_extracted(operation) for operation in pending.operations]
 
@@ -448,7 +428,6 @@ __all__ = [
     "build",
     "chosen_prefix",
     "conflict_alerts",
-    "free_slug",
     "operation_inputs",
     "register",
 ]

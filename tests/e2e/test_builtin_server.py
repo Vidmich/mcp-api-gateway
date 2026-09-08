@@ -76,7 +76,6 @@ async def test_a_fresh_gateway_has_one_built_in_server_and_none_of_its_tools(
     row = await gateway.builtin()
 
     assert row["enabled"] is False
-    assert row["slug"] == "gateway"
     assert row["tool_prefix"] == "gateway"
     assert row["spec_url"] == ""
     assert row["base_url"] == ""

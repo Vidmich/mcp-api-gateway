@@ -511,7 +511,6 @@ async def create_from_spec(
 _PATCHABLE: Final = frozenset(
     {
         "name",
-        "slug",
         "tool_prefix",
         "base_url",
         "enabled",
@@ -542,7 +541,6 @@ class ServerUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
-    slug: str | None = None
     tool_prefix: str | None = None
     base_url: str | None = None
     enabled: bool | None = None
@@ -578,11 +576,9 @@ class ServerUpdate(BaseModel):
         values: dict[str, Any] = {
             name: getattr(self, name) for name in self.model_fields_set if name in _PATCHABLE
         }
-        # The identifiers are derived from names the same way the detail page
-        # derives them, so an API caller and an operator typing into the form
-        # get the same slug out of the same words.
-        if "slug" in values and values["slug"] is not None:
-            values["slug"] = server_slug(str(values["slug"]))
+        # The prefix is derived from a name the same way the detail page
+        # derives it, so an API caller and an operator typing into the form
+        # get the same prefix out of the same words.
         if "tool_prefix" in values and values["tool_prefix"] is not None:
             values["tool_prefix"] = sanitize(str(values["tool_prefix"]))
         return repo.ServerPatch(**values)

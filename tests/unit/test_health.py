@@ -171,16 +171,15 @@ async def reopened(settings: Settings, work: Callable[[AsyncSession], Awaitable[
 
 
 async def register(
-    session: AsyncSession, slug: str = "petstore", *, tools_named: int = 0, **overrides: Any
+    session: AsyncSession, prefix: str = "petstore", *, tools_named: int = 0, **overrides: Any
 ) -> int:
     """Store one server, optionally with live tools on it, and return its id."""
     values: dict[str, Any] = {
-        "name": slug.title(),
-        "slug": slug,
-        "tool_prefix": slug,
-        "spec_url": f"https://{slug}.example/openapi.json",
+        "name": prefix.title(),
+        "tool_prefix": prefix,
+        "spec_url": f"https://{prefix}.example/openapi.json",
         "spec_format": "openapi-3.1",
-        "base_url": f"https://{slug}.example/api",
+        "base_url": f"https://{prefix}.example/api",
     }
     values.update(overrides)
     cipher = CredentialCipher(generate_key())
@@ -196,7 +195,7 @@ async def register(
                     method="GET",
                     path=f"/thing-{index}",
                     input_schema_hash=f"hash-{index}",
-                    tool_name=f"{slug}__get_thing_{index}",
+                    tool_name=f"{prefix}__get_thing_{index}",
                 )
                 for index in range(tools_named)
             ],

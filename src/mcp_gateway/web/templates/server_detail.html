@@ -95,10 +95,6 @@
            hint="What this server is called on every page and in every message.",
            error=settings.errors.get("name")) }}
 
-  {{ field("slug", "Slug", value=settings.fields.slug, required=true,
-           hint="Its identifier in URLs. Derived from the name, and unique across servers.",
-           error=settings.errors.get("slug")) }}
-
   {# Written out rather than passed through the field macro: it is the one box
      on this form that asks the gateway a question while it is being typed. #}
   <label class="field{% if settings.errors.get('tool_prefix') %} field--invalid{% endif %}">

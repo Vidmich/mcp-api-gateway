@@ -130,23 +130,22 @@ def an_operation(op_key: str, *, prefix: str) -> OperationInput:
     )
 
 
-async def a_server(session: Any, slug: str, *op_keys: str, selected: bool = True) -> Server:
+async def a_server(session: Any, prefix: str, *op_keys: str, selected: bool = True) -> Server:
     """Register a server with operations, ticked by default."""
     cipher = CredentialCipher(generate_key())
     server = await repo.create_server(
         session,
         NewServer(
-            name=slug.title(),
-            slug=slug,
-            tool_prefix=slug,
-            spec_url=f"https://{slug}.example/openapi.json",
+            name=prefix.title(),
+            tool_prefix=prefix,
+            spec_url=f"https://{prefix}.example/openapi.json",
             spec_format="openapi-3.1",
-            base_url=f"https://{slug}.example/api",
+            base_url=f"https://{prefix}.example/api",
         ),
         cipher=cipher,
     )
     await repo.upsert_operations(
-        session, server.id, [an_operation(k, prefix=slug) for k in op_keys]
+        session, server.id, [an_operation(k, prefix=prefix) for k in op_keys]
     )
     if selected:
         await repo.set_selected(session, server.id, op_keys)

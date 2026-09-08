@@ -167,7 +167,6 @@ class ServerSummary(BaseModel):
 
     id: int
     name: str
-    slug: str
     tool_prefix: str
     spec_url: str
     spec_format: str
@@ -361,7 +360,6 @@ class NewServer(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=200)
-    slug: str = Field(min_length=1, max_length=100)
     tool_prefix: str = Field(min_length=1, max_length=100)
     spec_url: str = Field(min_length=1)
     spec_format: SpecFormat
@@ -395,7 +393,6 @@ class ServerPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    slug: str | None = Field(default=None, min_length=1, max_length=100)
     tool_prefix: str | None = Field(default=None, min_length=1, max_length=100)
     spec_url: str | None = Field(default=None, min_length=1)
     base_url: str | None = Field(default=None, min_length=1)
@@ -628,11 +625,6 @@ async def require_server(session: AsyncSession, server_id: int) -> Server:
     return server
 
 
-async def get_server_by_slug(session: AsyncSession, slug: str) -> Server | None:
-    """Used by the wizard to answer "is this slug taken" before writing."""
-    return (await session.scalars(select(Server).where(Server.slug == slug))).first()
-
-
 async def get_server_by_prefix(session: AsyncSession, tool_prefix: str) -> Server | None:
     """Used by the settings page to answer "is this prefix taken" before writing.
 
@@ -647,9 +639,10 @@ async def get_server_by_prefix(session: AsyncSession, tool_prefix: str) -> Serve
 async def builtin_server(session: AsyncSession) -> Server | None:
     """The row the gateway provides itself, or ``None`` before it is seeded.
 
-    Found by the flag rather than by the slug: the slug is what the row is
-    called and the flag is what it *is*, and a database that somehow held
-    two rows claiming the slug should not decide which one is the gateway.
+    Found by the flag rather than by the prefix: the prefix is what the row
+    publishes its tools under and the flag is what it *is*, and a database
+    that somehow held two rows claiming ``gateway`` should not be the thing
+    that decides which of them is the gateway.
     """
     return (
         await session.scalars(select(Server).where(Server.builtin.is_(True)).order_by(Server.id))
@@ -657,7 +650,7 @@ async def builtin_server(session: AsyncSession) -> Server | None:
 
 
 async def create_builtin_server(
-    session: AsyncSession, *, name: str, slug: str, tool_prefix: str, spec_format: str
+    session: AsyncSession, *, name: str, tool_prefix: str, spec_format: str
 ) -> Server:
     """Write the built-in row for the first time. Disabled, and empty of URLs.
 
@@ -672,7 +665,6 @@ async def create_builtin_server(
     """
     server = Server(
         name=name,
-        slug=slug,
         tool_prefix=tool_prefix,
         spec_url="",
         spec_format=spec_format,
@@ -698,7 +690,6 @@ async def create_server(
     """
     server = Server(
         name=new.name,
-        slug=new.slug,
         tool_prefix=new.tool_prefix,
         spec_url=new.spec_url,
         spec_format=new.spec_format,
@@ -737,7 +728,6 @@ async def update_server(
 
     for field in (
         "name",
-        "slug",
         "tool_prefix",
         "spec_url",
         "base_url",
@@ -940,7 +930,6 @@ def _summary_fields(server: Server, counts: OperationCounts) -> dict[str, Any]:
     return {
         "id": server.id,
         "name": server.name,
-        "slug": server.slug,
         "tool_prefix": server.tool_prefix,
         "spec_url": server.spec_url,
         "spec_format": server.spec_format,
@@ -1637,7 +1626,6 @@ __all__ = [
     "get_operation",
     "get_server",
     "get_server_by_prefix",
-    "get_server_by_slug",
     "get_setting",
     "get_tool",
     "list_operations",

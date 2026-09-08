@@ -20,7 +20,6 @@ from mcp_gateway.builtin.catalog import (
     METHOD,
     NAME,
     PREFIX,
-    SLUG,
     BuiltinTool,
     tool_for,
 )
@@ -40,7 +39,6 @@ __all__ = [
     "NAME",
     "OPEN_TO_ANYONE",
     "PREFIX",
-    "SLUG",
     "BuiltinTool",
     "Console",
     "Seeded",

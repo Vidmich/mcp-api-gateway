@@ -474,3 +474,166 @@ def test_the_rename_is_reversible(tmp_path: Path) -> None:
     schema, digest = stored_operation(database)
     assert schema == as_it_was(operation.input_schema)
     assert digest == schema_hash(as_it_was(operation.input_schema))
+
+
+# --------------------------------------------------------------------------- #
+# 0006: the column nothing looked a server up by
+# --------------------------------------------------------------------------- #
+
+#: Ids with a hole in them, because that is what an installed gateway looks
+#: like once a server has been deleted -- and keeping the hole is the whole of
+#: what ``sqlite_autoincrement`` is for (spec §4).
+BEFORE_0006 = ((4, "Petstore", "petstore"), (7, "Petstore", "petstore-2"))
+
+
+def a_database_written_before_the_slug_was_dropped(tmp_path: Path) -> Path:
+    """A gateway at revision 0005 with servers, operations and metrics in it.
+
+    By hand, at that revision, because the point of the exercise is rows
+    written by an older version of this code -- the repository would write
+    today's shape, which no longer has the column.
+    """
+    database = tmp_path / "gateway.db"
+    assert run_alembic(database_url(database), "upgrade", "0005_extension").returncode == 0
+
+    with closing(sqlite3.connect(database)) as connection:
+        for server_id, name, slug in BEFORE_0006:
+            connection.execute(
+                """
+                INSERT INTO servers (
+                    id, name, slug, tool_prefix, spec_url, spec_format, base_url,
+                    enabled, needs_attention, auth_type, spec_auth_mode, auto_refresh,
+                    builtin, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'https://x.example/openapi.json', 'openapi-3.1',
+                          'https://x.example/api', 1, 0, 'none', 'none', 0, 0,
+                          '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')
+                """,
+                (server_id, name, slug, slug),
+            )
+            connection.execute(
+                """
+                INSERT INTO operations (
+                    server_id, op_key, operation_id, method, path,
+                    input_schema, input_schema_hash, selected, status,
+                    effective_tool_name, first_seen_at, last_seen_at
+                ) VALUES (?, 'GET /pets', 'listPets', 'GET', '/pets', '{}', 'hash', 1,
+                          'active', ?, '2026-01-01 00:00:00+00:00',
+                          '2026-01-01 00:00:00+00:00')
+                """,
+                (server_id, f"{slug}__listPets"),
+            )
+            connection.execute(
+                """
+                INSERT INTO metric_buckets (
+                    bucket_start, server_id, kind, calls, errors,
+                    bytes_out, bytes_in, duration_ms_sum
+                ) VALUES ('2026-01-01 00:00:00+00:00', ?, 'minute', 3, 0, 10, 20, 30)
+                """,
+                (server_id,),
+            )
+        connection.commit()
+    return database
+
+
+def servers_schema(database: Path) -> str:
+    with closing(sqlite3.connect(database)) as connection:
+        return str(
+            connection.execute("SELECT sql FROM sqlite_master WHERE name = 'servers'").fetchone()[0]
+        )
+
+
+def test_the_slug_column_and_the_constraint_over_it_are_gone(tmp_path: Path) -> None:
+    database = a_database_written_before_the_slug_was_dropped(tmp_path)
+
+    upgrade = run_alembic(database_url(database), "upgrade", "head")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    schema = servers_schema(database)
+    assert "slug" not in schema
+    # The auto-index behind it is why the table had to be rebuilt rather than
+    # altered in place; a rebuild that kept the constraint would keep the index.
+    assert "uq_servers_slug" not in schema
+    # And the column beside it, which is the one that leads a tool name, is
+    # still unique.
+    assert "uq_servers_tool_prefix" in schema
+
+
+def test_dropping_it_keeps_every_row_and_every_server_id(tmp_path: Path) -> None:
+    """The promise spec §4 makes, across the one revision that rebuilds the table.
+
+    Metrics outlive the servers they were recorded against, so an id handed to
+    a replacement would read that server's history back against the wrong one.
+    """
+    database = a_database_written_before_the_slug_was_dropped(tmp_path)
+
+    assert run_alembic(database_url(database), "upgrade", "head").returncode == 0
+
+    with closing(sqlite3.connect(database)) as connection:
+        servers = connection.execute("SELECT id, name, tool_prefix FROM servers").fetchall()
+        operations = connection.execute(
+            "SELECT server_id, effective_tool_name FROM operations ORDER BY server_id"
+        ).fetchall()
+        metrics = connection.execute(
+            "SELECT server_id, calls FROM metric_buckets ORDER BY server_id"
+        ).fetchall()
+        # The next id, which is the thing the rebuild could have quietly lost.
+        connection.execute(
+            """
+            INSERT INTO servers (
+                name, tool_prefix, spec_url, spec_format, base_url, enabled,
+                needs_attention, auth_type, spec_auth_mode, auto_refresh, builtin,
+                created_at, updated_at
+            ) VALUES ('Zoo', 'zoo', '', 'openapi-3.1', '', 1, 0, 'none', 'none', 0, 0,
+                      '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')
+            """
+        )
+        next_id = connection.execute("SELECT id FROM servers WHERE name = 'Zoo'").fetchone()[0]
+
+    assert servers == [(4, "Petstore", "petstore"), (7, "Petstore", "petstore-2")]
+    assert operations == [(4, "petstore__listPets"), (7, "petstore-2__listPets")]
+    assert metrics == [(4, 3), (7, 3)]
+    assert "AUTOINCREMENT" in servers_schema(database)
+    assert next_id == 8
+
+
+def test_downgrading_derives_a_slug_for_every_row(tmp_path: Path) -> None:
+    """What the revision's docstring promises: the column back, filled in.
+
+    It is ``NOT NULL UNIQUE`` and the values it held are gone, so a downgrade
+    either re-derives them or refuses to run. This one re-derives, from the
+    display name, disambiguating in id order the way the wizard did -- so the
+    two servers called Petstore do not both want ``petstore``.
+    """
+    database = a_database_written_before_the_slug_was_dropped(tmp_path)
+    assert run_alembic(database_url(database), "upgrade", "head").returncode == 0
+
+    down = run_alembic(database_url(database), "downgrade", "0005_extension")
+    assert down.returncode == 0, down.stderr
+
+    with closing(sqlite3.connect(database)) as connection:
+        rows = connection.execute("SELECT id, slug FROM servers ORDER BY id").fetchall()
+
+    assert rows == [(4, "petstore"), (7, "petstore-2")]
+    schema = servers_schema(database)
+    assert "uq_servers_slug" in schema
+    assert "AUTOINCREMENT" in schema
+
+
+def test_a_downgraded_row_whose_name_slugifies_to_nothing_still_gets_one(
+    tmp_path: Path,
+) -> None:
+    # A display name of ``???`` is legal, and a slug of it is empty -- which a
+    # NOT NULL UNIQUE column cannot hold, let alone twice.
+    database = a_database_written_before_the_slug_was_dropped(tmp_path)
+    assert run_alembic(database_url(database), "upgrade", "head").returncode == 0
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute("UPDATE servers SET name = '???'")
+        connection.commit()
+
+    down = run_alembic(database_url(database), "downgrade", "0005_extension")
+    assert down.returncode == 0, down.stderr
+
+    with closing(sqlite3.connect(database)) as connection:
+        rows = connection.execute("SELECT slug FROM servers ORDER BY id").fetchall()
+
+    assert rows == [("server",), ("server-2",)]

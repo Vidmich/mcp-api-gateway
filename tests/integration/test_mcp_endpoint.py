@@ -210,7 +210,7 @@ def an_operation(op_key: str, *, prefix: str, summary: str) -> OperationInput:
 
 async def register(
     session: AsyncSession,
-    slug: str,
+    prefix: str,
     *operations: tuple[str, str],
     selected: Sequence[str],
     base_url: str | None = None,
@@ -227,12 +227,11 @@ async def register(
     server = await repo.create_server(
         session,
         NewServer(
-            name=slug.title(),
-            slug=slug,
-            tool_prefix=slug,
-            spec_url=spec_url or f"https://{slug}.example/openapi.json",
+            name=prefix.title(),
+            tool_prefix=prefix,
+            spec_url=spec_url or f"https://{prefix}.example/openapi.json",
             spec_format="openapi-3.1",
-            base_url=base_url or f"https://{slug}.example/api",
+            base_url=base_url or f"https://{prefix}.example/api",
             credential=credential,
         ),
         # A credential has to be encrypted with the key the gateway itself will
@@ -242,7 +241,7 @@ async def register(
     await repo.upsert_operations(
         session,
         server.id,
-        [an_operation(key, prefix=slug, summary=summary) for key, summary in operations],
+        [an_operation(key, prefix=prefix, summary=summary) for key, summary in operations],
     )
     await repo.set_selected(session, server.id, selected)
     return int(server.id)

@@ -46,7 +46,7 @@ from typing import Final
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from mcp_gateway.builtin.catalog import CATALOG, FORMAT, NAME, PREFIX, SLUG
+from mcp_gateway.builtin.catalog import CATALOG, FORMAT, NAME, PREFIX
 from mcp_gateway.config import Settings
 from mcp_gateway.db import repo
 from mcp_gateway.db.session import Database
@@ -122,7 +122,6 @@ async def ensure_builtin_server(session: AsyncSession) -> Seeded:
         server = await repo.create_builtin_server(
             session,
             name=NAME,
-            slug=identity,
             tool_prefix=identity,
             spec_format=FORMAT,
         )
@@ -225,12 +224,8 @@ async def _in_step(
     return stored == {item.op_key: item.input_schema_hash for item in wanted}
 
 
-async def free_identity(session: AsyncSession, base: str = SLUG) -> str:
+async def free_identity(session: AsyncSession, base: str = PREFIX) -> str:
     """``gateway``, unless a server registered before this version took it.
-
-    Both columns at once, because they are one word: the slug is what the row
-    is called and the prefix is what every tool it publishes is named from, and
-    a row whose two disagreed would be a row nobody could reason about.
 
     The reservation is best effort. From this version on nothing else is given
     ``gateway``, but a database that predates it may already hold one — and an
@@ -246,11 +241,8 @@ async def free_identity(session: AsyncSession, base: str = SLUG) -> str:
 
 
 async def _taken(session: AsyncSession, candidate: str) -> bool:
-    """Whether any server already answers to this word, either way round."""
-    return (
-        await repo.get_server_by_slug(session, candidate) is not None
-        or await repo.get_server_by_prefix(session, candidate) is not None
-    )
+    """Whether any server already publishes its tools under this word."""
+    return await repo.get_server_by_prefix(session, candidate) is not None
 
 
 __all__ = [

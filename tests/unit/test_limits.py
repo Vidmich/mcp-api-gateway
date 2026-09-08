@@ -418,18 +418,17 @@ def watched(upstream: Upstream) -> tuple[Upstream, Recorded]:
 
 
 async def register(
-    upstream: Upstream, *, slug: str = "petstore", name: str = "Petstore", **limits: Any
+    upstream: Upstream, *, prefix: str = "petstore", name: str = "Petstore", **limits: Any
 ) -> tuple[int, str]:
     """One server with one selected operation; its id and the tool's name."""
     server = await repo.create_server(
         upstream.session,
         NewServer(
             name=name,
-            slug=slug,
-            tool_prefix=slug,
-            spec_url=f"https://{slug}.example/openapi.json",
+            tool_prefix=prefix,
+            spec_url=f"https://{prefix}.example/openapi.json",
             spec_format="openapi-3.1",
-            base_url=BASE_URL if slug == "petstore" else f"https://{slug}.example/api",
+            base_url=BASE_URL if prefix == "petstore" else f"https://{prefix}.example/api",
         ),
         cipher=upstream.cipher,
     )
@@ -449,14 +448,14 @@ async def register(
                     EXTENSION: {"parameters": []},
                 },
                 input_schema_hash="hash",
-                tool_name=f"{slug}__list_pets",
+                tool_name=f"{prefix}__list_pets",
             )
         ],
     )
     await repo.set_selected(upstream.session, server.id, ["GET /pets"])
     if limits:
         await limited(upstream, server.id, **limits)
-    return server.id, f"{slug}__list_pets"
+    return server.id, f"{prefix}__list_pets"
 
 
 async def limited(upstream: Upstream, server_id: int, **limits: Any) -> None:
@@ -538,7 +537,7 @@ async def test_exhausting_one_server_leaves_the_other_callable(upstream: Upstrea
     context, _ = watched(upstream)
     _, pets = await register(upstream, rate_limit_calls=1, rate_limit_seconds=MINUTE)
     _, weather = await register(
-        upstream, slug="weather", name="Weather", rate_limit_calls=1, rate_limit_seconds=MINUTE
+        upstream, prefix="weather", name="Weather", rate_limit_calls=1, rate_limit_seconds=MINUTE
     )
     respx.get(f"{BASE_URL}/pets").mock(return_value=httpx.Response(200, json=[]))
     theirs = respx.get("https://weather.example/api/pets").mock(
@@ -593,7 +592,6 @@ async def test_a_limit_set_in_the_ui_binds_from_the_next_call(upstream: Upstream
         server_id,
         {
             "name": "Petstore",
-            "slug": "petstore",
             "tool_prefix": "petstore",
             "base_url": BASE_URL,
             "enabled": "true",
@@ -808,7 +806,6 @@ async def test_no_credential_reaches_a_refusal_or_its_log_line(
         upstream.session,
         NewServer(
             name="Petstore",
-            slug="petstore",
             tool_prefix="petstore",
             spec_url="https://petstore.example/openapi.json",
             spec_format="openapi-3.1",

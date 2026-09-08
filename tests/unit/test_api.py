@@ -188,7 +188,6 @@ def stored_server(settings: Settings, server_id: int) -> dict[str, Any]:
         )
         return {
             "name": server.name,
-            "slug": server.slug,
             "tool_prefix": server.tool_prefix,
             "spec_url": server.spec_url,
             "spec_format": server.spec_format,
@@ -647,7 +646,7 @@ def test_the_list_reports_every_server_as_an_object(
         body = http.get(SERVERS_PATH).json()
 
     assert list(body) == ["servers"]
-    assert [server["slug"] for server in body["servers"]] == ["petstore"]
+    assert [server["tool_prefix"] for server in body["servers"]] == ["petstore"]
     assert body["servers"][0]["auth"] == "none"
 
 
@@ -743,7 +742,7 @@ def test_a_patch_changes_what_it_names_and_nothing_else(
     server = stored_server(settings, created["id"])
     assert (server["name"], server["auto_refresh"]) == ("Petstore Europe", True)
     # Untouched by a body that never mentioned them.
-    assert (server["slug"], server["enabled"]) == ("petstore", True)
+    assert (server["tool_prefix"], server["enabled"]) == ("petstore", True)
 
 
 def test_a_patch_that_never_mentions_a_credential_keeps_the_stored_one(
@@ -899,7 +898,9 @@ def test_a_prefix_that_would_take_a_name_elsewhere_is_a_conflict(
     assert stored_server(settings, second["id"])["tool_prefix"] == "billing"
 
 
-def test_a_slug_is_derived_from_what_was_sent(tmp_path: Path, respx_mock: respx.MockRouter) -> None:
+def test_a_tool_prefix_is_derived_from_what_was_sent(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
     # The same mapping the form applies: a caller sending a display name as an
     # identifier gets the identifier, not a refusal.
     settings = settings_for(tmp_path)
@@ -907,10 +908,32 @@ def test_a_slug_is_derived_from_what_was_sent(tmp_path: Path, respx_mock: respx.
 
     with client(settings, tmp_path) as http:
         created = registered(http)
-        response = http.patch(f"{SERVERS_PATH}/{created['id']}", json={"slug": "Pet Store (EU)"})
+        response = http.patch(
+            f"{SERVERS_PATH}/{created['id']}", json={"tool_prefix": "Pet Store EU"}
+        )
 
     assert response.status_code == 200
-    assert stored_server(settings, created["id"])["slug"] == "pet_store_eu"
+    assert stored_server(settings, created["id"])["tool_prefix"] == "Pet_Store_EU"
+
+
+def test_a_patch_that_still_sends_a_slug_is_refused(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    """Task 111 took the column away, and this is how a caller finds out.
+
+    Refused rather than ignored: a body that was accepted and quietly
+    dropped would read as a rename that worked.
+    """
+    settings = settings_for(tmp_path)
+    serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        response = http.patch(f"{SERVERS_PATH}/{created['id']}", json={"slug": "pet_store"})
+
+    assert response.status_code == 422
+    assert "slug" in str(response.json()["fields"])
+    assert stored_server(settings, created["id"])["name"] == "Petstore"
 
 
 def test_a_server_cannot_be_pointed_at_a_different_document(

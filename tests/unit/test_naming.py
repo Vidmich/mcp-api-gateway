@@ -71,14 +71,13 @@ def cipher() -> CredentialCipher:
     return CredentialCipher(generate_key())
 
 
-def a_server(slug: str = "petstore", **overrides: Any) -> NewServer:
+def a_server(prefix: str = "petstore", **overrides: Any) -> NewServer:
     values: dict[str, Any] = {
-        "name": slug.title(),
-        "slug": slug,
-        "tool_prefix": slug,
-        "spec_url": f"https://{slug}.example/openapi.json",
+        "name": prefix.title(),
+        "tool_prefix": prefix,
+        "spec_url": f"https://{prefix}.example/openapi.json",
         "spec_format": "openapi-3.1",
-        "base_url": f"https://{slug}.example/api",
+        "base_url": f"https://{prefix}.example/api",
     }
     values.update(overrides)
     return NewServer(**values)
@@ -105,12 +104,12 @@ def an_op(
 async def registered(
     session: Any,
     cipher: CredentialCipher,
-    slug: str = "petstore",
+    prefix: str = "petstore",
     *ops: NamedOperation,
     **overrides: Any,
 ) -> Server:
     """A saved server whose operations already carry their planned names."""
-    server = await repo.create_server(session, a_server(slug, **overrides), cipher=cipher)
+    server = await repo.create_server(session, a_server(prefix, **overrides), cipher=cipher)
     plan = await plan_tool_names(
         session, ops, prefix=server.tool_prefix, server_name=server.name, server_id=server.id
     )
@@ -825,7 +824,7 @@ async def test_a_rename_reaches_the_tool_list(session: Any, cipher: CredentialCi
 
 
 # --------------------------------------------------------------------------- #
-# A server's own slug
+# A display name as an identifier
 # --------------------------------------------------------------------------- #
 
 
@@ -841,9 +840,9 @@ async def test_a_rename_reaches_the_tool_list(session: Any, cipher: CredentialCi
     ],
 )
 def test_a_display_name_becomes_an_identifier(name: str, expected: str) -> None:
-    # The default for both ``slug`` and ``tool_prefix`` (spec §4). Lower case,
-    # because a prefix differing from another only in case reads as the same
-    # server to the person scanning a tool list.
+    # The default for ``tool_prefix`` (spec §4). Lower case, because a prefix
+    # differing from another only in case reads as the same server to the
+    # person scanning a tool list.
     assert server_slug(name) == expected
 
 
@@ -851,7 +850,7 @@ def test_a_very_long_name_is_cut_to_what_the_column_holds() -> None:
     assert len(server_slug("a" * 300)) == MAX_SLUG
 
 
-def test_a_slug_leads_the_names_of_the_server_it_belongs_to() -> None:
+def test_a_prefix_leads_the_names_of_the_server_it_belongs_to() -> None:
     # The point of having it here: what a server is called and what its tools
     # are called are decided by the same rule.
     assert default_tool_name(server_slug("Pet Store"), operation_id="listPets") == (

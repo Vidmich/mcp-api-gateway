@@ -43,11 +43,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mcp_gateway.web.api import ServerCreate, SpecPreviewIn
 
-#: Slug and tool prefix of the row, both reserved. Every tool below is
-#: published as ``gateway_<name>``, which is what the prefix means everywhere
-#: else (spec §5.3) and is why the built-in server needs no special case in
+#: The tool prefix of the row, reserved. Every tool below is published as
+#: ``gateway_<name>``, which is what a prefix means everywhere else
+#: (spec §5.3) and is why the built-in server needs no special case in
 #: :mod:`mcp_gateway.naming`.
-SLUG: Final = "gateway"
 PREFIX: Final = "gateway"
 
 #: What the row is called on the server list.
@@ -264,7 +263,6 @@ __all__ = [
     "PREVIEW_SPEC",
     "REFRESH_SERVER",
     "SELECT_OPERATIONS",
-    "SLUG",
     "BuiltinTool",
     "NoArguments",
     "Selection",

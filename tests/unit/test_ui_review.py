@@ -159,16 +159,15 @@ async def seeded(
     session: AsyncSession,
     rows: tuple[Seed, ...] = FLAGGED,
     *,
-    slug: str = "petstore",
+    prefix: str = "petstore",
     flagged: bool = True,
 ) -> Server:
     """One server whose last refresh left ``rows`` behind."""
     server = await repo.create_server(
         session,
         NewServer(
-            name=slug.title(),
-            slug=slug,
-            tool_prefix=slug,
+            name=prefix.title(),
+            tool_prefix=prefix,
             spec_url=SPEC_URL,
             spec_format="openapi-3.0",
             base_url="https://api.petstore.example/v2",
@@ -187,7 +186,7 @@ async def seeded(
                 summary=operation_id,
                 input_schema={"type": "object", "properties": {}},
                 input_schema_hash=f"hash-{op_key}",
-                tool_name=f"{slug}__{operation_id}",
+                tool_name=f"{prefix}__{operation_id}",
             )
             for op_key, method, path, operation_id, _, _ in rows
         ],
@@ -304,7 +303,7 @@ async def test_a_decision_about_another_servers_operation_is_not_found(
 ) -> None:
     """The server id in the URL is checked, not decoration on the operation id."""
     mine = await seeded(session)
-    theirs = await seeded(session, slug="billing")
+    theirs = await seeded(session, prefix="billing")
     rows = await by_key(session, theirs.id)
 
     with pytest.raises(repo.OperationNotFound):
@@ -462,7 +461,6 @@ def a_detail(rows: tuple[Seed, ...] = FLAGGED, *, flagged: bool = True) -> repo.
     return repo.ServerDetail(
         id=7,
         name="Petstore",
-        slug="petstore",
         tool_prefix="petstore",
         spec_url=SPEC_URL,
         spec_format="openapi-3.0",

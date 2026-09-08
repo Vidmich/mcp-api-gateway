@@ -55,7 +55,6 @@ from mcp_gateway.web.picker import (
     build,
     chosen_prefix,
     conflict_alerts,
-    free_slug,
     register,
 )
 from mcp_gateway.web.routes_ui import NEW_SERVER_PATH, PREVIEW_GONE, SERVERS_PATH
@@ -212,7 +211,6 @@ def stored(settings: Settings) -> list[dict[str, Any]]:
                     rows.append(
                         {
                             "name": server.name,
-                            "slug": server.slug,
                             "tool_prefix": server.tool_prefix,
                             "base_url": server.base_url,
                             "spec_hash": server.spec_hash,
@@ -458,38 +456,6 @@ def test_a_wholesale_collision_is_not_two_hundred_identical_sentences() -> None:
     assert alerts[-1] == MORE_CONFLICTS.format(count=4)
 
 
-# --- a slug nobody is using --------------------------------------------------
-
-
-async def test_a_slug_is_derived_from_the_display_name(session: Any) -> None:
-    assert await free_slug(session, "Pet Store") == "pet_store"
-
-
-async def test_a_second_server_of_the_same_name_gets_its_own_slug(
-    session: Any, cipher: CredentialCipher
-) -> None:
-    # Two teams running the same service is a normal thing, and a unique
-    # constraint failing at the end of a wizard is not a useful answer to it.
-    await repo.create_server(
-        session,
-        repo.NewServer(
-            name="Pet Store",
-            slug="pet_store",
-            tool_prefix="pet_store",
-            spec_url=SPEC_URL,
-            spec_format="openapi-3.0",
-            base_url="https://api.example.com/v2",
-        ),
-        cipher=cipher,
-    )
-
-    assert await free_slug(session, "Pet Store") == "pet_store-2"
-
-
-async def test_a_name_with_nothing_usable_in_it_still_gets_a_slug(session: Any) -> None:
-    assert await free_slug(session, "***") == "server"
-
-
 # --- what register writes ----------------------------------------------------
 
 
@@ -563,7 +529,7 @@ def test_saving_creates_the_server_and_the_list_shows_it(
     assert "2 active, 2 selected, 3 tools in all." in listing
     [server] = stored(settings)
     assert server["name"] == "Pet Store"
-    assert server["slug"] == "pet_store"
+    assert server["tool_prefix"] == "pet_store"
     assert server["base_url"] == "https://api.example.com/v2"
 
 

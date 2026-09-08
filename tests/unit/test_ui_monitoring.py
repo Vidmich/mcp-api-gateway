@@ -153,16 +153,15 @@ def client(settings: Settings, tmp_path: Path) -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
-async def a_server(session: AsyncSession, name: str, slug: str) -> int:
+async def a_server(session: AsyncSession, name: str, prefix: str) -> int:
     server = await repo.create_server(
         session,
         NewServer(
             name=name,
-            slug=slug,
-            tool_prefix=slug,
-            spec_url=f"https://{slug}.example/openapi.json",
+            tool_prefix=prefix,
+            spec_url=f"https://{prefix}.example/openapi.json",
             spec_format="openapi-3.1",
-            base_url=f"https://{slug}.example/api",
+            base_url=f"https://{prefix}.example/api",
         ),
         cipher=CredentialCipher(KEY),
     )
@@ -219,7 +218,7 @@ def a_summary(
     return repo.ServerSummary(
         id=server_id,
         name=name,
-        slug=name.lower(),
+        prefix=name.lower(),
         tool_prefix=name.lower(),
         spec_url=f"https://{name.lower()}.example/openapi.json",
         spec_format="openapi-3.1",

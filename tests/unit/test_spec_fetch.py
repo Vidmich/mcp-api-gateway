@@ -93,7 +93,6 @@ def a_server(
     return Server(
         id=1,
         name="Petstore",
-        slug="petstore",
         tool_prefix="petstore",
         spec_url=SPEC_URL,
         spec_format="openapi-3.0",

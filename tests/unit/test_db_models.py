@@ -18,15 +18,14 @@ from mcp_gateway.db.session import Database, open_database
 BUCKET = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
 
 
-def a_server(slug: str = "petstore", **overrides: object) -> Server:
+def a_server(prefix: str = "petstore", **overrides: object) -> Server:
     """A valid server row; every field the schema requires, nothing more."""
     values: dict[str, object] = {
-        "name": slug.title(),
-        "slug": slug,
-        "tool_prefix": slug,
-        "spec_url": f"https://{slug}.example/openapi.json",
+        "name": prefix.title(),
+        "tool_prefix": prefix,
+        "spec_url": f"https://{prefix}.example/openapi.json",
         "spec_format": "openapi-3.1",
-        "base_url": f"https://{slug}.example/api",
+        "base_url": f"https://{prefix}.example/api",
     }
     values.update(overrides)
     return Server(**values)
@@ -88,14 +87,6 @@ async def test_a_server_round_trips_with_only_its_required_fields(
     assert (stored.auth_type, stored.spec_auth_mode) == ("none", "none")
     assert stored.auto_refresh is False
     assert stored.created_at.tzinfo is not None
-
-
-async def test_two_servers_cannot_share_a_slug(session: AsyncSession) -> None:
-    message = await expect_integrity_error(
-        session, a_server("petstore"), a_server("petstore", tool_prefix="other")
-    )
-
-    assert "servers.slug" in message
 
 
 async def test_two_servers_cannot_share_a_tool_prefix(session: AsyncSession) -> None:

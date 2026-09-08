@@ -109,20 +109,20 @@ Remove the field, and the column behind it.
 
 ## Acceptance
 
-- [ ] No Slug field renders on the detail page, for an editable server or the built-in one, and
+- [x] No Slug field renders on the detail page, for an editable server or the built-in one, and
       Tool prefix is unchanged and still previews the renames it would cause.
-- [ ] Nothing in `src` names a slug column: what is left of the word is `server_slug`, `MAX_SLUG`,
+- [x] Nothing in `src` names a slug column: what is left of the word is `server_slug`, `MAX_SLUG`,
       `FALLBACK_SLUG`, `ROOT_SLUG` and the path-slug naming, all of which are about names, not rows.
-- [ ] A migration at head drops `servers.slug` and `uq_servers_slug`, and
+- [x] A migration at head drops `servers.slug` and `uq_servers_slug`, and
       `test_an_existing_database_keeps_its_rows_across_a_migration` still finds `AUTOINCREMENT` in
       the rebuilt table, unedited.
-- [ ] A database created before this revision — with servers, operations and recorded metrics —
+- [x] A database created before this revision — with servers, operations and recorded metrics —
       migrates with every row present and every server id unchanged.
-- [ ] `downgrade` does what the migration's docstring says it does, and a test demonstrates it.
-- [ ] `GET /api/v1/servers` and `GET /api/v1/servers/{id}` no longer carry `slug`, and a `PATCH`
+- [x] `downgrade` does what the migration's docstring says it does, and a test demonstrates it.
+- [x] `GET /api/v1/servers` and `GET /api/v1/servers/{id}` no longer carry `slug`, and a `PATCH`
       that sends one is refused rather than ignored.
-- [ ] The built-in server still takes `gateway`, and still steps aside for a database that already
+- [x] The built-in server still takes `gateway`, and still steps aside for a database that already
       had it.
-- [ ] SPEC is amended in §1, §4, §7.1 and §7.3, and no sentence there says a server has a slug.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] SPEC is amended in §1, §4, §7.1 and §7.3, and no sentence there says a server has a slug.
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where removing the column made them wrong.

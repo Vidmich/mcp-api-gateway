@@ -43,7 +43,7 @@ from jsonschema import Draft202012Validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway.builtin import catalog, seed
-from mcp_gateway.builtin.catalog import CATALOG, FORMAT, NAME, PREFIX, SLUG, tool_for
+from mcp_gateway.builtin.catalog import CATALOG, FORMAT, NAME, PREFIX, tool_for
 from mcp_gateway.builtin.seed import (
     OPEN_TO_ANYONE,
     builtin_service,
@@ -145,17 +145,16 @@ def serves_the_spec(router: respx.MockRouter, document: dict[str, Any] | None = 
     )
 
 
-async def a_server(session: AsyncSession, cipher: CredentialCipher, slug: str = "other") -> int:
+async def a_server(session: AsyncSession, cipher: CredentialCipher, prefix: str = "other") -> int:
     """One ordinary registered server, to have something beside the built-in one."""
     server = await repo.create_server(
         session,
         NewServer(
-            name=slug.title(),
-            slug=slug,
-            tool_prefix=slug,
-            spec_url=f"https://{slug}.example/openapi.json",
+            name=prefix.title(),
+            tool_prefix=prefix,
+            spec_url=f"https://{prefix}.example/openapi.json",
             spec_format="openapi-3.1",
-            base_url=f"https://{slug}.example/api",
+            base_url=f"https://{prefix}.example/api",
         ),
         cipher=cipher,
     )
@@ -170,7 +169,7 @@ async def a_server(session: AsyncSession, cipher: CredentialCipher, slug: str = 
                 path="/pets",
                 input_schema={"type": "object", "properties": {}},
                 input_schema_hash="abc",
-                tool_name=f"{slug}__listPets",
+                tool_name=f"{prefix}__listPets",
             )
         ],
     )
@@ -269,7 +268,7 @@ async def test_a_fresh_database_gets_one_built_in_server_disabled(
     assert seeded.enabled is False
     server = await repo.builtin_server(session)
     assert server is not None
-    assert (server.name, server.slug, server.tool_prefix) == (NAME, SLUG, PREFIX)
+    assert (server.name, server.tool_prefix) == (NAME, PREFIX)
     assert (server.spec_url, server.base_url, server.spec_format) == ("", "", FORMAT)
     assert server.auth_type == "none"
     assert server.auto_refresh is False
@@ -395,7 +394,7 @@ async def test_reconciling_leaves_every_other_server_alone(
     assert await repo.list_operations(session, other) == before
 
 
-async def test_the_slug_gives_way_to_a_server_registered_before_the_reservation(
+async def test_the_prefix_gives_way_to_a_server_registered_before_the_reservation(
     session: AsyncSession, console: Console
 ) -> None:
     """A database predating this version may already hold ``gateway``.
@@ -403,16 +402,16 @@ async def test_the_slug_gives_way_to_a_server_registered_before_the_reservation(
     An upgrade that refused to start over a name would be a far worse trade
     than tools called ``gateway-2_add_server``.
     """
-    await a_server(session, console.cipher, slug=SLUG)
+    await a_server(session, console.cipher, prefix=PREFIX)
 
     seeded = await ensure_builtin_server(session)
 
     server = await repo.builtin_server(session)
     assert server is not None
     assert server.id == seeded.server_id
-    # Both columns move together: they are one word, and a row whose slug and
-    # prefix disagreed would be a row nobody could reason about.
-    assert (server.slug, server.tool_prefix) == ("gateway-2", "gateway-2")
+    # The word is stepped over rather than fought for: what the built-in row
+    # publishes under is the next one nothing else holds.
+    assert server.tool_prefix == "gateway-2"
     stored = await repo.list_operations(session, seeded.server_id)
     assert {row.effective_tool_name for row in stored} == {
         tool.tool_name("gateway-2") for tool in CATALOG

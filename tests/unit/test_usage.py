@@ -120,17 +120,16 @@ def client(settings: Settings, tmp_path: Path) -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
-async def a_server(session: AsyncSession, name: str, slug: str) -> int:
+async def a_server(session: AsyncSession, name: str, prefix: str) -> int:
     """One registered server, with no operations: only its name matters here."""
     server = await repo.create_server(
         session,
         NewServer(
             name=name,
-            slug=slug,
-            tool_prefix=slug,
-            spec_url=f"https://{slug}.example/openapi.json",
+            tool_prefix=prefix,
+            spec_url=f"https://{prefix}.example/openapi.json",
             spec_format="openapi-3.1",
-            base_url=f"https://{slug}.example/api",
+            base_url=f"https://{prefix}.example/api",
         ),
         cipher=CredentialCipher(KEY),
     )

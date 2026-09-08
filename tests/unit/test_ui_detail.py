@@ -164,7 +164,7 @@ def in_the_database(settings: Settings, work: Callable[[AsyncSession], Awaitable
 
 async def register(
     session: AsyncSession,
-    slug: str = "petstore",
+    prefix: str = "petstore",
     *,
     selected: int = 3,
     status: str = "active",
@@ -172,12 +172,11 @@ async def register(
 ) -> int:
     """One server with its three operations, and the id it was given."""
     values: dict[str, Any] = {
-        "name": slug.title(),
-        "slug": slug,
-        "tool_prefix": slug,
-        "spec_url": f"https://{slug}.example/openapi.json",
+        "name": prefix.title(),
+        "tool_prefix": prefix,
+        "spec_url": f"https://{prefix}.example/openapi.json",
         "spec_format": "openapi-3.1",
-        "base_url": f"https://{slug}.example/api",
+        "base_url": f"https://{prefix}.example/api",
     }
     values.update(overrides)
     server = await repo.create_server(session, NewServer(**values), cipher=cipher())
@@ -232,7 +231,6 @@ def stored_server(settings: Settings, server_id: int) -> dict[str, Any]:
         )
         return {
             "name": server.name,
-            "slug": server.slug,
             "tool_prefix": server.tool_prefix,
             "base_url": server.base_url,
             "enabled": server.enabled,
@@ -298,7 +296,6 @@ def settings_form(**overrides: str) -> dict[str, str]:
     """A complete settings submission, with the checkboxes off unless asked for."""
     form = {
         "name": "Petstore",
-        "slug": "petstore",
         "tool_prefix": "petstore",
         "base_url": "https://petstore.example/api",
         "enabled": "true",
@@ -312,7 +309,6 @@ def a_server(**overrides: Any) -> Server:
     defaults are written out here rather than left to the database."""
     server = Server(
         name="Petstore",
-        slug="petstore",
         tool_prefix="petstore",
         spec_url="https://petstore.example/openapi.json",
         spec_format="openapi-3.1",
@@ -332,7 +328,6 @@ def a_summary(**overrides: Any) -> repo.ServerSummary:
     values: dict[str, Any] = {
         "id": 7,
         "name": "Petstore",
-        "slug": "petstore",
         "tool_prefix": "petstore",
         "spec_url": "https://petstore.example/openapi.json",
         "spec_format": "openapi-3.1",
@@ -386,7 +381,7 @@ def test_a_resubmitted_form_carries_nothing_a_credential_could_be_in() -> None:
 
     assert API_TOKEN not in str(view.fields)
     assert "hunter2" not in str(view.fields)
-    assert set(view.fields) >= {"name", "slug", "tool_prefix", "base_url"}
+    assert set(view.fields) >= {"name", "tool_prefix", "base_url"}
 
 
 def test_a_rejected_form_comes_back_with_the_credential_panel_still_open() -> None:
@@ -462,38 +457,22 @@ def test_a_base_url_that_is_not_a_url_is_refused_at_the_form() -> None:
 
 @pytest.mark.parametrize(
     ("typed", "expected"),
-    [
-        ("Pet Store", "pet_store"),
-        ("ACME Billing (v2)", "acme_billing_v2"),
-        ("petstore", "petstore"),
-    ],
-)
-def test_a_slug_is_derived_from_what_was_typed(typed: str, expected: str) -> None:
-    # The operator typed a name and a slug is an identifier made out of names,
-    # so doing what they asked means mapping it rather than refusing it.
-    patch = parse_settings(settings_form(slug=typed), a_server())
-
-    assert patch.slug == expected
-
-
-@pytest.mark.parametrize(
-    ("typed", "expected"),
     [("Pet Store", "Pet_Store"), ("PetStore", "PetStore"), ("pets!", "pets")],
 )
 def test_a_prefix_keeps_the_case_it_was_typed_in(typed: str, expected: str) -> None:
-    # Unlike a slug, and like the wizard's: a prefix leads a tool name, tool
-    # names are case-sensitive, and an operator who typed "PetStore" said
-    # something this page has no business overruling.
+    # Like the wizard's, and unlike the display name it is derived from: a
+    # prefix leads a tool name, tool names are case-sensitive, and an operator
+    # who typed "PetStore" said something this page has no business overruling.
     patch = parse_settings(settings_form(tool_prefix=typed), a_server())
 
     assert patch.tool_prefix == expected
 
 
-def test_an_identifier_with_nothing_usable_in_it_is_refused() -> None:
+def test_a_prefix_with_nothing_usable_in_it_is_refused() -> None:
     with pytest.raises(SettingsInvalid) as raised:
-        parse_settings(settings_form(slug="???", tool_prefix="???"), a_server())
+        parse_settings(settings_form(tool_prefix="???"), a_server())
 
-    assert set(raised.value.errors) == {"slug", "tool_prefix"}
+    assert set(raised.value.errors) == {"tool_prefix"}
 
 
 def test_a_checkbox_that_was_not_posted_is_off() -> None:
@@ -843,7 +822,6 @@ def test_a_prefix_that_would_take_a_name_elsewhere_is_refused_before_any_write(
             f"{SERVERS_PATH}/{staging}",
             data=settings_form(
                 name="Staging",
-                slug="staging",
                 tool_prefix="zoo",
                 base_url="https://staging.example/api",
             ),
@@ -860,9 +838,8 @@ def test_a_prefix_that_would_take_a_name_elsewhere_is_refused_before_any_write(
     assert server["operations"][LIST_PETS][1] == "staging__listPets"
 
 
-@pytest.mark.parametrize("field", ["slug", "tool_prefix"])
-def test_an_identifier_another_server_holds_is_refused_in_words(tmp_path: Path, field: str) -> None:
-    # Both columns are unique, so without this the answer would be an
+def test_a_prefix_another_server_holds_is_refused_in_words(tmp_path: Path) -> None:
+    # The column is unique, so without this the answer would be an
     # IntegrityError from inside the save: true, and no use to anybody.
     settings = settings_for(tmp_path)
 
@@ -870,15 +847,14 @@ def test_an_identifier_another_server_holds_is_refused_in_words(tmp_path: Path, 
         return await register(session), await register(session, "staging")
 
     _, staging = seeded(settings, two)
-    form = settings_form(name="Staging", slug="staging", tool_prefix="staging")
-    form[field] = "petstore"
+    form = settings_form(name="Staging", tool_prefix="petstore")
 
     with client(settings, tmp_path) as http:
         refused = http.post(f"{SERVERS_PATH}/{staging}", data=form, headers=HTML)
 
     assert refused.status_code == 422
     assert "Another server already uses the" in refused.text
-    assert stored_server(settings, staging)[field] == "staging"
+    assert stored_server(settings, staging)["tool_prefix"] == "staging"
 
 
 def test_a_prefix_change_that_works_renames_every_tool_at_once(tmp_path: Path) -> None:
@@ -1441,6 +1417,27 @@ def test_both_pages_name_what_the_refresh_button_fetches(tmp_path: Path) -> None
         assert ">Refresh Spec</button>" in body
         assert ">Refresh</button>" not in body
     assert f'action="{SERVERS_PATH}/{server_id}/refresh"' in page
+
+
+def test_the_settings_form_asks_for_a_prefix_and_no_longer_for_a_slug(
+    tmp_path: Path,
+) -> None:
+    """Task 111. The box said "its identifier in URLs" and no URL had one.
+
+    What it was confused with is the box below it, which is still here and
+    still says what changing it would do.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    assert 'name="slug"' not in page
+    assert ">Slug</span>" not in page
+    assert 'name="tool_prefix"' in page
+    # And typing in it still asks the gateway what the renames would be.
+    assert f'hx-get="{SERVERS_PATH}/{server_id}/prefix"' in page
 
 
 def test_the_settings_card_is_as_wide_as_the_summary_above_it(tmp_path: Path) -> None:

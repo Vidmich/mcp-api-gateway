@@ -131,9 +131,8 @@ class Server(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
 
     name: Mapped[str] = mapped_column(String(200))
-    #: URL-safe identity, derived from ``name`` on creation.
-    slug: Mapped[str] = mapped_column(String(100), unique=True)
-    #: Prefixed onto every tool name from this server; defaults to ``slug``.
+    #: Prefixed onto every tool name from this server; derived from
+    #: ``name`` when the server is registered, and editable afterwards.
     tool_prefix: Mapped[str] = mapped_column(String(100), unique=True)
 
     spec_url: Mapped[str] = mapped_column(Text)
@@ -200,7 +199,7 @@ class Server(Base):
     )
 
     def __repr__(self) -> str:
-        return f"Server(id={self.id!r}, slug={self.slug!r})"
+        return f"Server(id={self.id!r}, tool_prefix={self.tool_prefix!r})"
 
 
 class Operation(Base):

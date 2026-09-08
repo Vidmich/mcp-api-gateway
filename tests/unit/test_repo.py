@@ -63,15 +63,14 @@ def cipher() -> CredentialCipher:
     return CredentialCipher(generate_key())
 
 
-def a_server(slug: str = "petstore", **overrides: Any) -> NewServer:
+def a_server(prefix: str = "petstore", **overrides: Any) -> NewServer:
     """A registrable server; every required field, nothing more."""
     values: dict[str, Any] = {
-        "name": slug.title(),
-        "slug": slug,
-        "tool_prefix": slug,
-        "spec_url": f"https://{slug}.example/openapi.json",
+        "name": prefix.title(),
+        "tool_prefix": prefix,
+        "spec_url": f"https://{prefix}.example/openapi.json",
         "spec_format": "openapi-3.1",
-        "base_url": f"https://{slug}.example/api",
+        "base_url": f"https://{prefix}.example/api",
     }
     values.update(overrides)
     return NewServer(**values)
@@ -95,9 +94,9 @@ def an_operation(
 
 
 async def a_registered_server(
-    session: Any, cipher: CredentialCipher, slug: str = "petstore", **overrides: Any
+    session: Any, cipher: CredentialCipher, prefix: str = "petstore", **overrides: Any
 ) -> Server:
-    return await repo.create_server(session, a_server(slug, **overrides), cipher=cipher)
+    return await repo.create_server(session, a_server(prefix, **overrides), cipher=cipher)
 
 
 async def with_operations(
@@ -122,7 +121,7 @@ async def test_a_registered_server_keeps_what_it_was_given(
     server = await repo.create_server(session, a_server(), cipher=cipher)
 
     assert server.id == 1
-    assert (server.name, server.slug, server.tool_prefix) == ("Petstore", "petstore", "petstore")
+    assert (server.name, server.tool_prefix) == ("Petstore", "petstore")
     # Defaults: visible, manual, unauthenticated.
     assert (server.enabled, server.auto_refresh, server.needs_attention) == (True, False, False)
     assert (server.auth_type, server.auth_config_encrypted) == ("none", None)
@@ -328,13 +327,18 @@ async def test_a_refresh_that_failed_keeps_the_document_it_had(
     assert server.last_refresh_at is not None
 
 
-async def test_a_slug_can_be_looked_up_before_it_is_taken(
+async def test_a_tool_prefix_can_be_looked_up_before_it_is_taken(
     session: Any, cipher: CredentialCipher
 ) -> None:
+    """What the settings form and the built-in seed ask before they write.
+
+    The column is unique, so the alternative to asking is an
+    ``IntegrityError`` from inside a save that has already started.
+    """
     await a_registered_server(session, cipher, "petstore")
 
-    assert (await repo.get_server_by_slug(session, "petstore")) is not None
-    assert (await repo.get_server_by_slug(session, "store")) is None
+    assert (await repo.get_server_by_prefix(session, "petstore")) is not None
+    assert (await repo.get_server_by_prefix(session, "store")) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -354,7 +358,7 @@ async def test_the_list_carries_the_counts_the_table_shows(
 
     listed = await repo.list_servers(session)
 
-    assert [row.slug for row in listed] == ["another", "petstore"]
+    assert [row.tool_prefix for row in listed] == ["another", "petstore"]
     counts = listed[1].counts
     assert (counts.total, counts.selected, counts.new, counts.removed) == (2, 1, 1, 1)
 
