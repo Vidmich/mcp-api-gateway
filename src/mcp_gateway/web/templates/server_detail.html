@@ -1,10 +1,11 @@
 {# One registered server: what it is, what can be changed, and every operation
    it has (spec §7.1).
 
-   Two forms with nothing between them but a heading, because they write at
-   different sizes. The settings form is one button and one write — every field
-   on it changes how the whole server behaves, so nothing on it posts as you
-   type. The table below is one button per row.
+   Two forms with nothing between them but a heading, and both of them are one
+   button and one write. Every field on the settings form changes how the whole
+   server behaves, so nothing on it posts as you type; the table below is saved
+   the same way, by the button underneath it, which is how the picker an
+   operator registered the server on already worked (task 114).
 
    The settings are also two things: a card that says what the server is set to,
    and, at ``?edit=1``, the same card as that form. An operator who came to read
@@ -27,6 +28,7 @@
 
 {% block scripts %}
 <script src="{{ static_url('js/forms.js') }}" defer></script>
+<script src="{{ static_url('js/table.js') }}" defer></script>
 {% endblock %}
 
 {% block content %}
@@ -326,8 +328,9 @@
 
 {# Said once here rather than on every row, which is where it would be noise. #}
 <p class="form__note">
-  A name or description left empty is the generated one, shown in grey. Each row
-  is saved on its own, tick and all, by the button beside it.
+  A name or description left empty is the generated one, shown in grey. Nothing
+  here is written until Save at the bottom is pressed, and then all of it is —
+  including the rows a filter is hiding.
 </p>
 
 {% if operations.rows %}
@@ -397,10 +400,38 @@
 
 {% endif %}
 
+{% if operations.rows %}
+{# The form every control in the table belongs to, with nothing inside it. The
+   rows bind to it by id (``form="operations-form"``), which is what lets one
+   form hold controls spread across two hundred ``<tr>`` that each also contain
+   forms of their own. Out here beside the filters rather than inside the region
+   htmx replaces, so that filtering the table or settling a row leaves the form
+   the operator is part-way through filling in exactly where it was (task 114).
+
+   No ``hx-post``: this button writes more of the page than the table. The
+   counts above it, every effective name and the tool counts in the summary at
+   the top all move at once, and the sentence saying how much of that happened
+   has to land somewhere — which is the argument the settings form above makes
+   for answering with a page rather than a swap. #}
+<form id="{{ operations_form_id }}" method="post" action="{{ operations.save_path }}"></form>
+{% endif %}
+
 {# Included whether or not there are rows, unlike the filters above it. It is
    the region htmx swaps, and retiring the last ``removed`` operation has to
    land somewhere: a target that stopped existing when it emptied would leave
    the operator's click with nowhere to go. The table says so itself when it has
    nothing in it. #}
 {% include "partials/operation_table.html" %}
+
+{% if operations.rows %}
+{# Named rather than a bare Save, in the shape the picker ends with: by the time
+   an operator reaches this button the heading is two hundred rows above it, and
+   the settings card up there has a Save of its own. The count line above the
+   table is what says how much is about to be written. #}
+<div class="form-actions">
+  <button class="button button--primary" type="submit" form="{{ operations_form_id }}">
+    Save tools
+  </button>
+</div>
+{% endif %}
 {% endblock %}

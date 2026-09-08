@@ -147,27 +147,27 @@ the header**, and the **Status column removed**.
 
 ## Acceptance
 
-- [ ] The Tools table has one **Save**, below it, and no Save button in any row.
-- [ ] Ticking, renaming and re-describing several rows and pressing that button once writes all of
+- [x] The Tools table has one **Save**, below it, and no Save button in any row.
+- [x] Ticking, renaming and re-describing several rows and pressing that button once writes all of
       them, and the flash says how many rows changed and how many published tool names moved.
-- [ ] A submission that changes nothing says so, and does not claim a save.
-- [ ] One illegal tool name refuses the whole submission at `422`: every bad row is marked with its
+- [x] A submission that changes nothing says so, and does not claim a save.
+- [x] One illegal tool name refuses the whole submission at `422`: every bad row is marked with its
       message, what was typed is still in the boxes, and nothing was written.
-- [ ] Two rows exchanging tool names in one submission is accepted, and both are published under
+- [x] Two rows exchanging tool names in one submission is accepted, and both are published under
       their new names afterwards.
-- [ ] Filtering the table and then saving leaves the ticks on the hidden rows exactly as they were.
-- [ ] The header checkbox ticks and unticks only the rows the current filter is showing, sits
+- [x] Filtering the table and then saving leaves the ticks on the hidden rows exactly as they were.
+- [x] The header checkbox ticks and unticks only the rows the current filter is showing, sits
       indeterminate when they disagree, and still works after the table has been filtered or a review
       decision has been taken.
-- [ ] With script blocked, the header checkbox is not rendered, and the table is still read, edited
+- [x] With script blocked, the header checkbox is not rendered, and the table is still read, edited
       and saved by the one button.
-- [ ] The table has no Status column, and every row still shows its `active` / `new` / `changed` /
+- [x] The table has no Status column, and every row still shows its `active` / `new` / `changed` /
       `removed` state; the review strip's links and the Status filter still land on the rows they
       name.
-- [ ] Accept, Reject, Delete and **Mark all reviewed** work exactly as before, one row and one
+- [x] Accept, Reject, Delete and **Mark all reviewed** work exactly as before, one row and one
       request at a time.
-- [ ] `POST /ui/servers/{id}/operations/{operation_id}` no longer exists, and nothing in the UI posts
+- [x] `POST /ui/servers/{id}/operations/{operation_id}` no longer exists, and nothing in the UI posts
       to it.
-- [ ] SPEC §7.1 describes a table saved by one button with a header tick.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] SPEC §7.1 describes a table saved by one button with a header tick.
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where the one button and the missing column made them wrong.

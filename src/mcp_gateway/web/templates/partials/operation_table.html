@@ -1,23 +1,32 @@
 {# One server's stored operations, and the line that counts them (spec §7.1).
 
-   Returned on its own as the answer to a filter and to every row's Save, which
-   is why it is a template rather than a macro and why it starts at the element
-   htmx replaces. Its context is ``operations``, ``operations_id`` and
-   ``operations_target``, which is what ``routes_ui._operations_context`` builds.
+   Returned on its own as the answer to a filter and to every review decision,
+   which is why it is a template rather than a macro and why it starts at the
+   element htmx replaces. Its context is ``operations``, ``operations_id``,
+   ``operations_target`` and ``operations_form_id``, which is what
+   ``routes_ui._operations_context`` builds.
 
    The filter controls are deliberately *outside* this region, as on the picker:
    swapping an input the operator is typing in would move the caret out from
    under them.
 
-   A row is a form. The Save button sits in the last cell and the inputs sit in
-   the cells they belong to, tied together by ``form="op-form-N"`` — HTML's own
-   way of saying that a control belongs to a form it is not inside. htmx is also
-   told to include the row, which sends the same values twice and reads the
-   same either way; it is there so that the row posts everything whatever htmx
-   makes of a form whose controls live outside it.
+   The table is one form, and it is not this element. Every control in every row
+   is bound to it by ``form="operations-form"`` — HTML's own way of saying that a
+   control belongs to a form it is not inside — and the form element itself, with
+   the one Save below it, lives out beside the filters. Not a form wrapped around
+   the ``<table>``, because the last cell holds the review forms and a form inside
+   a form is not HTML; and not inside this region, because this region is replaced
+   on every filter and every decision (task 114).
+
+   A hidden ``op_id`` per row is what says which rows were rendered. An unticked
+   checkbox posts nothing at all, so without it a submission could not tell a row
+   the operator unticked from a row that was never on the page — and every filter
+   would be a bulk deselect.
 
    A filtered-out row is hidden rather than dropped, so that nothing an operator
-   cannot see is quietly left out of the page they are working on. #}
+   cannot see is quietly left out of the page they are working on. With one
+   button that stops being a courtesy: it is what keeps the filter from
+   unselecting what it hid. #}
 {% from "partials/status_badge.html" import status_badge %}
 {% from "partials/confirm.html" import confirm %}
 <div id="{{ operations_id }}">
@@ -66,38 +75,61 @@
   <table class="table table--editable">
     <thead>
       <tr>
-        <th scope="col" class="pick"><span class="visually-hidden">Expose</span></th>
+        <th scope="col" class="pick">
+          {# Ships hidden and is unhidden by the script that wires it: it moves
+             ticks in the page and writes nothing itself, so with no script it
+             would be a box that does nothing, which is worse than an empty
+             cell. Nothing is lost — the rows are still ticked one at a time,
+             which is how this page has always worked (task 114). #}
+          <input
+            type="checkbox"
+            id="tick-all"
+            data-tick-all
+            hidden
+          />
+          <label class="visually-hidden" for="tick-all">
+            Expose every operation the filter is showing
+          </label>
+        </th>
         <th scope="col">Method</th>
         <th scope="col">Path</th>
         <th scope="col">Tool name</th>
         <th scope="col">Description</th>
-        <th scope="col">Status</th>
-        <th scope="col"><span class="visually-hidden">Save</span></th>
+        <th scope="col"><span class="visually-hidden">Review</span></th>
       </tr>
     </thead>
     <tbody>
       {% for row in operations.rows %}
-      {% set form_id = "op-form-%d"|format(row.id) %}
       <tr
         {% if not row.shown %}hidden{% endif %}
         class="{% if row.error %}row--invalid{% endif %}"
       >
         <td class="pick">
+          {# Which row this is, for a submission that cannot otherwise tell. #}
+          <input type="hidden" name="op_id" value="{{ row.id }}"
+                 form="{{ operations_form_id }}" />
           <input
             type="checkbox"
-            id="selected-{{ row.id }}"
-            name="selected"
+            id="{{ row.pick_field }}"
+            name="{{ row.pick_field }}"
             value="true"
-            form="{{ form_id }}"
-            {% if row.operation.selected %}checked{% endif %}
+            form="{{ operations_form_id }}"
+            {% if row.ticked %}checked{% endif %}
           />
-          <label class="visually-hidden" for="selected-{{ row.id }}">
+          <label class="visually-hidden" for="{{ row.pick_field }}">
             Expose {{ row.operation.op_key }} as a tool
           </label>
         </td>
         <td><code>{{ row.operation.method }}</code></td>
         <td>
+          {# The badge the Status column used to hold, where the picker already
+             puts a row's badges. The fact stays: the review strip's counts are
+             links to ``?status=new`` and the selector above offers the same
+             four, so a table that said nothing about a row's state would send
+             an operator who followed "3 new" to three rows with no reason
+             (task 114). #}
           <code>{{ row.operation.path }}</code>
+          {{ status_badge(row.operation.status) }}
           {% if row.operation.summary %}
           <span class="cell-note">{{ row.operation.summary }}</span>
           {% endif %}
@@ -106,8 +138,8 @@
           <input
             class="field__input"
             type="text"
-            name="tool_name"
-            form="{{ form_id }}"
+            name="{{ row.name_field }}"
+            form="{{ operations_form_id }}"
             value="{{ row.typed_name }}"
             {# The generated default, so that clearing the box shows what
                clearing it means before the operator does it. #}
@@ -132,31 +164,27 @@
           <input
             class="field__input"
             type="text"
-            name="description"
-            form="{{ form_id }}"
+            name="{{ row.description_field }}"
+            form="{{ operations_form_id }}"
             value="{{ row.typed_description }}"
             placeholder="{{ row.operation.description or row.operation.summary or '' }}"
             aria-label="Description for {{ row.operation.op_key }}"
             autocomplete="off"
           />
         </td>
-        <td>{{ status_badge(row.operation.status) }}</td>
         <td class="row-actions">
-          <form
-            id="{{ form_id }}"
-            method="post"
-            action="{{ operations.row_path(row) }}"
-            hx-post="{{ operations.row_path(row) }}"
-            hx-include="closest tr"
-            hx-target="{{ operations_target }}"
-            hx-swap="outerHTML"
-          >
-            <button class="button" type="submit">Save</button>
-          </form>
           {# What spec §5.4 says can be done with this row, if it is waiting on
-             a decision. A form each, so a browser with no script reviews a
-             server the same way — the answer is then the page rather than the
-             table, and it lands back on the same filter. #}
+             a decision. A form each, and one request each: a decision is an
+             answer to a question the gateway asked rather than an edit to the
+             row, so it is not part of what the button below saves. A browser
+             with no script reviews a server the same way — the answer is then
+             the page rather than the table, and it lands back on the same
+             filter.
+
+             The column stays even when nothing here is flagged and every cell
+             in it is empty: a table that grows a column when a refresh finds
+             something and loses it when the last decision is settled is a table
+             that jumps under the operator mid-review. #}
           {% for decision in row.decisions %}
           <form
             method="post"
@@ -184,7 +212,7 @@
       {% endfor %}
       {% if not operations.shown %}
       <tr>
-        <td colspan="7">{{ operations.nothing_here }}</td>
+        <td colspan="6">{{ operations.nothing_here }}</td>
       </tr>
       {% endif %}
     </tbody>

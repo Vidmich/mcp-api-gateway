@@ -103,19 +103,20 @@ from mcp_gateway.openapi.ingest import preview_spec
 from mcp_gateway.refresh import RefreshLocks, RefreshReport, refresh_server
 from mcp_gateway.web.auth import HTMX_REQUEST, UI_PREFIX, require_session
 from mcp_gateway.web.detail import (
-    TOOL_NAME_FIELD,
+    OP_ID_FIELD,
     Operations,
     Rename,
-    RowSaved,
+    RowsInvalid,
     SettingsInvalid,
     SettingsView,
+    TableSaved,
     build_operations,
     mode_path,
     preview_prefix,
-    refused_row,
-    save_operation,
     save_settings,
+    save_table,
     settings_view,
+    submitted_rows,
     wants_edit,
 )
 from mcp_gateway.web.formatting import exact_time, plural, refresh_state, time_ago
@@ -171,9 +172,12 @@ PICKER_PATH: Final = f"{PREVIEW_PATH}/operations"
 #: Registered *after* every ``new`` route, since the first route to match a path
 #: wins and ``new`` would otherwise be read as a server id.
 DETAIL_PATH: Final = f"{SERVERS_PATH}/{{server_id}}"
-#: Its operation table, re-rendered as the operator filters it.
+#: Its operation table: re-rendered as the operator filters it, and written by
+#: the one button below it (task 114).
 OPERATIONS_PATH: Final = f"{DETAIL_PATH}/operations"
-#: One row of that table, which is one write.
+#: One row of that table. No longer a write of its own — what is left here is
+#: the ``DELETE`` that retires a row the upstream dropped, and the review
+#: decision below, both of which answer a question rather than edit a row.
 OPERATION_PATH: Final = f"{OPERATIONS_PATH}/{{operation_id}}"
 #: One row's review decision, which is one write and one question about the flag.
 REVIEW_PATH: Final = f"{OPERATION_PATH}/review"
@@ -263,6 +267,12 @@ PICKER_TARGET: Final = f"#{PICKER_ID}"
 #: The detail page's two swappable regions.
 OPERATIONS_ID: Final = "operations"
 OPERATIONS_TARGET: Final = f"#{OPERATIONS_ID}"
+
+#: The form every control in the table belongs to (task 114). The element
+#: itself is outside the region above, which is replaced whenever the table is
+#: filtered or a decision is taken; the rows bind back to it by this id each
+#: time they land, which is what ``form=`` resolves against.
+OPERATIONS_FORM_ID: Final = "operations-form"
 RENAME_ID: Final = "rename-preview"
 RENAME_TARGET: Final = f"#{RENAME_ID}"
 
@@ -695,6 +705,9 @@ def _operations_context(operations: Operations) -> dict[str, object]:
         "operations": operations,
         "operations_id": OPERATIONS_ID,
         "operations_target": OPERATIONS_TARGET,
+        # In here rather than in the page context: the table is re-rendered on
+        # its own for every filter, and its rows carry this id (task 114).
+        "operations_form_id": OPERATIONS_FORM_ID,
     }
 
 
@@ -730,12 +743,25 @@ def _detail_context(
     }
 
 
-def _operation(server: repo.ServerDetail, operation_id: int) -> repo.OperationView:
-    """One of a server's operations, by row id."""
-    for operation in server.operations:
-        if operation.id == operation_id:
-            return operation
-    raise repo.OperationNotFound(operation_id)
+def _collisions(server: repo.ServerDetail, taken: NamesTaken) -> dict[int, str]:
+    """The rows a refused table save would have had to move, by row id.
+
+    The conflicts are said above the table as well, in full sentences naming
+    both sides. This is the other half of that: "somewhere in two hundred rows"
+    is not something an operator can act on, so the row that would have to give
+    way is marked where they will be looking (task 114). A claimant belonging to
+    another server has no row here to mark, and is only said above.
+    """
+    claimants = {
+        conflict.claimant.op_key: conflict.message
+        for conflict in taken.conflicts
+        if conflict.claimant.server_id == server.id
+    }
+    return {
+        operation.id: claimants[operation.op_key]
+        for operation in server.operations
+        if operation.op_key in claimants
+    }
 
 
 def _operations_of(
@@ -1069,46 +1095,61 @@ def ui_router() -> APIRouter:
             return _detail_page(request, server, settings_view(server), operations)
         return _region(request, operations)
 
-    @router.post(OPERATION_PATH)
-    async def save_operation_row(
-        request: Request, server_id: int, operation_id: int, session: Session
-    ) -> Response:
-        """One row: its tick, its tool name and its description, written together.
+    @router.post(OPERATIONS_PATH)
+    async def save_operations_table(request: Request, server_id: int, session: Session) -> Response:
+        """The whole table in one press: every tick, name and description (task 114).
 
-        A refusal comes back as the same table with that row showing what was
-        typed and why it was refused — shown whatever the filter says, because a
-        row carrying a message is not a row to narrow away.
+        All of it or none of it, like the settings form above it. Both refusals
+        happen before anything is written — a name that is not a name, and a set
+        of names another operation already publishes — so the page that comes
+        back is describing the server as it still is, with every box holding
+        what the operator typed rather than only the boxes that were wrong.
+
+        A whole page rather than a fragment. The button writes as much as this
+        page can write at once: the counts above the table, every effective
+        name, and the tool counts in the summary at the top all move together,
+        and the sentence saying how much of that happened has to land somewhere
+        an operator will read it.
         """
-        fields = await _submitted(request)
-        saved: RowSaved | None = None
-        error, status = "", 200
+        # Read whole rather than field by field, and read twice: the values by
+        # name, and the row ids as the list they are. ``_submitted`` cannot do
+        # the second — a dict keeps one ``op_id`` out of two hundred.
+        posted = await request.form()
+        fields = {name: value for name, value in posted.multi_items() if isinstance(value, str)}
+        ids = [value for value in posted.getlist(OP_ID_FIELD) if isinstance(value, str)]
+        edits = submitted_rows(ids, fields)
+
+        saved: TableSaved | None = None
+        errors: dict[int, str] = {}
+        alerts: tuple[str, ...] = ()
+        taken: NamesTaken | None = None
+        status = 200
         try:
-            saved = await save_operation(session, server_id, operation_id, fields)
-        except repo.OperationNotFound:
-            raise _no_operation(request, operation_id) from None
-        except SettingsInvalid as invalid:
-            error, status = invalid.errors[TOOL_NAME_FIELD], 422
-        except NamesTaken as taken:
-            logger.info("Rename of operation %d was refused: %s", operation_id, taken)
-            error, status = taken.conflicts[0].message, 409
+            saved = await save_table(session, server_id, edits)
+        except repo.OperationNotFound as missing:
+            raise _no_operation(request, missing.operation_id) from None
+        except RowsInvalid as invalid:
+            errors, status = invalid.errors, 422
+        except NamesTaken as refused:
+            logger.info("A table save on server %d was refused: %s", server_id, refused)
+            # 409 rather than 422, like the settings form's: every name in the
+            # submission is a name, and it is the world they would land in that
+            # says no.
+            taken, alerts, status = refused, conflict_alerts(refused.conflicts), 409
 
         # Read back rather than dressing the table from what was written: the
         # counts line and every effective name are what a query knows.
         server = await _server(request, session, server_id)
-        edited = (
-            None
-            if saved is not None
-            else refused_row(_operation(server, operation_id), server.tool_prefix, fields, error)
-        )
-        operations = _operations_of(server, request.query_params, edited=edited)
-
-        if HTMX_REQUEST in request.headers:
-            return _region(request, operations, status_code=status)
-        if saved is None:
-            return _detail_page(
-                request, server, settings_view(server), operations, status_code=status
+        if saved is not None:
+            return _back_to_the_page(
+                request, _operations_of(server, request.query_params).page_path, saved.message
             )
-        return _back_to_the_page(request, operations.page_path, saved.message)
+        if taken is not None:
+            errors = _collisions(server, taken)
+        operations = _operations_of(
+            server, request.query_params, alerts=alerts, submitted=edits, errors=errors
+        )
+        return _detail_page(request, server, settings_view(server), operations, status_code=status)
 
     @router.post(REVIEW_PATH)
     async def review_operation_row(
@@ -1324,6 +1365,7 @@ __all__ = [
     "NEW_SERVER_PATH",
     "NEW_SERVER_TEMPLATE",
     "NO_CIPHER",
+    "OPERATIONS_FORM_ID",
     "OPERATIONS_ID",
     "OPERATIONS_PATH",
     "OPERATIONS_TARGET",

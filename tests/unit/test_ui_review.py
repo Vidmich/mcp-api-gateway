@@ -930,17 +930,16 @@ def test_deleting_a_removed_operation_frees_its_name_for_reuse(
         refreshed(http, server_id)
         ids = operation_ids(settings, server_id)
 
-        taken = http.post(
-            f"{SERVERS_PATH}/{server_id}/operations/{ids[LIST_PETS]}",
-            data={"selected": "true", "tool_name": freed},
-            headers=HTMX,
-        )
+        # One row of the table, posted at the table (task 114): the save writes
+        # the rows whose ``op_id`` it was given and no others.
+        claim = {
+            "op_id": str(ids[LIST_PETS]),
+            f"selected-{ids[LIST_PETS]}": "true",
+            f"tool_name-{ids[LIST_PETS]}": freed,
+        }
+        taken = http.post(f"{SERVERS_PATH}/{server_id}/operations", data=claim, headers=HTML)
         http.delete(f"{SERVERS_PATH}/{server_id}/operations/{ids[ADD_PET]}", headers=HTMX)
-        now_free = http.post(
-            f"{SERVERS_PATH}/{server_id}/operations/{ids[LIST_PETS]}",
-            data={"selected": "true", "tool_name": freed},
-            headers=HTMX,
-        )
+        now_free = http.post(f"{SERVERS_PATH}/{server_id}/operations", data=claim, headers=HTML)
 
     assert taken.status_code == 409
     assert now_free.status_code == 200

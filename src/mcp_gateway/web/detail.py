@@ -26,13 +26,15 @@ and the save asks again and refuses the whole thing if anything collides. Both
 answers come from :func:`~mcp_gateway.naming.rename_server`, one of them with
 ``dry_run=True``.
 
-**A row is saved as a unit.** The operation table carries a checkbox and two
-boxes per row, and one Save button that writes all three. On the picker nothing
-was written until the end, so a tick there could be instant; here every tick is
-a write, and a page that writes while an operator is halfway through typing a
-name in the next row is a page that surprises people. Clearing the tool-name box
-restores the generated default, which the box shows as its placeholder — so what
-"cleared" means is on screen rather than in a help page.
+**The table is saved as a unit too.** Every row carries a checkbox and two
+boxes, and one button below the table writes all of them — the same bargain the
+picker makes, where nothing is written until the button at the bottom is pressed
+(task 114). Every row that was rendered is in the submission, hidden ones
+included, so that narrowing the table can never quietly unselect what it hid;
+and every name in it is checked against every other before anything is written,
+which is what lets two rows exchange names in one press. Clearing a tool-name
+box restores the generated default, which the box shows as its placeholder — so
+what "cleared" means is on screen rather than in a help page.
 """
 
 from __future__ import annotations
@@ -117,10 +119,18 @@ STATUS_FIELD: Final = "status"
 QUERY_FIELD: Final = "q"
 METHOD_FIELD: Final = "method"
 
-#: One row's three editable things.
+#: One row's three editable things. Every one of them is suffixed with the row
+#: it belongs to, because one form now carries the whole table (task 114) —
+#: see :func:`row_field`.
 TOOL_NAME_FIELD: Final = "tool_name"
 DESCRIPTION_FIELD: Final = "description"
 SELECTED_FIELD: Final = "selected"
+
+#: Which rows were on the page, one hidden value each. Nothing else can say so:
+#: an unticked checkbox posts nothing at all, so a submission read from the
+#: ticks alone cannot tell a row the operator unticked from a row the filter
+#: never rendered — and would make every filter a bulk deselect (task 114).
+OP_ID_FIELD: Final = "op_id"
 
 #: What the settings form may put back in a ``value`` attribute. A list of names
 #: rather than a list of exclusions, like the wizard's: a field added later is
@@ -193,10 +203,19 @@ SAVED: Final = "{name} was saved."
 SAVED_RENAMED: Final = "{name} was saved, and {count} tool names changed."
 SAVED_RENAMED_ONE: Final = "{name} was saved, and one tool name changed."
 
-ROW_SAVED: Final = "{op_key} was saved."
-#: Said when a row's Save changed what the tool is called, since the name is the
-#: one thing about an operation that anybody outside this gateway holds.
-ROW_RENAMED: Final = "{op_key} is now published as {name}."
+#: What one press of the table's Save did. Rows first, because that is what was
+#: pressed. Names second and in a sentence of their own, because a published
+#: name is the one thing about an operation that somebody outside this gateway
+#: is holding, and an operator who has just moved four of them should be told
+#: so rather than left to infer it from "12 operations were saved".
+ROWS_SAVED: Final = "{count} operations were saved."
+ROWS_SAVED_ONE: Final = "One operation was saved."
+NAMES_MOVED: Final = "{count} published tool names changed."
+NAMES_MOVED_ONE: Final = "One published tool name changed."
+#: A submission that asked for nothing. Said plainly rather than as a save,
+#: since "saved" over a table nobody touched is a sentence that teaches an
+#: operator to stop reading the flashes.
+NOTHING_CHANGED: Final = "Nothing was changed: every row is as it already was."
 
 #: How each credential state is described where the value used to be.
 CREDENTIAL_LABELS: Final[dict[str, str]] = {
@@ -297,6 +316,20 @@ class SettingsInvalid(Exception):  # noqa: N818
 # --------------------------------------------------------------------------- #
 # The settings half
 # --------------------------------------------------------------------------- #
+
+
+class RowsInvalid(Exception):  # noqa: N818
+    """A table submission with something in it that cannot be written (task 114).
+
+    Keyed by row id, and carrying every offending row rather than the first:
+    one button now saves two hundred, and an operator told about one bad name
+    per press would press Save once per mistake — which is the shape this task
+    exists to remove.
+    """
+
+    def __init__(self, errors: Mapping[int, str]) -> None:
+        self.errors = dict(errors)
+        super().__init__("; ".join(f"{op_id}: {why}" for op_id, why in self.errors.items()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -907,12 +940,31 @@ class OperationRow:
     #: and refused.
     typed_name: str = ""
     typed_description: str = ""
+    #: Whether the box is ticked. Read from the row, or from a submission that
+    #: was refused — a refusal writes nothing, so the ticks that come back have
+    #: to be the operator's rather than the database's (task 114).
+    ticked: bool = False
     #: Why this row could not be saved, if it could not be.
     error: str | None = None
 
     @property
     def id(self) -> int:
         return self.operation.id
+
+    @property
+    def pick_field(self) -> str:
+        """What this row's checkbox posts under (task 114)."""
+        return row_field(SELECTED_FIELD, self.id)
+
+    @property
+    def name_field(self) -> str:
+        """What this row's tool-name box posts under."""
+        return row_field(TOOL_NAME_FIELD, self.id)
+
+    @property
+    def description_field(self) -> str:
+        """What this row's description box posts under."""
+        return row_field(DESCRIPTION_FIELD, self.id)
 
     @property
     def overridden(self) -> bool:
@@ -989,8 +1041,24 @@ class Operations:
         """Where the filter controls post, and where the table comes back from."""
         return f"{self.path}/operations"
 
+    @property
+    def save_path(self) -> str:
+        """Where the one Save goes — filter and all, so it comes back here.
+
+        The table's own URL, which is also where its filter reads from: the
+        table is one thing, and after task 114 it is written in one press as
+        well as read in one.
+        """
+        return f"{self.path}/operations{self.suffix}"
+
     def row_path(self, row: OperationRow) -> str:
-        """Where one row's Save goes — filter and all, so it comes back here."""
+        """Where one row's Delete goes. Carries the filter, like everything here.
+
+        No ``POST`` lives here any more: a row stopped being a write of its own
+        when the table grew one button (task 114). What is left is the ``DELETE``
+        that retires a row the upstream dropped, which is an answer to a question
+        the gateway asked rather than an edit to the row.
+        """
         return f"{self.path}/operations/{row.id}{self.suffix}"
 
     def review_path(self, row: OperationRow) -> str:
@@ -1071,7 +1139,9 @@ class Operations:
 
     @property
     def selected(self) -> int:
-        return sum(1 for row in self.rows if row.operation.selected)
+        """How many boxes are ticked — on the page, which after a refusal is
+        not the same as in the database (task 114)."""
+        return sum(1 for row in self.rows if row.ticked)
 
     @property
     def shown(self) -> int:
@@ -1099,30 +1169,86 @@ class Operations:
         return counted
 
 
+@dataclass(frozen=True, slots=True)
+class RowEdit:
+    """One row of the table as it was submitted (task 114)."""
+
+    op_id: int
+    selected: bool
+    tool_name: str
+    description: str | None
+
+
+def submitted_rows(ids: Sequence[str], fields: Mapping[str, str]) -> tuple[RowEdit, ...]:
+    """What the one Save was given, row by row (task 114).
+
+    ``ids`` is the hidden :data:`OP_ID_FIELD` of every row that was rendered,
+    which is the only thing in the submission that says which rows those were.
+    An id repeated, or one that is not a number, is a submission nothing on the
+    page produced and is simply not read: the route checks every id it does read
+    against the server it was posted to, and answers an unknown one the way the
+    rest of this page answers one.
+    """
+    seen: dict[int, RowEdit] = {}
+    for raw in ids:
+        try:
+            op_id = int(raw)
+        except ValueError:
+            continue
+        if op_id in seen:
+            continue
+        seen[op_id] = RowEdit(
+            op_id=op_id,
+            selected=_ticked(fields, row_field(SELECTED_FIELD, op_id)),
+            tool_name=_clean(fields.get(row_field(TOOL_NAME_FIELD, op_id))),
+            description=_clean(fields.get(row_field(DESCRIPTION_FIELD, op_id))) or None,
+        )
+    return tuple(seen.values())
+
+
 def build_operations(
     detail: repo.ServerDetail,
     params: Mapping[str, str] | None = None,
     *,
     path: str = "",
     alerts: Sequence[str] = (),
-    edited: OperationRow | None = None,
+    submitted: Sequence[RowEdit] = (),
+    errors: Mapping[int, str] | None = None,
 ) -> Operations:
     """The operation region for one server, narrowed by ``params``.
 
-    ``edited`` replaces the row it names, which is how a row that was refused
-    comes back holding what the operator typed rather than what is stored.
+    ``submitted`` is what a refused Save was handed, and stands in for the
+    stored values of every row it names — all of them, not only the ones that
+    were wrong. A refusal writes nothing, so the page that comes back has to be
+    the one the operator was looking at with the whole of their typing still in
+    it; coming back holding only the bad rows would throw away the twelve good
+    edits that were pressed at the same time (task 114).
+
+    ``errors`` marks the rows that were refused, by row id.
     """
     narrowing = OperationFilter.from_params(params or {})
+    typed = {edit.op_id: edit for edit in submitted}
+    faults = errors or {}
     rows = tuple(
-        edited
-        if edited is not None and edited.id == operation.id
-        else _row(operation, detail.tool_prefix, narrowing)
+        _row(
+            operation,
+            detail.tool_prefix,
+            narrowing,
+            typed.get(operation.id),
+            faults.get(operation.id),
+        )
         for operation in detail.operations
     )
     return Operations(server=detail, filter=narrowing, rows=rows, alerts=tuple(alerts), path=path)
 
 
-def _row(operation: repo.OperationView, prefix: str, narrowing: OperationFilter) -> OperationRow:
+def _row(
+    operation: repo.OperationView,
+    prefix: str,
+    narrowing: OperationFilter,
+    edit: RowEdit | None = None,
+    error: str | None = None,
+) -> OperationRow:
     return OperationRow(
         operation=operation,
         default_name=default_tool_name(
@@ -1131,48 +1257,111 @@ def _row(operation: repo.OperationView, prefix: str, narrowing: OperationFilter)
             method=operation.method,
             path=operation.path,
         ),
-        shown=narrowing.matches(operation),
-        typed_name=operation.tool_name_override or "",
-        typed_description=operation.description_override or "",
+        # A row carrying a message the operator has to read is not a row to
+        # narrow away.
+        shown=True if error else narrowing.matches(operation),
+        typed_name=edit.tool_name if edit else (operation.tool_name_override or ""),
+        typed_description=(
+            (edit.description or "") if edit else (operation.description_override or "")
+        ),
+        ticked=edit.selected if edit else operation.selected,
+        error=error,
     )
 
 
 @dataclass(frozen=True, slots=True)
 class RowSaved:
-    """What one row's Save did."""
+    """What writing one operation did.
+
+    Still one row, because :func:`apply_operation` is still one row: the JSON
+    API edits operations one at a time and always did (task 024). The page
+    above it stopped doing so at task 114 and reports :class:`TableSaved`.
+    """
 
     op_key: str
     #: The name the tool now has, if the save changed it.
     renamed_to: str | None = None
 
+
+@dataclass(frozen=True, slots=True)
+class TableSaved:
+    """What one press of the table's Save did (task 114)."""
+
+    #: How many rows are not what they were before the button was pressed.
+    changed: int
+    #: How many published tool names moved with them.
+    renamed: int
+
     @property
     def message(self) -> str:
-        if self.renamed_to:
-            return ROW_RENAMED.format(op_key=self.op_key, name=self.renamed_to)
-        return ROW_SAVED.format(op_key=self.op_key)
+        """One sentence for the rows, and one for the names, or neither."""
+        if not self.changed:
+            return NOTHING_CHANGED
+        rows = ROWS_SAVED_ONE if self.changed == 1 else ROWS_SAVED.format(count=self.changed)
+        if not self.renamed:
+            return rows
+        names = NAMES_MOVED_ONE if self.renamed == 1 else NAMES_MOVED.format(count=self.renamed)
+        return f"{rows} {names}"
 
 
-async def save_operation(
-    session: AsyncSession, server_id: int, operation_id: int, fields: Mapping[str, str]
-) -> RowSaved:
-    """Apply one row: its tick, its tool name and its description.
+async def save_table(session: AsyncSession, server_id: int, edits: Sequence[RowEdit]) -> TableSaved:
+    """Write every row the table posted, or none of them (task 114).
 
-    The name goes through :func:`~mcp_gateway.naming.rename_server` rather than
-    straight into the column, because a rename has to be checked against this
-    server's own operations as well as everybody else's — the two rows that
-    would collide are very often siblings, and a check scoped to "some other
-    server" would miss exactly those.
+    Three passes, in this order because each is a reason to refuse before
+    anything has been written: the rows are looked up and checked to belong to
+    this server, every typed name is checked for being a name at all, and then
+    all of the changed names are handed to
+    :func:`~mcp_gateway.naming.rename_server` **together**. That last one is the
+    whole point. Until this button existed only one name could move per request,
+    so the plan was built with a single override and two rows exchanging names
+    was refused for colliding with a value that was on its way out. Given both
+    at once the plan sees the final state and allows it.
+
+    A name still goes through the planner rather than straight into the column,
+    because it has to be checked against this server's own operations as well as
+    everybody else's — the two rows that collide are very often siblings, and a
+    check scoped to "some other server" would miss exactly those.
     """
-    operation = await repo.get_operation(session, operation_id)
-    if operation is None or operation.server_id != server_id:
-        raise repo.OperationNotFound(operation_id)
-    return await apply_operation(
-        session,
-        operation,
-        selected=_ticked(fields, SELECTED_FIELD),
-        tool_name=_clean(fields.get(TOOL_NAME_FIELD)),
-        description=_clean(fields.get(DESCRIPTION_FIELD)) or None,
-    )
+    rows = []
+    for edit in edits:
+        operation = await repo.get_operation(session, edit.op_id)
+        if operation is None or operation.server_id != server_id:
+            raise repo.OperationNotFound(edit.op_id)
+        rows.append((edit, operation))
+
+    faults: dict[int, str] = {}
+    overrides: dict[str, str | None] = {}
+    changed = 0
+    for edit, operation in rows:
+        typed = edit.tool_name.strip()
+        override = sanitize(typed) or None
+        if typed and override is None:
+            faults[edit.op_id] = NAME_ILLEGAL
+            continue
+        if override != operation.tool_name_override:
+            overrides[operation.op_key] = override
+        if (
+            edit.selected != operation.selected
+            or override != operation.tool_name_override
+            or edit.description != operation.description_override
+        ):
+            changed += 1
+    if faults:
+        raise RowsInvalid(faults)
+
+    plan = await recompute_names(session, server_id, overrides=overrides)
+    if not plan.ok:
+        raise NamesTaken(plan.conflicts)
+
+    for edit, operation in rows:
+        await repo.update_operation(
+            session,
+            operation.id,
+            repo.OperationPatch(selected=edit.selected, description_override=edit.description),
+        )
+    moved = len(plan.changes)
+    logger.info("Saved %d of %d operations of server %d", changed, len(rows), server_id)
+    return TableSaved(changed=changed, renamed=moved)
 
 
 async def apply_operation(
@@ -1223,33 +1412,19 @@ def _assigned(plan: NamePlan, op_key: str) -> str | None:
     return None  # pragma: no cover - the plan is built from every stored row
 
 
-def refused_row(
-    operation: repo.OperationView, prefix: str, fields: Mapping[str, str], error: str
-) -> OperationRow:
-    """The row a failed save re-renders as: what was typed, and why it was refused.
-
-    Shown rather than hidden whatever the filter says, since a row carrying a
-    message the operator has to read is not a row to narrow away.
-    """
-    typed = _clean(fields.get(TOOL_NAME_FIELD))
-    return OperationRow(
-        operation=operation,
-        default_name=default_tool_name(
-            prefix,
-            operation_id=operation.operation_id,
-            method=operation.method,
-            path=operation.path,
-        ),
-        shown=True,
-        typed_name=typed,
-        typed_description=_clean(fields.get(DESCRIPTION_FIELD)),
-        error=error,
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Small helpers
 # --------------------------------------------------------------------------- #
+
+
+def row_field(name: str, op_id: int) -> str:
+    """One row's copy of a field, keyed by the row it belongs to (task 114).
+
+    In one place, because the template writes these names and the route reads
+    them, and a table where those two spellings drift is a table that silently
+    saves nothing.
+    """
+    return f"{name}-{op_id}"
 
 
 def _clean(value: object) -> str:
@@ -1291,15 +1466,19 @@ __all__ = [
     "MAX_NAME",
     "MAX_PREVIEW_ROWS",
     "METHOD_FIELD",
+    "NAMES_MOVED",
+    "NAMES_MOVED_ONE",
     "NAME_FIELD",
     "NAME_ILLEGAL",
     "NAME_REQUIRED",
     "NAME_TOO_LONG",
+    "NOTHING_CHANGED",
     "NOTHING_MATCHES",
     "NOT_LIMITED",
     "NO_OPERATIONS",
     "NO_RENAMES",
     "ON",
+    "OP_ID_FIELD",
     "PREFIX_FIELD",
     "PREFIX_REQUIRED",
     "PREFIX_TAKEN",
@@ -1315,8 +1494,8 @@ __all__ = [
     "REVIEW_STATUSES",
     "REVIEW_WAITING",
     "REVIEW_WAITING_ONE",
-    "ROW_RENAMED",
-    "ROW_SAVED",
+    "ROWS_SAVED",
+    "ROWS_SAVED_ONE",
     "SAVED",
     "SAVED_RENAMED",
     "SAVED_RENAMED_ONE",
@@ -1336,10 +1515,13 @@ __all__ = [
     "Operations",
     "Rename",
     "ReviewCount",
+    "RowEdit",
     "RowSaved",
+    "RowsInvalid",
     "Saved",
     "SettingsInvalid",
     "SettingsView",
+    "TableSaved",
     "apply_operation",
     "apply_patch",
     "build_operations",
@@ -1348,10 +1530,11 @@ __all__ = [
     "mode_path",
     "parse_settings",
     "preview_prefix",
-    "refused_row",
-    "save_operation",
+    "row_field",
     "save_settings",
+    "save_table",
     "settings_view",
     "stored_fields",
+    "submitted_rows",
     "wants_edit",
 ]
