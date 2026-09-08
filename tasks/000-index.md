@@ -64,4 +64,5 @@ names its dependencies; none of them is needed for v1 to ship.
 | 105 | [One name: mcp-api-gateway](105-rename-to-mcp-api-gateway.md) | 12 · Naming |
 | 106 | [The server list, at a glance](106-server-list-status-column.md) | 11 · UI polish |
 | 107 | [The server page, in the same terms as the list](107-server-detail-status-and-layout.md) | 11 · UI polish |
+| 108 | [The annotations the language has moved on from](108-deprecated-annotations.md) | 13 · Housekeeping |
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 import base64
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Final, TypeAlias, assert_never
+from typing import Final, assert_never
 
 import httpx
 from fastapi import FastAPI
@@ -32,7 +32,7 @@ from mcp_gateway.crypto import (
 
 #: Scheme, host, port — what has to stay equal for a credential to keep being
 #: sent across a redirect (spec §5.1).
-Origin: TypeAlias = tuple[str, str, int]
+Origin = tuple[str, str, int]
 
 AUTHORIZATION: Final = "Authorization"
 

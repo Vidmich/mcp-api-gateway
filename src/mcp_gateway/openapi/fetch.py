@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Final, Literal, TypeAlias
+from typing import Any, Final, Literal
 
 import httpx
 import yaml
@@ -63,7 +63,7 @@ SUPPORTED_SCHEMES: Final = frozenset({"http", "https"})
 BOM: Final = chr(0xFEFF)
 
 #: Which of the two syntaxes the document turned out to be written in.
-ParsedAs: TypeAlias = Literal["json", "yaml"]
+ParsedAs = Literal["json", "yaml"]
 
 
 class SpecFetchError(SpecError):
@@ -180,7 +180,7 @@ class _Document:
 
 
 #: What one request produced: somewhere else to look, or the document itself.
-_Hop: TypeAlias = _Redirect | _Document
+_Hop = _Redirect | _Document
 
 
 async def fetch_spec(

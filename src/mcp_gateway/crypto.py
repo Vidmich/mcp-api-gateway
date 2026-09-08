@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Annotated, Any, Final, Literal, TypeAlias
+from typing import Annotated, Any, Final, Literal
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import (
@@ -71,9 +71,7 @@ def _reveal(value: SecretStr) -> str:
 #: ``when_used="json"`` is the whole point: ``model_dump()`` still yields the
 #: masking :class:`~pydantic.SecretStr`, so only a deliberate serialisation to
 #: JSON — which is what :meth:`CredentialCipher.encrypt_json` does — reveals it.
-Secret: TypeAlias = Annotated[
-    SecretStr, PlainSerializer(_reveal, return_type=str, when_used="json")
-]
+Secret = Annotated[SecretStr, PlainSerializer(_reveal, return_type=str, when_used="json")]
 
 
 class _CredentialBase(BaseModel):
@@ -119,7 +117,7 @@ class HeadersCredential(_CredentialBase):
 
 #: Every payload shape, told apart by ``type`` — the same value the row's
 #: ``auth_type`` column carries, so the two can never disagree unnoticed.
-Credential: TypeAlias = Annotated[
+Credential = Annotated[
     BearerCredential | ApiKeyCredential | BasicCredential | HeadersCredential,
     Field(discriminator="type"),
 ]
