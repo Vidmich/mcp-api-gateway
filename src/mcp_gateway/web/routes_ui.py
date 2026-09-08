@@ -85,7 +85,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any, Final
 
-from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, Form, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import RedirectResponse, Response
 
@@ -149,6 +149,7 @@ from mcp_gateway.web.wizard import (
     PreviewStore,
     failure_field,
     failure_message,
+    form_fields,
     kept_fields,
     options,
     parse_form,
@@ -167,6 +168,11 @@ PREVIEW_PATH: Final = f"{NEW_SERVER_PATH}/{{token}}"
 #: route of its own so that the fragment htmx swaps and the page a browser
 #: without it reloads are the same answer built the same way.
 PICKER_PATH: Final = f"{PREVIEW_PATH}/operations"
+#: How step 2's **Back** names the preview it is coming from, so step 1 can be
+#: rendered from the form that preview is holding rather than blank (task 115).
+#: A query parameter rather than a path of its own: it is the same step 1, and
+#: the operator who follows it should land on the URL step 1 always has.
+FROM_PREVIEW: Final = "from"
 
 #: One registered server, and everything about it that can be changed.
 #: Registered *after* every ``new`` route, since the first route to match a path
@@ -655,6 +661,9 @@ def _picker_context(picker: Picker) -> dict[str, object]:
         "save_path": preview_path,
         # Where filtering and the bulk buttons post.
         "picker_path": f"{preview_path}/operations",
+        # Back to step 1 as it was submitted. The token is what makes that
+        # possible: the preview it names is holding the form.
+        "back_path": f"{NEW_SERVER_PATH}?{FROM_PREVIEW}={picker.token}",
         "servers_path": SERVERS_PATH,
         "new_server_path": NEW_SERVER_PATH,
     }
@@ -871,9 +880,29 @@ def ui_router() -> APIRouter:
         return _shell(request).render(request, SERVERS_TEMPLATE, await _list_context(session))
 
     @router.get(NEW_SERVER_PATH)
-    async def new_server_form(request: Request) -> Response:
-        """Step 1, blank (spec §7.1)."""
-        return _shell(request).render(request, NEW_SERVER_TEMPLATE, _wizard_context({}))
+    async def new_server_form(
+        request: Request, token: str = Query("", alias=FROM_PREVIEW)
+    ) -> Response:
+        """Step 1: blank, or as it was submitted when step 2's **Back** sent them.
+
+        The preview holds the form, so going back to correct one field does not
+        cost the other five (task 115). It cannot leak a credential by this
+        door: :func:`~mcp_gateway.web.wizard.form_fields` goes through the same
+        ``kept_fields`` every other route into this template does, and the
+        credentials in a ``WizardForm`` are not strings to begin with.
+
+        A token that names nothing gets the blank form it would have got anyway,
+        with a sentence saying why. That cannot loop: the redirect drops the
+        parameter.
+        """
+        if not token:
+            return _shell(request).render(request, NEW_SERVER_TEMPLATE, _wizard_context({}))
+        pending = _previews(request).get(token)
+        if pending is None:
+            return _start_again(request, PREVIEW_GONE)
+        return _shell(request).render(
+            request, NEW_SERVER_TEMPLATE, _wizard_context(form_fields(pending.form))
+        )
 
     @router.post(NEW_SERVER_PATH)
     async def preview_new_server(request: Request) -> Response:
@@ -1358,6 +1387,7 @@ __all__ = [
     "DISABLED_TITLE",
     "FAILING_LABEL",
     "FAILING_TITLE",
+    "FROM_PREVIEW",
     "LIST_ID",
     "LIST_TARGET",
     "LIST_TEMPLATE",

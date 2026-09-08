@@ -51,6 +51,7 @@ from mcp_gateway.web.wizard import (
     PreviewStore,
     WizardForm,
     failure_field,
+    form_fields,
     kept_fields,
     parse_form,
     parse_headers,
@@ -340,6 +341,43 @@ def test_a_field_nobody_submitted_comes_back_empty_rather_than_missing() -> None
     # The template reads every one of them; a missing key would be an exception
     # on a page whose whole job is to report a mistake.
     assert kept_fields({}) == dict.fromkeys(KEPT, "")
+
+
+def test_a_parsed_form_goes_back_to_the_template_as_the_fields_it_came_from() -> None:
+    # What step 2's Back needs (task 115): the preview is holding the form, and
+    # the operator who went back to fix one field should not retype five.
+    form = parse_form(
+        a_form(
+            name="Our petstore",
+            base_url="https://staging.example.com",
+            auth_type="bearer",
+            token=API_TOKEN,
+            spec_auth_mode="custom",
+            spec_auth_type="api_key",
+            spec_header="X-Spec-Key",
+            spec_value=SPEC_KEY,
+        )
+    )
+
+    fields = form_fields(form)
+
+    assert fields == {
+        "spec_url": SPEC_URL,
+        "name": "Our petstore",
+        "base_url": "https://staging.example.com",
+        "auth_type": "bearer",
+        "spec_auth_mode": "custom",
+        "spec_auth_type": "api_key",
+    }
+
+
+def test_a_form_going_back_cannot_carry_a_credential_with_it() -> None:
+    # Structural: KEPT names the six fields that are strings, and the two
+    # credentials on a WizardForm are models rather than strings.
+    form = parse_form(a_form(auth_type="bearer", token=API_TOKEN))
+
+    assert form.credential is not None
+    assert not any(secret in " ".join(form_fields(form).values()) for secret in SECRETS)
 
 
 # --- where a failure belongs -------------------------------------------------
@@ -763,6 +801,71 @@ def test_a_successful_preview_does_not_render_the_credentials_it_used(
 
     assert "List pets" in body
     assert not any(secret in body for secret in SECRETS)
+
+
+def test_back_from_step_two_returns_the_form_that_was_submitted(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings_for(tmp_path)) as http:
+        posted = http.post(
+            NEW_SERVER_PATH,
+            data=a_form(
+                name="Our petstore",
+                base_url="https://staging.example.com",
+                auth_type="bearer",
+                token=API_TOKEN,
+                spec_auth_mode="same_as_api",
+            ),
+            headers=HTML,
+            follow_redirects=False,
+        )
+        token = str(posted.headers["location"]).rsplit("/", 1)[1]
+        body = http.get(f"{NEW_SERVER_PATH}?from={token}", headers=HTML).text
+
+    assert 'value="Our petstore"' in body
+    assert f'value="{SPEC_URL}"' in body
+    assert 'value="https://staging.example.com"' in body
+    assert 'value="bearer" selected' in body
+    assert 'value="same_as_api" selected' in body
+    # The same bargain a rejected form makes: everything but the credentials.
+    assert not any(secret in body for secret in SECRETS)
+
+
+def test_back_from_a_preview_that_is_no_longer_held_starts_the_wizard_again(
+    tmp_path: Path,
+) -> None:
+    with client(settings_for(tmp_path)) as http:
+        went_back = http.get(
+            f"{NEW_SERVER_PATH}?from=made-up", headers=HTML, follow_redirects=False
+        )
+        # It cannot loop: the redirect drops the parameter.
+        assert went_back.status_code == 303
+        assert went_back.headers["location"] == NEW_SERVER_PATH
+        landed = http.get(NEW_SERVER_PATH, headers=HTML).text
+
+    assert PREVIEW_GONE in landed
+
+
+def test_step_one_with_no_token_is_still_a_blank_form(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    # The parameter is what carries a form back. Without it this is the page it
+    # has always been, held preview or no held preview.
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings_for(tmp_path)) as http:
+        http.post(
+            NEW_SERVER_PATH,
+            data=a_form(name="Our petstore"),
+            headers=HTML,
+            follow_redirects=False,
+        )
+        body = http.get(NEW_SERVER_PATH, headers=HTML).text
+
+    assert "Our petstore" not in body
+    assert PREVIEW_GONE not in body
 
 
 def test_no_credential_field_is_rendered_carrying_a_value(tmp_path: Path) -> None:

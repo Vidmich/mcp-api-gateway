@@ -382,6 +382,16 @@ textarea.field__input {
   color: var(--ink-soft);
 }
 
+/* Where the tool prefix goes, in the name every row would be published under.
+ * A <var> because that is what it is — the one part of the name that is not
+ * literal — and quieter than the part that belongs to the operation, since it
+ * is the same on every row and is set by the box above the table: the eye
+ * should run down the column reading what differs (task 115). */
+.name-slot {
+  font-style: italic;
+  color: var(--ink-soft);
+}
+
 /* --- the review strip ----------------------------------------------------- */
 
 /* What the last refresh left to decide, above the table it left it in. One

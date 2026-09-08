@@ -42,7 +42,7 @@ from mcp_gateway.db.session import (
     open_database,
 )
 from mcp_gateway.mcpsrv.server import mcp_service
-from mcp_gateway.naming import NameConflict, ToolOwner
+from mcp_gateway.naming import MAX_TOOL_NAME, NameConflict, ToolOwner
 from mcp_gateway.openapi.ingest import read_spec
 from mcp_gateway.web.auth import LOGIN_PATH
 from mcp_gateway.web.picker import (
@@ -50,6 +50,8 @@ from mcp_gateway.web.picker import (
     MORE_CONFLICTS,
     NO_BASE_URL,
     PREFIX_REQUIRED,
+    SUMMARY,
+    SUMMARY_FILTERED,
     Filter,
     NamesTaken,
     build,
@@ -58,7 +60,13 @@ from mcp_gateway.web.picker import (
     register,
 )
 from mcp_gateway.web.routes_ui import NEW_SERVER_PATH, PREVIEW_GONE, SERVERS_PATH
-from mcp_gateway.web.wizard import PendingServer, WizardForm
+from mcp_gateway.web.shell import STATIC_DIR, TEMPLATES_DIR
+from mcp_gateway.web.wizard import (
+    NAME_FROM_DOCUMENT,
+    NAME_FROM_URL,
+    PendingServer,
+    WizardForm,
+)
 
 HTML = {"accept": "text/html,application/xhtml+xml"}
 HTMX = {**HTML, "HX-Request": "true"}
@@ -95,6 +103,17 @@ DOCUMENT: dict[str, Any] = {
         },
         "/health": {"get": {"operationId": "health", "summary": "Is it up", "responses": {}}},
     },
+}
+
+#: An ``operationId`` too long to survive ``petstore__`` in front of it, so the
+#: name it gets is truncated and its tail is a digest rather than a stem.
+LONG_ID = "list" + "Pets" * 40
+
+OVERLONG: dict[str, Any] = {
+    "openapi": "3.0.3",
+    "info": {"title": "Petstore", "version": "1.0.0"},
+    "servers": [{"url": "https://api.example.com/v2"}],
+    "paths": {"/pets": {"get": {"operationId": LONG_ID, "summary": "Lots", "responses": {}}}},
 }
 
 #: The three operations of :data:`DOCUMENT`, in document order.
@@ -375,6 +394,22 @@ def test_the_summary_says_what_is_ticked_and_what_is_hidden() -> None:
     assert narrowed.summary == "1 of 3 selected, showing 2"
 
 
+def test_the_summary_leaves_its_count_for_the_browser_to_fill_in() -> None:
+    # The header tick box moves ticks and posts nothing, so the one number that
+    # can change without a request is the one left as a slot. Asserted against
+    # the constants themselves: the wording lives in Python, and a second copy
+    # of it in the script is exactly what this keeps from happening.
+    whole = build(TOKEN, a_pending(), {}, [HEALTH])
+    narrowed = build(TOKEN, a_pending(), {"q": "pets"}, [HEALTH])
+
+    assert whole.summary_template == SUMMARY.format(selected="{selected}", total=3, shown=3)
+    assert narrowed.summary_template == SUMMARY_FILTERED.format(
+        selected="{selected}", total=3, shown=2
+    )
+    assert "{selected}" in whole.summary_template
+    assert whole.summary_template.format(selected=1) == whole.summary
+
+
 # --- the name each operation would get ---------------------------------------
 
 
@@ -386,6 +421,35 @@ def test_every_row_carries_the_tool_name_it_would_be_published_under() -> None:
         "petstore__addPet",
         "petstore__health",
     ]
+
+
+def test_every_row_says_where_the_prefix_goes_rather_than_what_it_is() -> None:
+    # The prefix is a box on this page that is typed in without posting, so the
+    # cell shows the slot and the part that is this operation's own.
+    picker = build(TOKEN, a_pending(), {"tool_prefix": "petstore"}, EVERYTHING)
+
+    assert [row.stem for row in picker.rows] == ["listPets", "addPet", "health"]
+    assert all(row.tool_name == f"petstore__{row.stem}" for row in picker.rows)
+
+
+def test_a_name_with_no_prefix_in_front_of_it_has_no_slot_to_show() -> None:
+    # A cleared prefix is refused by the save and still has to render, and
+    # there is no separator in the name to print either.
+    picker = build(TOKEN, a_pending(), {"tool_prefix": "   "}, EVERYTHING)
+
+    assert [row.stem for row in picker.rows] == [None, None, None]
+    assert picker.rows[0].tool_name == "listPets"
+
+
+def test_a_name_that_had_to_be_cut_down_has_no_honest_slot() -> None:
+    # Its tail is a digest of the whole name, prefix included, so what would be
+    # published is not this prefix followed by what the cell showed.
+    picker = build(TOKEN, a_pending(OVERLONG), {"tool_prefix": "petstore"}, None)
+
+    row = picker.rows[0]
+    assert len(row.tool_name) == MAX_TOOL_NAME
+    assert row.tool_name.startswith("petstore__")
+    assert row.stem is None
 
 
 def test_the_prefix_defaults_to_a_slug_of_the_name() -> None:
@@ -845,3 +909,145 @@ def test_the_picker_offers_its_filters_and_its_bulk_buttons(
     assert 'value="none"' in body
     # Every control that filters can also be submitted the ordinary way.
     assert body.count("formaction=") >= 2
+
+
+# --- what step 2 says about itself -------------------------------------------
+
+
+def test_the_table_header_carries_a_tick_box_that_ships_hidden(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(preview_of(http), headers=HTML).text
+
+    header = body.split("<thead>")[1].split("</thead>")[0]
+    assert "data-tick-all" in header
+    # Hidden until a script unhides it: it moves ticks in the page and writes
+    # nothing, so without one it would be a box that does nothing.
+    assert "hidden" in header
+    assert "js/table.js" in body
+
+
+def test_the_bulk_buttons_are_what_a_browser_without_script_gets_instead(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(preview_of(http), headers=HTML).text
+
+    without_script = body.split("<noscript>")[1].split("</noscript>")[0]
+    assert 'value="all"' in without_script
+    assert 'value="none"' in without_script
+    # And nowhere else: with a script the header box is what selects them.
+    assert body.count('value="all"') == 1
+    assert body.count('value="none"') == 1
+
+
+def test_the_count_reaches_the_browser_as_a_sentence_with_a_slot_in_it(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(preview_of(http), headers=HTML).text
+
+    assert 'data-summary="{selected} of 3 selected"' in body
+    assert ">3 of 3 selected</p>" in body
+
+
+def test_the_name_column_is_headed_name_and_shows_the_prefix_as_a_slot(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(preview_of(http), headers=HTML).text
+
+    assert '<th scope="col">Name</th>' in body
+    assert "Tool name" not in body
+    assert "&lt;prefix&gt;</var>__listPets" in body
+    # The prefix as it stands is in the box above the table, and only there.
+    assert "petstore__listPets" not in body
+
+
+def test_the_display_name_is_shown_on_the_page_that_settles_it(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        typed = http.get(preview_of(http, name="Pet Store"), headers=HTML).text
+        defaulted = http.get(preview_of(http), headers=HTML).text
+
+    assert "Display name" in typed
+    assert "Pet Store" in typed
+    # What the operator typed needs no explanation; what the document supplied
+    # says so, the way Base URL says "Not set" rather than leaving it to be
+    # worked out.
+    assert NAME_FROM_DOCUMENT not in typed
+    assert NAME_FROM_DOCUMENT in defaulted
+    assert NAME_FROM_URL not in defaulted
+
+
+def test_a_clashing_row_still_says_which_name_it_is_clashing_over(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    # The cell beside the marker no longer spells the name out, so the marker
+    # has to. It carries ``NameConflict.message``, which names it in full.
+    document = {
+        "openapi": "3.0.3",
+        "info": {"title": "Clashing", "version": "1.0.0"},
+        "servers": [{"url": "https://api.example.com"}],
+        "paths": {
+            "/a": {"get": {"operationId": "same", "responses": {}}},
+            "/b": {"get": {"operationId": "same!", "responses": {}}},
+        },
+    }
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=document))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(preview_of(http), headers=HTML).text
+
+    assert "Name taken" in body
+    assert "&#39;clashing__same&#39; is already taken" in body
+
+
+def test_the_script_and_the_picker_agree_about_what_it_reaches_for() -> None:
+    # Written twice, in two languages: the attribute the header box carries,
+    # the cell every row's checkbox sits in, and the slot the count is written
+    # into. This is what keeps the three together.
+    source = (STATIC_DIR / "js" / "table.js").read_text(encoding="utf-8")
+    template = (TEMPLATES_DIR / "partials" / "operation_picker.html").read_text(encoding="utf-8")
+
+    assert "data-tick-all" in source
+    assert "data-tick-all" in template
+    assert "td.pick input[type=checkbox]" in source
+    assert 'class="pick"' in template
+    assert "data-summary" in source
+    assert "data-summary" in template
+    # The one number the browser fills in, spelled the same on both sides.
+    assert '"{selected}"' in source
+    assert "{selected}" in SUMMARY
+
+
+def test_back_carries_the_token_the_form_is_held_under(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    settings = settings_for(tmp_path)
+    respx_mock.get(SPEC_URL).mock(return_value=httpx.Response(200, json=DOCUMENT))
+
+    with client(settings, tmp_path) as http:
+        preview_path = preview_of(http)
+        body = http.get(preview_path, headers=HTML).text
+
+    token = preview_path.rsplit("/", 1)[1]
+    assert f'href="{NEW_SERVER_PATH}?from={token}"' in body

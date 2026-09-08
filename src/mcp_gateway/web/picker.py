@@ -44,8 +44,10 @@ from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
 from mcp_gateway.naming import (
     MAX_CONFLICTS_SHOWN,
+    MAX_TOOL_NAME,
     MORE_CONFLICTS,
     PREFIX_REQUIRED,
+    PREFIX_SEPARATOR,
     NameConflict,
     NamedOperation,
     NamePlan,
@@ -91,6 +93,14 @@ NO_BASE_URL: Final = (
 
 #: What is said once the row exists, on the page that now lists it.
 SAVED: Final = "{name} was added: {selected} of {total} tools are exposed."
+
+#: The line above the table, in its two shapes. ``{selected}`` is left as a slot
+#: as well as filled in: the header tick box moves ticks in the page and posts
+#: nothing, so the script has to be able to write that number without asking the
+#: server for a new sentence — and this is the sentence it writes it into
+#: (task 115).
+SUMMARY: Final = "{selected} of {total} selected"
+SUMMARY_FILTERED: Final = "{selected} of {total} selected, showing {shown}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +162,11 @@ class OperationRow:
     tags: tuple[str, ...]
     #: The name this operation would be published under.
     tool_name: str
+    #: :attr:`tool_name` with the server's prefix taken off the front, so the
+    #: cell can print the prefix as the slot it is rather than as it stood when
+    #: the page last rendered. ``None`` wherever that would be a lie — see
+    #: :func:`_stem` for the two ways it can be.
+    stem: str | None
     selected: bool
     #: Whether the current filter shows it. A hidden row is still in the form,
     #: still ticked or not, and still saved as such.
@@ -185,6 +200,11 @@ class Picker:
         return self.pending.name
 
     @property
+    def name_note(self) -> str | None:
+        """Where :attr:`name` came from, when the operator did not type it."""
+        return self.pending.name_note
+
+    @property
     def base_url(self) -> str | None:
         return self.pending.base_url
 
@@ -212,16 +232,25 @@ class Picker:
         return tuple(sorted({tag for row in self.rows for tag in row.tags}))
 
     @property
-    def summary(self) -> str:
-        """The line above the table: what is here, and what is ticked.
+    def summary_template(self) -> str:
+        """The line above the table with its count left as a slot.
 
         Written in Python because it is a sentence with arithmetic in it, and a
-        sentence with arithmetic in a template is a sentence nobody checks.
+        sentence with arithmetic in a template is a sentence nobody checks. The
+        one number the browser can change on its own is left for the browser:
+        the header tick box moves ticks and posts nothing, so a sentence that
+        could only be rebuilt by the server would stand there being wrong until
+        something did.
         """
-        counted = f"{len(self.selected)} of {self.total} selected"
-        if self.filter.active:
-            return f"{counted}, showing {self.shown}"
-        return counted
+        wording = SUMMARY_FILTERED if self.filter.active else SUMMARY
+        # ``{selected}`` substituted with itself: ``format`` does not look at
+        # what it has just put in, so the slot comes through untouched.
+        return wording.format(selected="{selected}", total=self.total, shown=self.shown)
+
+    @property
+    def summary(self) -> str:
+        """The line above the table: what is here, and what is ticked."""
+        return self.summary_template.format(selected=len(self.selected))
 
 
 def build(
@@ -265,6 +294,8 @@ def build(
     collisions = (*plan.conflicts, *conflicts)
     taken = {conflict.claimant.op_key: conflict.message for conflict in collisions}
 
+    head = sanitize(prefix)
+    lead = f"{head}{PREFIX_SEPARATOR}" if head else ""
     rows = tuple(
         OperationRow(
             op_key=operation.op_key,
@@ -274,6 +305,7 @@ def build(
             operation_id=operation.operation_id,
             tags=operation.tags,
             tool_name=names.get(operation.op_key, ""),
+            stem=_stem(names.get(operation.op_key, ""), lead),
             selected=everything or operation.op_key in ticked,
             shown=operation.op_key in visible,
             conflict=taken.get(operation.op_key),
@@ -389,6 +421,28 @@ def _named(pending: PendingServer) -> list[NamedOperation]:
     return [NamedOperation.from_extracted(operation) for operation in pending.operations]
 
 
+def _stem(name: str, lead: str) -> str | None:
+    """The part of ``name`` after ``lead``, when printing the two is honest.
+
+    The cell shows the prefix as a slot so that it cannot go stale: type a new
+    prefix and every row would otherwise go on claiming the old one until
+    something posts. A slot is only true if the name really is the prefix
+    followed by this, and would still be if the prefix changed. Two names on
+    this page are neither, and both get ``None`` and are shown whole:
+
+    A prefix cleared to nothing. The save refuses it, but the table still has to
+    render, and :func:`~mcp_gateway.naming.default_tool_name` drops the
+    separator along with the prefix, so there is no ``__`` to print.
+
+    A name :func:`~mcp_gateway.naming._fit` had to cut down. Its tail is a
+    digest of the whole name, prefix included, so what gets published is not
+    this prefix followed by anything that would survive changing it.
+    """
+    if not lead or not name.startswith(lead) or len(name) >= MAX_TOOL_NAME:
+        return None
+    return name[len(lead) :]
+
+
 def _bulk(ticked: frozenset[str], visible: set[str], pressed: str) -> frozenset[str]:
     """Apply a select-all or select-none to the rows the filter is showing.
 
@@ -420,6 +474,8 @@ __all__ = [
     "QUERY_FIELD",
     "SAVED",
     "SELECTION_FIELD",
+    "SUMMARY",
+    "SUMMARY_FILTERED",
     "TAG_FIELD",
     "Filter",
     "NamesTaken",

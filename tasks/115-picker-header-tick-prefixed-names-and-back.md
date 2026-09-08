@@ -157,27 +157,27 @@ prefix as a slot, and **Back** returning to a step 1 that still has what was typ
 
 ## Acceptance
 
-- [ ] The picker's table header carries a checkbox that ticks and unticks the rows the filter is
+- [x] The picker's table header carries a checkbox that ticks and unticks the rows the filter is
       showing, sits indeterminate when they disagree, and moves nothing the filter has hidden.
-- [ ] It is not rendered when script is blocked, and the two bulk buttons are, so a browser without
+- [x] It is not rendered when script is blocked, and the two bulk buttons are, so a browser without
       script can still select all or none of what the filter is showing.
-- [ ] Using the header box brings the count above the table with it, and that sentence is still
+- [x] Using the header box brings the count above the table with it, and that sentence is still
       built in Python.
-- [ ] The column is headed **Name**.
-- [ ] Every row's name reads `<prefix>__…`, with the prefix shown as the slot it is — except where a
+- [x] The column is headed **Name**.
+- [x] Every row's name reads `<prefix>__…`, with the prefix shown as the slot it is — except where a
       slot would be untrue, a cleared prefix or a truncated name, where the whole planned name is
       shown as it is today.
-- [ ] A name two operations in one document both want is still marked on the row that must move, and
+- [x] A name two operations in one document both want is still marked on the row that must move, and
       the name itself is still legible from the marker.
-- [ ] The summary at the top names the **Display name**, it matches what step 1 was given, and it
+- [x] The summary at the top names the **Display name**, it matches what step 1 was given, and it
       says when it came from the document rather than from the operator.
-- [ ] **Back** lands on step 1 with the spec URL, display name, base URL and all three selectors as
+- [x] **Back** lands on step 1 with the spec URL, display name, base URL and all three selectors as
       they were submitted, and with every credential box empty.
-- [ ] Back from a preview that is no longer held lands on a blank step 1 carrying `PREVIEW_GONE`, and
+- [x] Back from a preview that is no longer held lands on a blank step 1 carrying `PREVIEW_GONE`, and
       does not loop.
-- [ ] Filtering, the bulk path, ticking, the collision refusal and the save all still behave as their
+- [x] Filtering, the bulk path, ticking, the collision refusal and the save all still behave as their
       tests say they do.
-- [ ] SPEC §7.1's step-2 bullet describes the header checkbox, the prefixed name and what Back
+- [x] SPEC §7.1's step-2 bullet describes the header checkbox, the prefixed name and what Back
       returns to.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where this task made them wrong.

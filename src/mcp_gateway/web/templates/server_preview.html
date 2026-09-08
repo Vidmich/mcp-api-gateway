@@ -5,16 +5,24 @@
    and all, because exposing somebody else's API as tools is not a thing to find
    out about afterwards.
 
-   One form around everything. The filter controls and the two bulk buttons post
-   to the picker route and swap the table back in; the submit button posts to
-   the same URL this page has and saves. Every control carries a ``formaction``
-   as well as its htmx attributes, so a browser with no JavaScript does the same
-   thing a page at a time. #}
+   One form around everything. The filter controls post to the picker route and
+   swap the table back in; the submit button posts to the same URL this page has
+   and saves. Every control carries a ``formaction`` as well as its htmx
+   attributes, so a browser with no JavaScript does the same thing a page at a
+   time — and the controls only that browser needs, Apply and the two bulk
+   buttons, are the ones inside ``<noscript>`` (task 115). #}
 {% extends "base.html" %}
 {% from "partials/empty_state.html" import empty_state %}
 {% from "partials/field.html" import field %}
 
 {% block title %}{{ picker.name }} &middot; Add a server{% endblock %}
+
+{% block scripts %}
+{# The header tick box, which ships hidden and is unhidden here. The same file
+   the detail page loads: the two tables have the same shape, so a second copy
+   of it would be a second thing to keep in step (task 115). #}
+<script src="{{ static_url('js/table.js') }}" defer></script>
+{% endblock %}
 
 {% block content %}
 <div class="toolbar">
@@ -48,6 +56,17 @@
 {% endif %}
 
 <dl class="summary">
+  {# First, because it is the one thing on this list the operator typed, and the
+     heading above shows it without saying what it is. A name that came from the
+     document instead says so, the way Base URL below says "Not set" rather than
+     leaving the reader to work it out. #}
+  <div class="summary__pair">
+    <dt class="summary__term">Display name</dt>
+    <dd class="summary__value">
+      {{ picker.name }}
+      {% if picker.name_note %}<span class="cell-note">{{ picker.name_note }}</span>{% endif %}
+    </dd>
+  </div>
   <div class="summary__pair">
     <dt class="summary__term">Spec URL</dt>
     <dd class="summary__value"><code>{{ preview.requested_url }}</code></dd>
@@ -96,11 +115,30 @@
       />
     </label>
 
-    {# First, so that Enter in the search box means "apply the filter" rather
-       than whatever submit button happens to come next. With a script this
-       button is not rendered at all and the filter has already run. #}
+    {# Apply first, so that Enter in the search box means "apply the filter"
+       rather than whatever submit button happens to come next. With a script
+       none of these is rendered: the filter has already run, and the tick box
+       in the table header is what selects all or none of what it is showing.
+
+       Both bulk buttons act on the rows the filter is showing, which is the
+       only reading of "all" that makes a filter safe to use — and is the rule
+       the header box follows too (task 115). #}
     <noscript>
       <button class="button" type="submit" formaction="{{ picker_path }}">Apply</button>
+      <button
+        class="button"
+        type="submit"
+        name="bulk"
+        value="all"
+        formaction="{{ picker_path }}"
+      >Select all</button>
+      <button
+        class="button"
+        type="submit"
+        name="bulk"
+        value="none"
+        formaction="{{ picker_path }}"
+      >Select none</button>
     </noscript>
 
     <label class="field">
@@ -142,35 +180,16 @@
       </select>
     </label>
     {% endif %}
-
-    {# Both bulk buttons act on the rows the filter is showing, which is the
-       only reading of "all" that makes a filter safe to use. #}
-    <button
-      class="button"
-      type="submit"
-      name="bulk"
-      value="all"
-      formaction="{{ picker_path }}"
-      hx-post="{{ picker_path }}"
-      hx-target="{{ picker_target }}"
-      hx-swap="outerHTML"
-    >Select all</button>
-    <button
-      class="button"
-      type="submit"
-      name="bulk"
-      value="none"
-      formaction="{{ picker_path }}"
-      hx-post="{{ picker_path }}"
-      hx-target="{{ picker_target }}"
-      hx-swap="outerHTML"
-    >Select none</button>
   </div>
 
   {% include "partials/operation_picker.html" %}
 
   <div class="form-actions">
-    <a class="button" href="{{ new_server_path }}">Back</a>
+    {# Carries the token, so step 1 comes back with what was typed in it rather
+       than blank. Not a browser Back: this page was arrived at by a redirect
+       after a POST, and what the operator wants is the form, not the history
+       entry (task 115). #}
+    <a class="button" href="{{ back_path }}">Back</a>
     <button class="button button--primary" type="submit">Save the server</button>
   </div>
 </form>

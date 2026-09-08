@@ -1,4 +1,4 @@
-/* The tick box in the Tools table's header (task 114).
+/* The tick box in the header of the tables that have one (tasks 114, 115).
  *
  * It ticks and unticks the rows the filter is currently showing, and only
  * those: a table narrowed to three rows whose header box moved two hundred
@@ -14,6 +14,10 @@
  * the same bargain forms.js makes — the script reduces work, it does not make
  * the page function.
  *
+ * Where the table has a count above it — the picker's does — the box brings it
+ * with it, because a box that ticked forty rows under a line still reading
+ * "3 of 200 selected" would be two answers to one question (task 115).
+ *
  * Everything is delegated from the document and re-applied after every swap,
  * because #operations is replaced whenever the table is filtered or a review
  * decision is taken. A listener bound to the box at load would be a listener on
@@ -24,6 +28,10 @@
   "use strict";
 
   var ALL = "[data-tick-all]";
+  /* The sentence above a table that counts what is ticked in it, if there is
+   * one. The picker has one; the detail page does not, and nothing here needs
+   * to know which page it is on. */
+  var SUMMARY = "[data-summary]";
 
   /* The row boxes this header box speaks for: its own table's, minus the rows
    * the filter has hidden. */
@@ -51,6 +59,28 @@
     }).length;
     all.checked = shown.length > 0 && ticked === shown.length;
     all.indeterminate = ticked > 0 && ticked < shown.length;
+    recount(all);
+  }
+
+  /* Rewrite the count above the table, when the table has one.
+   *
+   * Every ticked box, hidden rows included — which is what the server means by
+   * "selected", and what the Save at the bottom will carry. Not `boxes()`: that
+   * is the narrower question of which rows this header box speaks for.
+   *
+   * The sentence is built in Python and arrives in `data-summary` with its one
+   * changeable number left as a slot, so the wording, its comma and its
+   * pluralisation stay in the one place that owns them.
+   */
+  function recount(all) {
+    var table = all.closest("table");
+    var region = table && table.parentNode;
+    var summary = region && region.querySelector(SUMMARY);
+    if (!summary) {
+      return;
+    }
+    var ticked = table.querySelectorAll("tbody td.pick input[type=checkbox]:checked").length;
+    summary.textContent = summary.getAttribute("data-summary").replace("{selected}", ticked);
   }
 
   function apply(all) {
@@ -74,6 +104,7 @@
     }
     if (target.matches(ALL)) {
       apply(target);
+      recount(target);
       return;
     }
     var table = target.closest("table");

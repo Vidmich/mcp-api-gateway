@@ -92,6 +92,12 @@ HEADER_LINE: Final = "Write one header per line, as 'Name: value'."
 #: the whole reason this form has a second credential on it.
 SPEC_AUTH_HINT: Final = "The spec URL needs credentials of its own to be downloaded."
 
+#: Said beside a display name the operator did not type. Step 1 promised the
+#: document would supply one, and step 2 is where that promise is kept or not,
+#: so the page that shows the name says which of the two it got (task 115).
+NAME_FROM_DOCUMENT: Final = "From the document"
+NAME_FROM_URL: Final = "From the spec URL"
+
 #: How long a previewed spec waits for the operator to work through step 2.
 #: Long enough to read a hundred operations and decide; short enough that a
 #: browser tab left open over a weekend is not still holding a token.
@@ -178,6 +184,19 @@ class PendingServer:
         return self.form.base_url or self.preview.base_url
 
     @property
+    def name_note(self) -> str | None:
+        """Where :attr:`name` came from, when it did not come from the form.
+
+        ``None`` for a name the operator typed, which needs no explanation.
+        Answered here rather than in a template because it is the other half of
+        :attr:`name`, and two places deciding where a name came from is two
+        places that can disagree about it.
+        """
+        if self.form.name:
+            return None
+        return NAME_FROM_DOCUMENT if self.preview.title else NAME_FROM_URL
+
+    @property
     def operations(self) -> tuple[NormalizedOperation, ...]:
         return self.preview.operations
 
@@ -190,6 +209,22 @@ def kept_fields(fields: Mapping[str, str]) -> dict[str, str]:
     blank, whether or not the template remembered to leave it out.
     """
     return {name: str(fields.get(name, "")).strip() for name in KEPT}
+
+
+def form_fields(form: WizardForm) -> dict[str, str]:
+    """A parsed step-1 form back as the mapping its template takes.
+
+    What **Back** on step 2 needs: the preview holds the form, and the operator
+    who went back to correct one field should not retype the other five.
+
+    Through :func:`kept_fields` like every other route into that template, so
+    that this door is no wider than the others. It cannot widen: the two
+    credentials are :class:`~mcp_gateway.crypto.Credential` models rather than
+    strings, :data:`KEPT` names only the six fields that are strings, and
+    ``WizardForm.credential`` and ``WizardForm.spec_credential`` never reach a
+    template.
+    """
+    return kept_fields({name: str(getattr(form, name)) for name in KEPT})
 
 
 def parse_form(fields: Mapping[str, str]) -> WizardForm:
@@ -467,6 +502,8 @@ __all__ = [
     "KEPT",
     "MAX_PENDING",
     "MODE_LABELS",
+    "NAME_FROM_DOCUMENT",
+    "NAME_FROM_URL",
     "NOTHING_TO_REUSE",
     "PREVIEW_TTL",
     "SPEC_AUTH_HINT",
@@ -479,6 +516,7 @@ __all__ = [
     "WizardForm",
     "failure_field",
     "failure_message",
+    "form_fields",
     "kept_fields",
     "options",
     "parse_form",

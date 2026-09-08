@@ -14,15 +14,38 @@
    unselect anything. #}
 {% from "partials/status_badge.html" import status_badge %}
 <div id="{{ picker_id }}">
-  <p class="picker__summary" role="status">{{ picker.summary }}</p>
+  {# The sentence, and the sentence with its count still a slot. The header box
+     below moves ticks in the page and posts nothing, so ``table.js`` rewrites
+     this line from the second one rather than from a wording of its own. #}
+  <p
+    class="picker__summary"
+    role="status"
+    data-summary="{{ picker.summary_template }}"
+  >{{ picker.summary }}</p>
   <table class="table">
     <thead>
       <tr>
-        <th scope="col" class="pick"><span class="visually-hidden">Expose</span></th>
+        <th scope="col" class="pick">
+          {# Ticks the rows the filter is showing, and only those. Ships hidden
+             and is unhidden by ``table.js``: it moves ticks in the page and
+             writes nothing itself, so with no script it would be a box that
+             does nothing. Nothing is lost — the two bulk buttons are rendered
+             in that case, and rows are still ticked one at a time
+             (task 115). #}
+          <input
+            type="checkbox"
+            id="tick-all"
+            data-tick-all
+            hidden
+          />
+          <label class="visually-hidden" for="tick-all">
+            Expose every operation the filter is showing
+          </label>
+        </th>
         <th scope="col">Method</th>
         <th scope="col">Path</th>
         <th scope="col">Summary</th>
-        <th scope="col">Tool name</th>
+        <th scope="col">Name</th>
       </tr>
     </thead>
     <tbody>
@@ -49,7 +72,17 @@
         </td>
         <td>{{ row.summary or row.operation_id or "" }}</td>
         <td>
+          {# The prefix as the slot it is rather than as it stood when this page
+             last rendered: the box above is typed in without posting, and a
+             name that claimed a prefix nobody has any more would be worse than
+             one that says where the prefix goes. Shown whole where a slot would
+             not be true — a cleared prefix, or a name that had to be cut down
+             (task 115). #}
+          {% if row.stem is not none %}
+          <code><var class="name-slot">&lt;prefix&gt;</var>__{{ row.stem }}</code>
+          {% else %}
           <code>{{ row.tool_name }}</code>
+          {% endif %}
           {% if row.conflict %}
           {{ status_badge("error", label="Name taken", title=row.conflict) }}
           {% endif %}
