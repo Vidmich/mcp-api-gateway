@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
+from fastapi.dependencies.models import Dependant
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from starlette.routing import BaseRoute
 
 import mcp_gateway
 from mcp_gateway.app import HEALTH_PATH, create_app, startup_banner, uvicorn_config
 from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import ConfigError, Settings, load_settings
 from mcp_gateway.crypto import CredentialCipher, generate_key
+from mcp_gateway.db.session import CommittingRoute, request_session
 from mcp_gateway.web.auth import FROM_DATABASE, AdminAuth, build_admin
 from mcp_gateway.web.passwords import derive
+from mcp_gateway.web.routes_ui import SERVERS_PATH
 
 
 def settings_for(tmp_path: Path, body: str = "") -> Settings:
@@ -214,3 +219,49 @@ def test_the_server_binds_the_configured_address(tmp_path: Path) -> None:
     assert config.access_log is False
     # Logging is configured by the CLI, not replaced by uvicorn.
     assert config.log_config is None
+
+
+# --- when a request's transaction ends (task 110) ----------------------------
+
+
+def api_routes(routes: Iterable[BaseRoute]) -> Iterator[APIRoute]:
+    """Every :class:`~fastapi.routing.APIRoute` in the app, however deeply nested.
+
+    ``include_router`` does not flatten: it appends a ``_IncludedRouter`` that
+    keeps the router it was given. So ``app.routes`` holds two paths and a
+    handful of wrappers, and anything that reasons about routes has to walk.
+    """
+    for route in routes:
+        if isinstance(route, APIRoute):
+            yield route
+        nested = getattr(route, "original_router", None) or getattr(route, "app", None)
+        if nested is not None and hasattr(nested, "routes"):
+            yield from api_routes(nested.routes)
+
+
+def takes_a_session(dependant: Dependant) -> bool:
+    return any(
+        sub.call is request_session or takes_a_session(sub) for sub in dependant.dependencies
+    )
+
+
+def test_every_route_that_takes_a_session_commits_before_it_answers(tmp_path: Path) -> None:
+    """The rule :class:`CommittingRoute` exists for, held for the whole app.
+
+    A router that asks for a session and is built on the stock route class gets
+    task 110's bug back: its transaction is committed from a dependency's exit
+    code, which FastAPI runs *after* the answer has gone out. Nothing in a
+    request's own response reveals that, so the invariant is asserted here
+    rather than waited for.
+    """
+    app = create_app(settings_for(tmp_path))
+    with_a_session = [route for route in api_routes(app.routes) if takes_a_session(route.dependant)]
+
+    # Not vacuous: the pages the report was about are in this list.
+    paths = {route.path for route in with_a_session}
+    assert SERVERS_PATH in paths
+    assert HEALTH_PATH not in paths  # and a route that needs no session is not.
+    assert len(with_a_session) > 20
+
+    stock = sorted(route.path for route in with_a_session if not isinstance(route, CommittingRoute))
+    assert stock == []

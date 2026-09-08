@@ -67,7 +67,7 @@ from mcp_gateway.config import Settings
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import utcnow
 from mcp_gateway.db.repo import CallErrorView, ServerSummary
-from mcp_gateway.db.session import request_session
+from mcp_gateway.db.session import CommittingRoute, request_session
 from mcp_gateway.metrics import THROTTLED, TOOL_CALL
 from mcp_gateway.usage import (
     DELETED_LABEL,
@@ -809,6 +809,10 @@ def monitoring_router() -> APIRouter:
         # configuration router declares it there: a route added later is
         # protected by being on it, rather than by somebody remembering.
         dependencies=[Depends(require_session)],
+        # Nothing here writes. Declared anyway, because the rule is "a router
+        # that takes a session closes its transaction in time" (task 110), and a
+        # rule with an exception in it is one somebody has to remember.
+        route_class=CommittingRoute,
     )
 
     async def _view(request: Request, session: AsyncSession, asked: str | None) -> Monitoring:

@@ -91,15 +91,99 @@ currently ask. That is the actual finding, and the bullet below about tests is w
 
 ## Acceptance
 
-- [ ] The reproduction is written down in `## Notes`: the steps, the browser, the configuration,
+- [x] The reproduction is written down in `## Notes`: the steps, the browser, the configuration,
       and whether anything sits between the browser and the gateway.
-- [ ] In that reproduction the new row is on the page the browser lands on, with no reload.
-- [ ] The flash still appears exactly once and is gone from the next page.
-- [ ] The save is still a `303` to `/ui/servers`, and reloading the landing page creates nothing.
-- [ ] A test fails before the fix and passes after it. If only a browser can express it, it is
+- [x] In that reproduction the new row is on the page the browser lands on, with no reload.
+- [x] The flash still appears exactly once and is gone from the next page.
+- [x] The save is still a `303` to `/ui/servers`, and reloading the landing page creates nothing.
+- [x] A test fails before the fix and passes after it. If only a browser can express it, it is
       marked, skipped when no browser is present, and the skip is visible rather than silent.
-- [ ] Every existing test still runs, and passes, without a browser installed.
+- [x] Every existing test still runs, and passes, without a browser installed.
 - [ ] If the cause is outside the gateway, `docs/service-setup.md` names it and says what a proxy
       in front of these pages must not do.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with no
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with no
       assertion changed except any the fix makes wrong.
+
+## Notes
+
+### The reproduction
+
+Not a browser, not a proxy, and not two tabs. The cause is in the gateway, and
+it is an ordering: **the answer to a save goes out before the save is
+committed.**
+
+FastAPI gives a request two exit stacks (`fastapi/routing.py`). Dependencies are
+torn down from the one closed *after* `await response(scope, receive, send)`, so
+`request_session`'s `await session.commit()` runs when the client already holds
+the `303`. The browser follows that redirect immediately, and the
+`GET /ui/servers` at the other end is served from a second connection — which,
+in WAL mode, cannot see a transaction that has not committed. The flash is right
+because it rode the redirect in a cookie; the table is the world as it was; and
+a reload, arriving after the commit, shows the row. Every symptom in the report,
+in the order the report gives them.
+
+Measured against a real gateway on a real port, driving the wizard exactly as a
+browser does:
+
+| | |
+|---|---|
+| Steps | `POST /ui/servers/new`, `POST` the preview, follow the `303` to `/ui/servers` |
+| Configuration | stock; `[admin]` unset — and set, which changes nothing |
+| Between the browser and the gateway | **nothing.** uvicorn on loopback, no proxy |
+| Client | `httpx`, one keep-alive connection, the redirect followed by hand |
+| Commit lands | **1.9 ms after the client has the `303`** |
+| Threshold on this machine | a commit slower than ~10 ms loses the race |
+
+At the default speed the commit is sub-millisecond and the gateway wins, which
+is why one careful attempt in a real browser looked right. It only has to lose
+once: an fsync on a busy disk, a scanner watching `gateway.db-wal`, a data
+directory on a network share, or an event loop busy with a metrics flush.
+
+### What was ruled out, and why
+
+- **A caching proxy** — the leading suspect when this task was written, and it
+  cannot be the cause. A cached `200` would carry the flash it was cached
+  *with*, and the report is a *fresh* flash over a stale table. Both came out of
+  one response, so that response was rendered by the gateway after the save. The
+  shipped nginx recipe configures no `proxy_cache` either. `docs/service-setup.md`
+  is therefore unchanged and the last acceptance box is left unticked on
+  purpose: it asks what to write down *if* the cause is outside the gateway, and
+  it is not.
+- **A second tab, the browser, a login** — none of them are needed. The
+  reproduction is one client on one connection with no `[admin]`, and it
+  reproduces unchanged with `[admin]` set.
+- **A slow save** — the closest of the five guesses, and still not it. Not the
+  *save* being slow; the **commit** being slow, after the answer had gone.
+
+### Why 2116 tests had nothing to say about it
+
+Not the missing browser. `httpx.ASGITransport` awaits the entire ASGI call —
+every `yield` dependency's exit code included — before it builds the response
+the test reads. Over ASGI a request's `COMMIT` has therefore always finished
+before a test can ask its next question, and the ordering this bug is made of
+cannot be expressed there at all.
+
+So the hole was the transport, and closing it needs a socket and nothing else:
+no browser, no marker, no conditional skip.
+`tests/integration/test_read_after_write.py` starts a real gateway on a real
+port and slows `COMMIT` to a quarter of a second — the speed of the machine this
+was reported from rather than the one it is tested on, which turns "sometimes"
+into "always" in both directions. All three of its tests fail against the code
+before this task and pass against the code after it, and none of them needs
+anything that is not already installed.
+
+### The fix, and what it reaches
+
+`CommittingRoute` (`db/session.py`) closes the transaction in the endpoint's
+return path — the last thing that runs before the response is sent — and the
+four routers that take a session are built on it. The dependency still commits
+afterwards, over a session with nothing left to flush, so a router that one day
+forgets the route class gets the old race back rather than writes that vanish;
+`test_every_route_that_takes_a_session_commits_before_it_answers` fails the
+moment one does.
+
+The other list actions were out of scope unless the reproduction implicated
+them. It does: enable, disable, delete, Refresh Spec and the settings form all
+redirect after writing through the same dependency, and `POST /api/v1/servers`
+is the same shape for a script that writes and reads straight back. One route
+class covers all of them, so they came along rather than being left half-fixed.

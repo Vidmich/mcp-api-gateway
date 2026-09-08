@@ -95,7 +95,7 @@ from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import utcnow
 from mcp_gateway.db.repo import ServerSummary
-from mcp_gateway.db.session import request_session
+from mcp_gateway.db.session import CommittingRoute, request_session
 from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken, conflict_alerts
 from mcp_gateway.openapi.diagnostics import SpecError
@@ -820,6 +820,9 @@ def ui_router() -> APIRouter:
         # Declared on the router rather than per route: a page added later is
         # protected by being on it, instead of by somebody remembering.
         dependencies=[Depends(require_session)],
+        # For the same reason, and because every form on these pages writes and
+        # then redirects to a page that has to show what it wrote (task 110).
+        route_class=CommittingRoute,
     )
 
     @router.get(SERVERS_PATH)

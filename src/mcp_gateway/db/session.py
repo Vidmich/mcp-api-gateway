@@ -11,18 +11,22 @@ than storing them with the file:
 ``busy_timeout`` goes with them: WAL still serialises writers, and the default
 of zero turns a metrics flush that overlaps a UI save into an immediate
 "database is locked" rather than a five-millisecond wait.
+
+**A request's transaction ends before its answer is sent**, and that takes a
+route class rather than a dependency to arrange: see :class:`CommittingRoute`.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.routing import APIRoute
 from sqlalchemy import URL, event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -41,6 +45,9 @@ DATABASE_FILENAME: Final = "gateway.db"
 NO_DATABASE: Final = "The gateway's database is not available."
 #: How long a connection waits for a competing writer before giving up.
 BUSY_TIMEOUT_MS: Final = 5000
+#: Where a request's session is left for the route answering it to find, so the
+#: transaction can be closed at a moment the dependency system cannot reach.
+SESSION_STATE: Final = "db_session"
 
 
 def database_path(settings: Settings) -> Path:
@@ -121,7 +128,9 @@ async def request_session(request: Request) -> AsyncIterator[AsyncSession]:
 
     Committed when the request ends and rolled back if it raised, because that
     is what :meth:`Database.session` does and a web request is exactly the unit
-    of work it was written for.
+    of work it was written for. *When* "the request ends" is not soon enough on
+    its own, though, which is what :class:`CommittingRoute` is for; the session
+    is left on the request's state for it to find.
 
     A 503 rather than a 500 when there is no database: the process is up and
     answering, and an app built without services is a normal thing in a test and
@@ -131,7 +140,50 @@ async def request_session(request: Request) -> AsyncIterator[AsyncSession]:
     if database is None:
         raise HTTPException(status_code=503, detail=NO_DATABASE)
     async with database.session() as session:
+        setattr(request.state, SESSION_STATE, session)
         yield session
+
+
+class CommittingRoute(APIRoute):
+    """A route that ends its transaction before its answer goes out (task 110).
+
+    FastAPI gives a request two exit stacks, and the one dependencies are torn
+    down from is closed *after* ``await response(scope, receive, send)``
+    (``fastapi/routing.py``). So a session committed by
+    :func:`request_session`'s exit code commits after the client already holds
+    the answer. On a page that only reads, nobody could tell. On a form that
+    writes and answers ``303``, it is the bug this class exists for: the browser
+    follows the redirect immediately, and the ``GET`` at the other end is served
+    from a second connection while the first one's ``COMMIT`` is still in
+    flight. The operator gets the flash, because that rode the redirect, over a
+    list drawn from the world as it was — and a reload, arriving after the
+    commit, shows the row that was missing. Measured on the reported flow: the
+    commit lands about two milliseconds after the client has the response, and
+    the page loses whenever it takes longer than the browser's round trip.
+
+    The endpoint's return path is the last thing that runs *before* the response
+    is sent, so that is where the transaction is closed.
+
+    Committing here does not stop the exit code from committing too — it does,
+    over a session with nothing left to flush, which acquires no connection and
+    writes nothing. That is deliberate: a router that one day forgets this route
+    class gets the old race back rather than writes that are silently dropped.
+    """
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        answer = super().get_route_handler()
+
+        async def committing(request: Request) -> Response:
+            response = await answer(request)
+            # Only on the way out of a *successful* endpoint. A raising one
+            # never reaches this line, and the exit code rolls it back, which is
+            # what it did before this class existed.
+            session: AsyncSession | None = getattr(request.state, SESSION_STATE, None)
+            if session is not None:
+                await session.commit()
+            return response
+
+        return committing
 
 
 def database_service(

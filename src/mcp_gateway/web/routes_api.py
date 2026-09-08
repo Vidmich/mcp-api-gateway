@@ -40,7 +40,7 @@ from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import Operation, OperationStatus, Server
-from mcp_gateway.db.session import request_session
+from mcp_gateway.db.session import CommittingRoute, request_session
 from mcp_gateway.limits import HALF_A_LIMIT, half_a_limit
 from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken
@@ -181,6 +181,9 @@ def api_router() -> APIRouter:
         # Declared on the router rather than per route: an endpoint added later
         # is protected by being on it, instead of by somebody remembering.
         dependencies=[Depends(require_session)],
+        # A script that writes and then reads back is the browser's redirect in
+        # another shape, and loses the same race without this (task 110).
+        route_class=CommittingRoute,
     )
 
     @router.get(HEALTH_PATH, summary="How the gateway is")

@@ -44,7 +44,7 @@ from starlette.responses import RedirectResponse, Response
 
 from mcp_gateway.config import ENV_SOURCE, Settings
 from mcp_gateway.db import repo
-from mcp_gateway.db.session import request_session
+from mcp_gateway.db.session import CommittingRoute, request_session
 from mcp_gateway.scheduler import INTERVAL_KEY, interval_minutes
 from mcp_gateway.web import account
 from mcp_gateway.web.auth import FROM_DATABASE, AdminAuth, require_session
@@ -374,6 +374,8 @@ def configuration_router() -> APIRouter:
         tags=["ui"],
         include_in_schema=False,
         dependencies=[Depends(require_session)],
+        # This page saves and redirects to itself; see task 110.
+        route_class=CommittingRoute,
     )
 
     async def _page(
