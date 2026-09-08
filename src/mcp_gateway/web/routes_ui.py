@@ -110,11 +110,13 @@ from mcp_gateway.web.detail import (
     SettingsInvalid,
     SettingsView,
     build_operations,
+    mode_path,
     preview_prefix,
     refused_row,
     save_operation,
     save_settings,
     settings_view,
+    wants_edit,
 )
 from mcp_gateway.web.formatting import exact_time, plural, refresh_state, time_ago
 from mcp_gateway.web.picker import (
@@ -263,6 +265,12 @@ OPERATIONS_ID: Final = "operations"
 OPERATIONS_TARGET: Final = f"#{OPERATIONS_ID}"
 RENAME_ID: Final = "rename-preview"
 RENAME_TARGET: Final = f"#{RENAME_ID}"
+
+#: The settings card. Nothing swaps it — it is named so that Edit and Cancel,
+#: which are whole-page links, land on the card rather than at the top of a page
+#: two hundred operations long (task 113).
+SETTINGS_ID: Final = "settings"
+SETTINGS_FRAGMENT: Final = f"#{SETTINGS_ID}"
 
 
 #: Which page the button was pressed on. Read by the two routes both pages
@@ -693,8 +701,9 @@ def _operations_context(operations: Operations) -> dict[str, object]:
 def _detail_context(
     server: repo.ServerDetail, settings: SettingsView, operations: Operations
 ) -> dict[str, object]:
-    """The whole detail page: the summary, the settings form, and the table."""
+    """The whole detail page: the summary, the settings card, and the table."""
     path = f"{SERVERS_PATH}/{server.id}"
+    query = operations.filter.query
     return {
         **_operations_context(operations),
         "overview": to_row(server),
@@ -703,6 +712,12 @@ def _detail_context(
         # template is not reading an undefined name to find that out.
         "rename": Rename(prefix=""),
         "detail_path": path,
+        # Where Edit goes and where Cancel comes back to: this same page, in the
+        # other mode, with whatever the table was narrowed to still on it
+        # (task 113).
+        "settings_id": SETTINGS_ID,
+        "edit_path": mode_path(path, query, editing=True, fragment=SETTINGS_FRAGMENT),
+        "view_path": mode_path(path, query, editing=False, fragment=SETTINGS_FRAGMENT),
         "prefix_path": f"{path}/prefix",
         "refresh_path": f"{path}/refresh",
         "rename_id": RENAME_ID,
@@ -961,12 +976,17 @@ def ui_router() -> APIRouter:
 
     @router.get(DETAIL_PATH)
     async def server_page(request: Request, server_id: int, session: Session) -> Response:
-        """One server: what it is, what can be changed, and every operation it has."""
+        """One server: what it is, what can be changed, and every operation it has.
+
+        The settings are read here and typed over at ``?edit=1``, which is the
+        same page and not a second one — the operation table's filter is in this
+        query string and every row's Save carries it back (task 113).
+        """
         server = await _server(request, session, server_id)
         return _detail_page(
             request,
             server,
-            settings_view(server),
+            settings_view(server, editing=wants_edit(request.query_params)),
             _operations_of(server, request.query_params),
         )
 
@@ -976,7 +996,12 @@ def ui_router() -> APIRouter:
 
         Both refusals happen before anything is written — a field that cannot be
         read, and a prefix whose names another server already publishes — so the
-        page that comes back is describing the server as it still is.
+        page that comes back is describing the server as it still is. Both come
+        back in edit mode: what was typed has to be in boxes to be corrected,
+        and a read-only card would show the operator the stored row and lose it
+        (task 113). The save that works does the opposite, and redirects to a
+        page with no ``edit`` on it — the operator has finished, and the flash
+        lands over a card now showing what it says was saved.
         """
         server = await _server(request, session, server_id)
         cipher = _cipher(request)
@@ -991,7 +1016,7 @@ def ui_router() -> APIRouter:
             return _detail_page(
                 request,
                 server,
-                settings_view(server, fields, errors=invalid.errors),
+                settings_view(server, fields, errors=invalid.errors, editing=True),
                 _operations_of(server, request.query_params),
                 status_code=422,
             )
@@ -1002,7 +1027,9 @@ def ui_router() -> APIRouter:
             return _detail_page(
                 request,
                 server,
-                settings_view(server, fields, alerts=conflict_alerts(taken.conflicts)),
+                settings_view(
+                    server, fields, alerts=conflict_alerts(taken.conflicts), editing=True
+                ),
                 _operations_of(server, request.query_params),
                 status_code=409,
             )
@@ -1318,6 +1345,7 @@ __all__ = [
     "ROW_TEMPLATE",
     "SERVERS_PATH",
     "SERVERS_TEMPLATE",
+    "SETTINGS_ID",
     "UNREVIEWED_TITLE",
     "ServerRow",
     "ToolCounts",

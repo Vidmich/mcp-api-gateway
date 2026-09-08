@@ -158,6 +158,24 @@ pre {
   font-size: 1.125rem;
 }
 
+/* A card heading with one action on it: the button that opens the card below
+ * for editing (task 113). The row carries the margin the title had, so the
+ * card reads the same height whichever mode it is in. */
+.card__header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap);
+  margin-bottom: 1.25rem;
+}
+
+.card__header .card__title {
+  margin-bottom: 0;
+}
+
+.card__header .button {
+  margin-left: auto;
+}
+
 /* --- page header ---------------------------------------------------------- */
 
 .toolbar {
@@ -235,7 +253,11 @@ pre {
 .form--wide .fieldset,
 .form--wide .rename,
 .form--wide .form__lead,
-.form--wide .form__note {
+.form--wide .form__note,
+/* The same measure for the same card read rather than typed in: a Base URL
+ * running the width of the page is no easier to read than one to type into
+ * (task 113). */
+.form--wide .summary {
   max-width: 34rem;
 }
 
@@ -471,19 +493,6 @@ a.badge:hover {
 .rename__more {
   list-style: none;
   margin-left: -1.25rem;
-}
-
-/* A summary used inside a fieldset, where the surrounding card has already
- * supplied the background and the border. */
-.summary--inline {
-  margin-bottom: 0.75rem;
-  padding: 0;
-  background: none;
-  border: 0;
-}
-
-.summary--inline .summary__term {
-  flex: 0 0 8rem;
 }
 
 /* A table whose cells hold controls needs its rows to breathe less than a
@@ -732,6 +741,20 @@ a.badge:hover {
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* A summary inside a card, which has already supplied the background and the
+ * border: the settings card in its reading mode, and the two credential lines
+ * in its editing one. Below ``.summary`` rather than above it, which is where
+ * it used to be — a modifier declared first loses every tie to the class it
+ * modifies, and this one lost all four of them (task 113). The term column is
+ * the one ``.summary`` sets, so the card's labels line up with the page
+ * summary's above it. */
+.summary--inline {
+  margin-bottom: 0.75rem;
+  padding: 0;
+  background: none;
+  border: 0;
 }
 
 /* --- tables --------------------------------------------------------------- */

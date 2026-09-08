@@ -20,6 +20,7 @@ import asyncio
 import datetime as dt
 import re
 from collections.abc import Awaitable, Callable
+from html import unescape
 from pathlib import Path
 from typing import Any, Final, TypeVar
 
@@ -67,7 +68,7 @@ from mcp_gateway.web.detail import (
     settings_view,
     stored_fields,
 )
-from mcp_gateway.web.routes_ui import SERVERS_PATH
+from mcp_gateway.web.routes_ui import SERVERS_PATH, SETTINGS_ID
 from mcp_gateway.web.wizard import BASE_URL_SCHEME, NOTHING_TO_REUSE
 
 T = TypeVar("T")
@@ -309,6 +310,32 @@ def settings_form(**overrides: str) -> dict[str, str]:
     }
     form.update(overrides)
     return {name: value for name, value in form.items() if value != ""}
+
+
+def settings_card(body: str) -> str:
+    """The settings card on its own, so a test can say what is not in it.
+
+    Cut at the Tools heading below it, because the interesting assertions here
+    are negative and the rest of the page is full of boxes (task 113).
+    """
+    start = body.index(f'id="{SETTINGS_ID}"')
+    return body[start : body.index('<h2 class="toolbar__title">Tools</h2>', start)]
+
+
+def edit_link(body: str) -> str | None:
+    """Where the card's Edit button goes, if the card offers one.
+
+    Unescaped, because a URL in an attribute is written with ``&amp;`` and read
+    with ``&`` -- so a test that follows one has to do what the browser does.
+    """
+    found = re.search(r'<a class="button" href="([^"]+)">Edit</a>', body)
+    return None if found is None else unescape(found.group(1))
+
+
+def cancel_link(body: str) -> str | None:
+    """Where the open form's Cancel goes."""
+    found = re.search(r'<a class="button" href="([^"]+)">Cancel</a>', body)
+    return None if found is None else unescape(found.group(1))
 
 
 def the_built_in_page(http: TestClient) -> str:
@@ -818,6 +845,9 @@ def test_no_page_of_this_server_contains_a_stored_credential(tmp_path: Path) -> 
 
     with client(settings, tmp_path) as http:
         page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML)
+        # Both modes of the card, because a value that could reach one of them
+        # could reach the other (task 113).
+        editing = http.get(f"{SERVERS_PATH}/{server_id}?edit=1", headers=HTML)
         listed = http.get(SERVERS_PATH, headers=HTML)
         # And on the way back from a submission that was refused, which is the
         # render most likely to echo something it was handed.
@@ -830,12 +860,14 @@ def test_no_page_of_this_server_contains_a_stored_credential(tmp_path: Path) -> 
         )
 
     assert page.status_code == 200
+    assert editing.status_code == 200
     assert refused.status_code == 422
-    for body in (page.text, listed.text, refused.text):
+    for body in (page.text, editing.text, listed.text, refused.text):
         assert API_TOKEN not in body
         assert SPEC_TOKEN not in body
-    # It says what is stored without being able to say what it is.
-    assert "Set" in page.text
+    # Each mode says what is stored without being able to say what it is.
+    assert "Set" in settings_card(page.text)
+    assert "Set" in settings_card(editing.text)
     # Nor is it in the clear on disk.
     assert API_TOKEN.encode() not in database_path(settings).read_bytes()
 
@@ -1300,17 +1332,27 @@ def test_the_page_calls_them_tools_and_dates_the_download(tmp_path: Path) -> Non
 
 
 def test_the_page_offers_the_boxes_and_says_what_is_in_force(tmp_path: Path) -> None:
+    """The cap is said in both modes; only one of them offers the two boxes.
+
+    ``rate_limit_note`` was already the view half of this card — it reports the
+    stored row rather than what is in the boxes — so it is the one line that
+    needed no moving when the rest of the card was split (task 113).
+    """
     settings = settings_for(tmp_path)
     server_id = seeded(
         settings, lambda session: capped(session, rate_limit_calls=5, rate_limit_seconds=60)
     )
+    path = f"{SERVERS_PATH}/{server_id}"
 
     with client(settings, tmp_path) as http:
-        body = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+        reading = http.get(path, headers=HTML).text
+        typing = http.get(f"{path}?edit=1", headers=HTML).text
 
-    assert f'name="{RATE_CALLS_FIELD}"' in body
-    assert f'name="{RATE_SECONDS_FIELD}"' in body
-    assert "5 calls per 60 seconds" in body
+    assert f'name="{RATE_CALLS_FIELD}"' in typing
+    assert f'name="{RATE_SECONDS_FIELD}"' in typing
+    assert f'name="{RATE_CALLS_FIELD}"' not in settings_card(reading)
+    for body in (reading, typing):
+        assert "5 calls per 60 seconds" in body
 
 
 def test_saving_the_form_writes_the_limit(tmp_path: Path) -> None:
@@ -1476,9 +1518,6 @@ def test_the_toolbar_offers_the_switch_and_the_settings_form_no_longer_does(
 
     assert toggle_button(on) == ("Disable", "false")
     assert toggle_button(off) == ("Enable", "true")
-    # And the form below it asks for none of it: no checkbox, no label under
-    # one, nothing for a Save to write. The badge beside the title still says
-    # "Enabled", which is why this looks for the switch's own markup.
     # One control, and the count says so: the only ``enabled`` on the page is
     # the hidden input in that form. No checkbox, no label under one, nothing
     # for a Save to write. (The badge beside the title still reads "Enabled",
@@ -1615,8 +1654,8 @@ def test_the_built_in_server_gets_the_button_and_a_card_with_no_controls(
     # Not a form any more, so there is nothing on it to submit — and still the
     # same box in the same place, which is what keeps it lined up under the
     # summary (task 107).
-    assert '<div class="card form form--wide">' in page
-    assert "Save settings" not in page
+    assert f'<div class="card form form--wide" id="{SETTINGS_ID}">' in page
+    assert "Save" not in settings_card(page)
     assert '<span class="switch__label">Enabled</span>' not in page
 
 
@@ -1663,7 +1702,7 @@ def test_the_settings_form_asks_for_a_prefix_and_no_longer_for_a_slug(
     server_id = seeded(settings, lambda session: register(session))
 
     with client(settings, tmp_path) as http:
-        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+        page = http.get(f"{SERVERS_PATH}/{server_id}?edit=1", headers=HTML).text
 
     assert 'name="slug"' not in page
     assert ">Slug</span>" not in page
@@ -1684,10 +1723,14 @@ def test_the_settings_card_is_as_wide_as_the_summary_above_it(tmp_path: Path) ->
 
     with client(settings, tmp_path) as http:
         page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+        editing = http.get(f"{SERVERS_PATH}/{server_id}?edit=1", headers=HTML).text
         configuration = http.get("/ui/configuration", headers=HTML).text
         wizard = http.get("/ui/servers/new", headers=HTML).text
 
+    # Both modes: the card that reads and the card that types are one box in
+    # one place, and a summary lined up over one is lined up over both.
     assert 'class="card form form--wide"' in page
+    assert 'class="card form form--wide"' in editing
     assert "form--wide" not in configuration
     assert "form--wide" not in wizard
 
@@ -1700,9 +1743,276 @@ def test_the_built_in_server_gets_the_same_wide_card(tmp_path: Path) -> None:
     with client(settings, tmp_path, builtin=True) as http:
         page = http.get(the_built_in_page(http), headers=HTML).text
 
-    # The uneditable branch: a note, and no Save-settings form.
-    assert "Save settings" not in page
+    # The uneditable branch: a note, and nothing on it to submit.
+    assert "Save" not in settings_card(page)
     assert 'class="card form form--wide"' in page
     assert ">Status</dt>" in page
     # And no Refresh Spec button at all, because there is no document to fetch.
     assert "Refresh Spec" not in page
+
+
+# --------------------------------------------------------------------------- #
+# Settings you read before you change (task 113)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_card_opens_as_text_with_one_way_in(tmp_path: Path) -> None:
+    """An operator who came to check a base URL is not standing in a form.
+
+    Asserted as the absence of every control that can be typed into, over the
+    card and not the page: the operation table below is full of them and always
+    was.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    card = settings_card(page)
+    for control in ("<input", "<select", "<textarea"):
+        assert control not in card
+    assert edit_link(page) == f"{SERVERS_PATH}/{server_id}?edit=1#{SETTINGS_ID}"
+
+
+def test_the_card_as_text_says_everything_the_form_can_change(tmp_path: Path) -> None:
+    """Read-only is not less: every value, and every one of them the row's.
+
+    Not whether the server is on, which is the badge and the button in the
+    toolbar — one fact, one control, one statement of it (task 112).
+    """
+    settings = settings_for(tmp_path)
+
+    async def configured(session: AsyncSession) -> int:
+        server_id = await register(
+            session,
+            credential=BearerCredential(token=API_TOKEN),
+            spec_auth_mode="custom",
+            spec_credential=ApiKeyCredential(header="X-Spec", value=SPEC_TOKEN),
+        )
+        await repo.update_server(
+            session,
+            server_id,
+            repo.ServerPatch(auto_refresh=True, rate_limit_calls=5, rate_limit_seconds=60),
+            cipher=cipher(),
+        )
+        return server_id
+
+    server_id = seeded(settings, configured)
+
+    with client(settings, tmp_path) as http:
+        card = settings_card(http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text)
+
+    stored = stored_server(settings, server_id)
+    assert stored["name"] in card
+    assert stored["tool_prefix"] in card
+    assert stored["base_url"] in card
+    assert ">Refresh automatically</dt>" in card
+    assert ">Yes</dd>" in card
+    assert IS_LIMITED.format(limit="5 calls per 60 seconds") in card
+    # Both credential sets, each said as a state and never as a value.
+    assert card.count(f"<strong>{CREDENTIAL_LABELS['stored']}</strong>") == 2
+    assert ">Spec download</dt>" in card
+
+
+def test_the_card_as_text_never_describes_a_save_that_did_not_happen(
+    tmp_path: Path,
+) -> None:
+    """The rule ``rate_limit_note`` has always followed, now the whole card's.
+
+    A refusal keeps what was typed, in boxes, in the other mode. The page that
+    reads the server reads the server.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        refused = http.post(path, data=settings_form(name="", tool_prefix="zoo"), headers=HTML)
+        reading = settings_card(http.get(path, headers=HTML).text)
+
+    assert refused.status_code == 422
+    assert 'value="zoo"' in refused.text
+    assert "petstore" in reading
+    assert "zoo" not in reading
+
+
+def test_the_card_at_edit_is_the_form_and_cancel_comes_back_here(tmp_path: Path) -> None:
+    """Cancel used to leave for the list, because there was nowhere else to go.
+
+    Now there is: this page, with the card shut again. Leaving the page is
+    still All servers in the toolbar.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        page = http.get(f"{path}?edit=1", headers=HTML).text
+
+    assert 'name="name"' in page
+    assert ">Save</button>" in page
+    assert edit_link(page) is None
+    assert cancel_link(page) == f"{path}#{SETTINGS_ID}"
+
+
+def test_a_save_that_works_lands_on_the_card_as_text(tmp_path: Path) -> None:
+    """The operator has finished, and the flash is over a card now saying so."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        saved = http.post(
+            path, data=settings_form(name="Petstore EU"), headers=HTML, follow_redirects=False
+        )
+        assert saved.status_code == 303
+        assert saved.headers["location"] == path
+        landed = http.get(saved.headers["location"], headers=HTML).text
+
+    assert "Petstore EU was saved." in landed
+    assert "Petstore EU" in settings_card(landed)
+    assert "<input" not in settings_card(landed)
+
+
+def test_a_refusal_comes_back_open_holding_what_was_typed(tmp_path: Path) -> None:
+    """A read-only card over a refused submission is a page that says nothing."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        refused = http.post(
+            f"{SERVERS_PATH}/{server_id}",
+            data=settings_form(name="", base_url="https://eu.petstore.example/api"),
+            headers=HTML,
+        )
+
+    assert refused.status_code == 422
+    assert NAME_REQUIRED in refused.text
+    assert 'value="https://eu.petstore.example/api"' in refused.text
+    assert ">Save</button>" in refused.text
+    assert edit_link(refused.text) is None
+
+
+def test_a_prefix_collision_comes_back_open_with_its_alerts(tmp_path: Path) -> None:
+    """The other refusal, which is about the world rather than about the form."""
+    settings = settings_for(tmp_path)
+
+    async def two(session: AsyncSession) -> tuple[int, int]:
+        petstore = await register(session)
+        await rename_by_hand(session, petstore, LIST_PETS, "zoo__listPets")
+        return petstore, await register(session, "staging")
+
+    _, staging = seeded(settings, two)
+
+    with client(settings, tmp_path) as http:
+        refused = http.post(
+            f"{SERVERS_PATH}/{staging}",
+            data=settings_form(
+                name="Staging", tool_prefix="zoo", base_url="https://staging.example/api"
+            ),
+            headers=HTML,
+        )
+
+    assert refused.status_code == 409
+    assert "zoo__listPets" in refused.text
+    assert ">Save</button>" in refused.text
+
+
+def test_the_preview_and_the_reveal_panels_belong_to_the_open_card(
+    tmp_path: Path,
+) -> None:
+    """Everything that asks the gateway a question is where the typing is.
+
+    A rename target on a page with no prefix box is a hole nothing aims at.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        reading = settings_card(http.get(path, headers=HTML).text)
+        typing = settings_card(http.get(f"{path}?edit=1", headers=HTML).text)
+        # And the preview still answers the box that is now in one mode only.
+        preview = http.get(f"{path}/prefix", params={"tool_prefix": "zoo"}, headers=HTMX)
+
+    assert 'id="rename-preview"' not in reading
+    assert "data-reveal-for" not in reading
+    assert 'id="rename-preview"' in typing
+    # The two panels the switches open. The types inside them have panels of
+    # their own, which is why this names the two rather than counting.
+    assert 'data-reveal-for="api_replace"' in typing
+    assert 'data-reveal-for="spec_replace"' in typing
+    assert f'hx-get="{path}/prefix"' in typing
+    assert "zoo__listPets" in preview.text
+
+
+def test_edit_and_cancel_carry_whatever_the_table_was_narrowed_to(
+    tmp_path: Path,
+) -> None:
+    """Which is why the mode is a query parameter and not a path of its own."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        reading = http.get(path, params={"q": "pets", "method": "get"}, headers=HTML).text
+        opened = http.get(edit_link(reading) or "", headers=HTML).text
+
+    assert edit_link(reading) == f"{path}?q=pets&method=GET&edit=1#{SETTINGS_ID}"
+    assert cancel_link(opened) == f"{path}?q=pets&method=GET#{SETTINGS_ID}"
+    # And the table on the way through is still the narrowed one.
+    assert 'value="pets"' in opened
+
+
+def test_the_built_in_server_is_offered_no_way_in(tmp_path: Path) -> None:
+    """There is nothing on that card to open, and a button saying otherwise lies.
+
+    Asking for the form by hand gets the note anyway, and the one decision
+    anybody makes about that row is still the button in the toolbar (task 112).
+    """
+    settings = settings_for(tmp_path)
+
+    with client(settings, tmp_path, builtin=True) as http:
+        path = the_built_in_page(http)
+        page = http.get(path, headers=HTML).text
+        asked = http.get(f"{path}?edit=1", headers=HTML).text
+
+    assert edit_link(page) is None
+    assert edit_link(asked) is None
+    assert BUILTIN_SETTINGS in asked
+    assert "<input" not in settings_card(asked)
+    assert toggle_button(asked) == ("Enable", "true")
+
+
+def test_the_card_can_be_read_opened_changed_and_saved_with_no_script(
+    tmp_path: Path,
+) -> None:
+    """Every step is a link an operator can click or a form they can submit.
+
+    Followed the way a browser with no JavaScript would follow it: read the
+    href out of the page rather than construct it, so a link that stopped
+    agreeing with its route fails here.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        opened = http.get(edit_link(http.get(path, headers=HTML).text) or "", headers=HTML).text
+        action = re.search(r'<form class="card form form--wide"[^>]*action="([^"]+)"', opened)
+        assert action is not None, opened
+        saved = http.post(
+            action.group(1),
+            data=settings_form(name="Petstore EU"),
+            headers=HTML,
+            follow_redirects=False,
+        )
+        assert saved.status_code == 303
+        # And the other way out: open it again, change nothing, walk away.
+        reopened = http.get(f"{path}?edit=1", headers=HTML).text
+        abandoned = http.get(cancel_link(reopened) or "", headers=HTML).text
+
+    assert stored_server(settings, server_id)["name"] == "Petstore EU"
+    assert "<input" not in settings_card(abandoned)
+    assert "Petstore EU" in settings_card(abandoned)

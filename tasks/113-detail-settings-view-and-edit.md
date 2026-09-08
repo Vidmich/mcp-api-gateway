@@ -118,24 +118,24 @@ button; Edit turns it into exactly the form that is there now, ending in **Save*
 
 ## Acceptance
 
-- [ ] `GET /ui/servers/{id}` renders the settings as text: no `<input>`, `<select>` or `<textarea>`
+- [x] `GET /ui/servers/{id}` renders the settings as text: no `<input>`, `<select>` or `<textarea>`
       anywhere in the card, and an **Edit** button.
-- [ ] Every value the form can change is legible in view mode — name, slug, tool prefix, base URL,
+- [x] Every value the form can change is legible in view mode — name, slug, tool prefix, base URL,
       both switches, the rate limit and both credential states — and each matches the stored row.
-- [ ] Neither mode renders a credential value, in any state, for either credential set.
-- [ ] `GET /ui/servers/{id}?edit=1` renders exactly the form that exists today, ending in **Save**
+- [x] Neither mode renders a credential value, in any state, for either credential set.
+- [x] `GET /ui/servers/{id}?edit=1` renders exactly the form that exists today, ending in **Save**
       and **Cancel**, and Cancel is a link back to the same page's view mode.
-- [ ] Saving valid settings still `303`s to the detail page with the flash it flashes now, and the
+- [x] Saving valid settings still `303`s to the detail page with the flash it flashes now, and the
       page it lands on is in view mode.
-- [ ] A save the form refuses comes back at `422` in edit mode, with what was typed still in the
+- [x] A save the form refuses comes back at `422` in edit mode, with what was typed still in the
       boxes and the error beside the field; a prefix collision does the same at `409` with its
       alerts.
-- [ ] The tool prefix's rename preview and the two credential panels appear only in edit mode, and
+- [x] The tool prefix's rename preview and the two credential panels appear only in edit mode, and
       the preview still updates as the prefix is typed.
-- [ ] The built-in server's page offers no Edit button, and its one switch is still reachable and
+- [x] The built-in server's page offers no Edit button, and its one switch is still reachable and
       still warns in the startup banner's words when it is enabled with `mcp.auth_token` unset.
-- [ ] With JavaScript disabled, a server's settings can be read, opened for editing, changed and
+- [x] With JavaScript disabled, a server's settings can be read, opened for editing, changed and
       saved, and an edit abandoned, using only links and a form submission.
-- [ ] SPEC §7.1 says the detail page's settings are read-only until Edit is pressed.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] SPEC §7.1 says the detail page's settings are read-only until Edit is pressed.
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where splitting the card in two made them wrong.

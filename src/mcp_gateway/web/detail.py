@@ -101,6 +101,15 @@ SPEC_TYPE_FIELD: Final = "spec_auth_type"
 REPLACE_API_FIELD: Final = "replace_credential"
 REPLACE_SPEC_FIELD: Final = "replace_spec_credential"
 
+#: Which of its two modes the settings card is asked for (task 113). In the
+#: query string beside the filters below, and for the same reason: the page has
+#: one address, and a mode kept anywhere else would be a second one that the
+#: table's own links do not carry.
+EDIT_FIELD: Final = "edit"
+#: What the page's own Edit link writes. Any value at all is read as a yes —
+#: see :func:`wants_edit`.
+EDIT_ON: Final = "1"
+
 #: The operation table's filters. In the query string rather than in hidden
 #: fields, so that every row's Save carries the filter back simply by living at
 #: a URL that has it.
@@ -334,6 +343,10 @@ class SettingsView:
     errors: Mapping[str, str] = field(default_factory=dict)
     #: Everything wrong with the form as a whole: collisions, mostly.
     alerts: tuple[str, ...] = ()
+    #: Whether the card is open as a form. False is the page's normal state:
+    #: settings are read until somebody presses Edit (task 113). A refusal
+    #: comes back True, because what was typed has to be somewhere to correct.
+    editing: bool = False
 
     @property
     def editable(self) -> bool:
@@ -343,7 +356,9 @@ class SettingsView:
         tools are the gateway's and whose two URLs are not URLs (task 102).
         The one thing about that row anybody decides is whether it is on, and
         that is the toolbar's button rather than anything on this card
-        (task 112) — so False here means the card holds no controls at all.
+        (task 112) — so False here means the card holds no controls at all,
+        and no Edit button either: a button that opened an empty form is a
+        button that says there is something here to change (task 113).
         """
         return not self.server.builtin
 
@@ -407,6 +422,28 @@ class SettingsView:
         return bool(self.fields.get(REPLACE_SPEC_FIELD))
 
 
+def wants_edit(params: Mapping[str, str]) -> bool:
+    """Whether this URL asked for the settings card as a form (task 113).
+
+    Any non-empty value counts. The page only ever links to ``edit=1``, but a
+    URL an operator kept, shortened or typed by hand should open the card it
+    plainly asks for rather than quietly showing them the other mode.
+    """
+    return bool(_clean(params.get(EDIT_FIELD)))
+
+
+def mode_path(path: str, query: str, *, editing: bool, fragment: str = "") -> str:
+    """One of this page's two addresses, table filter and all.
+
+    ``query`` is :attr:`OperationFilter.query`, which is why Edit and Cancel do
+    not re-widen a narrowed table on the way past: the mode is one more pair in
+    the same query string rather than a URL of its own (task 113).
+    """
+    parts = [part for part in (query, f"{EDIT_FIELD}={EDIT_ON}" if editing else "") if part]
+    suffix = f"?{'&'.join(parts)}" if parts else ""
+    return f"{path}{suffix}{fragment}"
+
+
 def kept_fields(fields: Mapping[str, str]) -> dict[str, str]:
     """What a re-rendered settings form may show back to the operator."""
     return {name: str(fields.get(name, "")).strip() for name in KEPT}
@@ -457,8 +494,15 @@ def settings_view(
     *,
     errors: Mapping[str, str] | None = None,
     alerts: Sequence[str] = (),
+    editing: bool = False,
 ) -> SettingsView:
-    """The settings form, from the stored row and whatever was last submitted."""
+    """The settings card, from the stored row and whatever was last submitted.
+
+    ``fields`` still fills the boxes whichever mode this is rendered in, and
+    the read-only mode still does not touch them: it reads the row, because a
+    view built out of a refused submission would be a page describing a save
+    that did not happen (task 113).
+    """
     return SettingsView(
         server=server,
         fields=kept_fields(fields) if fields is not None else stored_fields(server),
@@ -466,6 +510,7 @@ def settings_view(
         spec_credential=credentials("spec", server.spec_auth, server.spec_auth_type),
         errors=dict(errors or {}),
         alerts=tuple(alerts),
+        editing=editing,
     )
 
 
@@ -1238,6 +1283,8 @@ __all__ = [
     "CUSTOM_NEEDS_CREDENTIAL",
     "DELETE_OPERATION",
     "DESCRIPTION_FIELD",
+    "EDIT_FIELD",
+    "EDIT_ON",
     "ENABLED_HINT",
     "IS_LIMITED",
     "KEPT",
@@ -1298,6 +1345,7 @@ __all__ = [
     "build_operations",
     "credentials",
     "kept_fields",
+    "mode_path",
     "parse_settings",
     "preview_prefix",
     "refused_row",
@@ -1305,4 +1353,5 @@ __all__ = [
     "save_settings",
     "settings_view",
     "stored_fields",
+    "wants_edit",
 ]

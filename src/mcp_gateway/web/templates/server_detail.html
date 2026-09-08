@@ -6,6 +6,13 @@
    on it changes how the whole server behaves, so nothing on it posts as you
    type. The table below is one button per row.
 
+   The settings are also two things: a card that says what the server is set to,
+   and, at ``?edit=1``, the same card as that form. An operator who came to read
+   which base URL a server proxies to should not be one keystroke away from
+   changing it (task 113). Both modes are rendered here rather than toggled by
+   script, because a card whose only way in is a listener is a card that stops
+   existing when the script does.
+
    Neither credential is ever rendered. What is shown is ``Set`` or ``Not set``
    and a box to tick; with the box unticked the route does not read the
    credential fields at all (spec §7.3). #}
@@ -98,12 +105,84 @@
    rule underneath is in the repository, which refuses a patch of anything but
    ``enabled`` however it arrives (task 102). #}
 {% if not settings.editable %}
-<div class="card form form--wide">
+<div class="card form form--wide" id="{{ settings_id }}">
   <h2 class="card__title">Settings</h2>
   <p class="form__note">{{ settings.uneditable_note }}</p>
 </div>
+
+{% elif not settings.editing %}
+{# The card as text, which is how the page opens. Every value the form below
+   can change, in the order the form asks for it, read off the stored row and
+   never off ``fields`` — a refused submission is still in there, and a view
+   built from it would be describing a save that did not happen (task 113).
+
+   Not here: whether the server is on. That is the badge and the button in the
+   toolbar above, and one fact gets one control and one statement of itself
+   (task 112). The two credential lines are lifted out of the form unchanged,
+   because they were never anything but a view in the first place. #}
+<div class="card form form--wide" id="{{ settings_id }}">
+  <div class="card__header">
+    <h2 class="card__title">Settings</h2>
+    {# A link, so it works with no script, and one that lands on this card
+       rather than at the top of a page two hundred operations long. It carries
+       the table's filter with it, which is the whole reason the mode is a query
+       parameter rather than a path of its own. #}
+    <a class="button" href="{{ edit_path }}">Edit</a>
+  </div>
+
+  <dl class="summary summary--inline">
+    <div class="summary__pair">
+      <dt class="summary__term">Display name</dt>
+      <dd class="summary__value">{{ settings.server.name }}</dd>
+    </div>
+    <div class="summary__pair">
+      <dt class="summary__term">Tool prefix</dt>
+      <dd class="summary__value"><code>{{ settings.server.tool_prefix }}</code></dd>
+    </div>
+    <div class="summary__pair">
+      <dt class="summary__term">Base URL</dt>
+      <dd class="summary__value"><code>{{ settings.server.base_url }}</code></dd>
+    </div>
+    <div class="summary__pair">
+      <dt class="summary__term">Refresh automatically</dt>
+      <dd class="summary__value">{{ "Yes" if settings.server.auto_refresh else "No" }}</dd>
+    </div>
+    <div class="summary__pair">
+      <dt class="summary__term">Rate limit</dt>
+      <dd class="summary__value">{{ settings.rate_limit_note }}</dd>
+    </div>
+    <div class="summary__pair">
+      <dt class="summary__term">API authentication</dt>
+      <dd class="summary__value">
+        <strong>{{ settings.credential.label }}</strong>
+        {% if settings.credential.auth_type %}
+        &middot; {{ settings.credential.auth_type }}
+        {% endif %}
+        <span class="cell-note">{{ settings.credential.note }}</span>
+      </dd>
+    </div>
+    <div class="summary__pair">
+      <dt class="summary__term">Spec download</dt>
+      <dd class="summary__value">{{ mode_labels[settings.server.spec_auth_mode] }}</dd>
+    </div>
+    <div class="summary__pair">
+      <dt class="summary__term">Spec credential</dt>
+      <dd class="summary__value">
+        <strong>{{ settings.spec_credential.label }}</strong>
+        {% if settings.spec_credential.auth_type %}
+        &middot; {{ settings.spec_credential.auth_type }}
+        {% endif %}
+      </dd>
+    </div>
+  </dl>
+</div>
+
 {% else %}
-<form class="card form form--wide" method="post" action="{{ detail_path }}">
+{# The same card, open. Everything that asks the gateway a question while it is
+   being typed — the rename preview, the two reveal panels — is inside this
+   branch and nowhere else: a target left on a read-only page is a hole nothing
+   aims at (task 113). #}
+<form class="card form form--wide" id="{{ settings_id }}" method="post" action="{{ detail_path }}">
   <h2 class="card__title">Settings</h2>
 
   {{ field("name", "Display name", value=settings.fields.name, required=true,
@@ -229,9 +308,14 @@
     after a correction. Fill in the ones the type you chose needs.
   </p>
 
+  {# Cancel comes back to this page's own view mode and abandons only what was
+     typed. It used to leave for the list, which was the only destination it
+     could have had when there was nothing here to come back to; leaving the
+     page is still All servers in the toolbar (task 113). Save rather than Save
+     settings, because the heading above says what is being saved. #}
   <div class="form-actions">
-    <a class="button" href="{{ servers_path }}">Cancel</a>
-    <button class="button button--primary" type="submit">Save settings</button>
+    <a class="button" href="{{ view_path }}">Cancel</a>
+    <button class="button button--primary" type="submit">Save</button>
   </div>
 </form>
 {% endif %}
