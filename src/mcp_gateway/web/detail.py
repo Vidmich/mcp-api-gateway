@@ -5,9 +5,11 @@ gets wrong on it, or changes their mind about later, is put right here. Two
 halves, and they are deliberately unlike each other.
 
 **The settings form is one write, announced.** Name, tool prefix, base URL,
-auto-refresh, enabled, and the two credentials, all saved together by one
+auto-refresh, the rate limit and the two credentials, all saved together by one
 button. Nothing on it posts as you type, because every field on it changes how
-the whole server behaves.
+the whole server behaves. Whether the server is *on* is not among them: that is
+one press of the toolbar's button, which writes immediately, and a copy of it on
+this form would undo the press at the next Save (task 112).
 
 **A credential is replaced, never edited.** The page renders ``set`` / ``not
 set`` and a box to tick; with the box unticked the route does not so much as
@@ -86,7 +88,6 @@ logger = logging.getLogger(__name__)
 NAME_FIELD: Final = "name"
 PREFIX_FIELD: Final = "tool_prefix"
 BASE_URL_FIELD: Final = "base_url"
-ENABLED_FIELD: Final = "enabled"
 AUTO_REFRESH_FIELD: Final = "auto_refresh"
 #: The two boxes that are one setting. Both empty is no limit (task 101).
 RATE_CALLS_FIELD: Final = "rate_limit_calls"
@@ -122,7 +123,6 @@ KEPT: Final = (
     NAME_FIELD,
     PREFIX_FIELD,
     BASE_URL_FIELD,
-    ENABLED_FIELD,
     AUTO_REFRESH_FIELD,
     RATE_CALLS_FIELD,
     RATE_SECONDS_FIELD,
@@ -341,8 +341,9 @@ class SettingsView:
 
         False for the one the gateway provides itself, whose name, prefix and
         tools are the gateway's and whose two URLs are not URLs (task 102).
-        The switch is still offered; it is the only thing about that row
-        anybody decides.
+        The one thing about that row anybody decides is whether it is on, and
+        that is the toolbar's button rather than anything on this card
+        (task 112) — so False here means the card holds no controls at all.
         """
         return not self.server.builtin
 
@@ -352,14 +353,29 @@ class SettingsView:
         return BUILTIN_SETTINGS
 
     @property
-    def enabled(self) -> bool:
-        return bool(self.fields.get(ENABLED_FIELD))
+    def enabled_note(self) -> str | None:
+        """What the page says about a server being off, beside the button.
 
-    @property
-    def enabled_hint(self) -> str:
-        """What the switch says under it, and why it is off if the gateway did it."""
+        There is no ``enabled`` property beside this one, and deliberately: the
+        form has no switch on it any more, so the only thing the page can say
+        about that fact is what the stored row says. The badge in the toolbar
+        reads it straight off ``server`` (task 112).
+
+        ``None`` when there is nothing to explain: a server that is on and was
+        never flagged does not need the state it is in narrated at it.
+
+        Otherwise this is the page's only account of *why*. A reason means the
+        gateway itself took the server out of service (task 100), and it is
+        still worth saying while ``health.auto_disable`` is off and the server
+        is therefore failing but on — with no "switch it back on", because
+        nobody switched it off. This sentence was the hint under a switch that
+        no longer exists, and it had to end up next to the control that undoes
+        it rather than nowhere (task 112).
+        """
         reason = self.server.attention_reason
-        return f"{reason} {SWITCH_BACK_ON}" if reason else ENABLED_HINT
+        if reason is None:
+            return None if self.server.enabled else ENABLED_HINT
+        return reason if self.server.enabled else f"{reason} {SWITCH_BACK_ON}"
 
     @property
     def auto_refresh(self) -> bool:
@@ -408,7 +424,6 @@ def stored_fields(server: repo.ServerSummary) -> dict[str, str]:
         NAME_FIELD: server.name,
         PREFIX_FIELD: server.tool_prefix,
         BASE_URL_FIELD: server.base_url,
-        ENABLED_FIELD: ON if server.enabled else "",
         AUTO_REFRESH_FIELD: ON if server.auto_refresh else "",
         # Empty rather than a zero, because empty is what no limit means and
         # what the box's placeholder already says.
@@ -491,7 +506,9 @@ def parse_settings(fields: Mapping[str, str], server: Server) -> repo.ServerPatc
     else:
         values["base_url"] = base_url
 
-    values["enabled"] = _ticked(fields, ENABLED_FIELD)
+    # No ``enabled``: the toolbar's button owns that one, and a patch built
+    # here that carried it would write whatever the page was rendered with
+    # (task 112).
     values["auto_refresh"] = _ticked(fields, AUTO_REFRESH_FIELD)
     _rate_limit(fields, values, errors)
 
@@ -1221,7 +1238,6 @@ __all__ = [
     "CUSTOM_NEEDS_CREDENTIAL",
     "DELETE_OPERATION",
     "DESCRIPTION_FIELD",
-    "ENABLED_FIELD",
     "ENABLED_HINT",
     "IS_LIMITED",
     "KEPT",

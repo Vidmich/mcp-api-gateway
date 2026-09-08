@@ -1,0 +1,45 @@
+{# The button that turns one server on or off, on both pages that offer it.
+
+   One template rather than two, the way ``partials/tool_counts.html`` is
+   shared between the list and the detail page (task 107). The label is a
+   sentence about a transition rather than a state, and two copies of it would
+   disagree the first time somebody adjusted a word — on the page an operator
+   arrives from and the page they arrive at.
+
+   Its context is a :class:`~mcp_gateway.web.routes_ui.ServerRow`:
+
+     {% from "partials/toggle_button.html" import toggle_button %}
+     {{ toggle_button(row, back="list", target="closest tr") }}
+
+   ``back`` says which of the two pages the button was pressed on, so the route
+   answers on the page it was pressed on rather than always on the list. Two
+   literals rather than a path, exactly as the Refresh button beside it does:
+   a redirect target taken from a form is a redirect target an attacker can
+   write (:data:`~mcp_gateway.web.routes_ui.BACK_FIELD`).
+
+   ``target`` is what htmx replaces with the answer. The list passes its row,
+   because a row is what comes back; the detail page passes none, because
+   switching a server moves the badge, the counts and the note at once and the
+   answer there is a whole page.
+
+   A real form with a real ``action`` either way, so a browser that never ran
+   the script still posts to the same route — which is also what makes the
+   route testable without one. #}
+{% macro toggle_button(row, back="", target=none) -%}
+<form
+  class="toggle"
+  method="post"
+  action="{{ row.toggle_path }}"
+  {%- if target %}
+  hx-post="{{ row.toggle_path }}"
+  hx-target="{{ target }}"
+  hx-swap="outerHTML"
+  {%- endif %}
+>
+  <input type="hidden" name="enabled" value="{{ row.toggle_value }}" />
+  {%- if back %}
+  <input type="hidden" name="back" value="{{ back }}" />
+  {%- endif %}
+  <button class="button" type="submit">{{ row.toggle_label }}</button>
+</form>
+{%- endmacro %}

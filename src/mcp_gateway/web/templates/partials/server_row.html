@@ -10,6 +10,7 @@
 {% from "partials/status_badge.html" import status_badge %}
 {% from "partials/confirm.html" import confirm %}
 {% from "partials/tool_counts.html" import tool_counts %}
+{% from "partials/toggle_button.html" import toggle_button %}
 <tr id="server-{{ row.server.id }}">
   {# A name, and nothing else. The flags that used to sit here are status, and
      they are now under the heading that says so (task 106). #}
@@ -65,18 +66,10 @@
     <a class="button" href="{{ row.detail_path }}">Edit</a>
     {# The switch, as an action. It posts what the checkbox posted, to the
        route the checkbox posted to, so htmx still swaps this row in place and
-       a browser that never ran the script still works. #}
-    <form
-      class="toggle"
-      method="post"
-      action="{{ row.toggle_path }}"
-      hx-post="{{ row.toggle_path }}"
-      hx-target="closest tr"
-      hx-swap="outerHTML"
-    >
-      <input type="hidden" name="enabled" value="{{ row.toggle_value }}" />
-      <button class="button" type="submit">{{ row.toggle_label }}</button>
-    </form>
+       a browser that never ran the script still works. The same partial the
+       detail page's toolbar uses, told to answer with a row and to come back
+       here (task 112). #}
+    {{ toggle_button(row, back="list", target="closest tr") }}
     {# A real form and a whole page, not an htmx swap: a refresh fetches an
        upstream document, and the answer belongs on a page that shows what came
        of it. ``back`` says which of the two pages offering this button it was

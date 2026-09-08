@@ -92,21 +92,21 @@ buttons here would also disagree with the list, which is the page an operator ar
 
 ## Acceptance
 
-- [ ] The detail toolbar offers one button, beside Refresh Spec, reading **Disable** for a server
+- [x] The detail toolbar offers one button, beside Refresh Spec, reading **Disable** for a server
       that is on and **Enable** for one that is off — for an editable server and for the built-in.
-- [ ] Pressing it changes the server and comes back to the detail page, not the list, with a flash
+- [x] Pressing it changes the server and comes back to the detail page, not the list, with a flash
       saying which state it is now in.
-- [ ] The list's own button still lands on the list, and still swaps the row in place under htmx.
-- [ ] The Settings form no longer carries an `enabled` switch, and saving that form does not change
+- [x] The list's own button still lands on the list, and still swaps the row in place under htmx.
+- [x] The Settings form no longer carries an `enabled` switch, and saving that form does not change
       whether the server is on.
-- [ ] A server the gateway disabled itself still says why on this page, next to the control that
+- [x] A server the gateway disabled itself still says why on this page, next to the control that
       undoes it.
-- [ ] Enabling the built-in server from this page still warns that `/mcp` is open to anyone who can
+- [x] Enabling the built-in server from this page still warns that `/mcp` is open to anyone who can
       reach it, in the same words the startup banner uses.
-- [ ] The badge beside the title still reports the current state — or it is gone and SPEC §7.1 is
+- [x] The badge beside the title still reports the current state — or it is gone and SPEC §7.1 is
       amended in the same change.
-- [ ] The toolbar button and the list's button come from one template, and a test renders both pages
+- [x] The toolbar button and the list's button come from one template, and a test renders both pages
       for one server and finds the same label on each.
-- [ ] With no JavaScript the button still works: a real form, a real `action`, and the same route.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with only the
+- [x] With no JavaScript the button still works: a real form, a real `action`, and the same route.
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with only the
       assertions this task makes wrong.

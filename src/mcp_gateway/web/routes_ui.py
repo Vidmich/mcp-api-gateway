@@ -265,9 +265,12 @@ RENAME_ID: Final = "rename-preview"
 RENAME_TARGET: Final = f"#{RENAME_ID}"
 
 
-#: Which page the Refresh button was pressed on. A choice of two literals
-#: rather than a path, because a redirect target taken from a form is a redirect
-#: target an attacker can write.
+#: Which page the button was pressed on. Read by the two routes both pages
+#: offer — Refresh Spec and the enable/disable toggle — so that one word means
+#: one thing on either. A choice of two literals rather than a path, because a
+#: redirect target taken from a form is a redirect target an attacker can write.
+#: Anything that is not :data:`BACK_TO_LIST` means this server's own page, which
+#: is the answer a form that forgot to say gets.
 BACK_FIELD: Final = "back"
 BACK_TO_LIST: Final = "list"
 
@@ -702,10 +705,6 @@ def _detail_context(
         "detail_path": path,
         "prefix_path": f"{path}/prefix",
         "refresh_path": f"{path}/refresh",
-        # Where the built-in server's card posts its one switch: the same
-        # route the list page's toggle uses, because it is the same decision
-        # (task 102).
-        "enabled_path": f"{path}/enabled",
         "rename_id": RENAME_ID,
         "rename_target": RENAME_TARGET,
         "servers_path": SERVERS_PATH,
@@ -1196,7 +1195,17 @@ def ui_router() -> APIRouter:
         session: Session,
         #: Absent when the box is unchecked, which is how a checkbox says "off".
         enabled: Annotated[bool, Form()] = False,
+        #: Which page the button was on. Not a path — see :data:`BACK_FIELD`.
+        back: Annotated[str, Form(alias=BACK_FIELD)] = "",
     ) -> Response:
+        """Turn one server on or off, from either page that offers the button.
+
+        Both pages post the same form to this one route (task 112). What
+        differs is the answer: the list's button is swapped back into the row
+        it came from, and the detail page's is a whole page, because switching
+        a server moves the badge beside its title, the active count in its
+        summary and the sentence saying why it was off, all at once.
+        """
         try:
             await repo.set_server_enabled(session, server_id, enabled=enabled)
         except repo.ServerNotFound:
@@ -1214,7 +1223,8 @@ def ui_router() -> APIRouter:
 
         if HTMX_REQUEST not in request.headers:
             state = "enabled" if enabled else "disabled"
-            response = _back_to_the_list(request, f"{row.server.name} is now {state}.")
+            where = SERVERS_PATH if back == BACK_TO_LIST else f"{SERVERS_PATH}/{server_id}"
+            response = _back_to_the_page(request, where, f"{row.server.name} is now {state}.")
             if warning is not None:
                 _shell(request).flash(request, response, warning, level="warning")
             return response

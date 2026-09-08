@@ -707,15 +707,44 @@ def test_the_toggle_answers_htmx_with_the_row_alone(tmp_path: Path) -> None:
 
 def test_a_toggle_without_htmx_returns_to_the_list_and_reports_itself(tmp_path: Path) -> None:
     # The form has a real action, so a browser that never ran the script still
-    # changes the same row through the same route.
+    # changes the same row through the same route. What is posted is read out
+    # of the rendered row rather than written here: the same button now stands
+    # on the detail page too, and it is the hidden ``back`` field that decides
+    # which of the two the operator lands on (task 112).
     settings = settings_for(tmp_path)
     server_id = seed(settings, register)
 
     with client(settings) as http:
-        response = http.post(f"{SERVERS_PATH}/{server_id}/enabled", data={}, follow_redirects=False)
+        row = http.get(SERVERS_PATH, headers=HTML).text
+        back = re.search(r'name="back" value="([^"]+)"', row)
+        assert back is not None
+        response = http.post(
+            f"{SERVERS_PATH}/{server_id}/enabled",
+            data={"back": back.group(1)},
+            follow_redirects=False,
+        )
         assert response.status_code == 303
         assert response.headers["location"] == SERVERS_PATH
         assert "Petstore is now disabled." in http.get(SERVERS_PATH, headers=HTML).text
+
+
+def test_the_lists_button_still_swaps_the_row_rather_than_reloading(tmp_path: Path) -> None:
+    """The ``back`` field is for browsers; under htmx the row still comes back.
+
+    Both pages post the same form to the same route now, so this holds the half
+    of the answer that is the list's alone (task 112).
+    """
+    settings = settings_for(tmp_path)
+    server_id = seed(settings, register)
+
+    with client(settings) as http:
+        body = http.post(
+            f"{SERVERS_PATH}/{server_id}/enabled", data={"back": "list"}, headers=HTMX
+        ).text
+
+    assert body.lstrip().startswith("<tr")
+    assert "<html" not in body
+    assert ">Enable</button>" in body
 
 
 def test_toggling_a_server_that_is_already_gone_asks_the_page_to_reload(tmp_path: Path) -> None:

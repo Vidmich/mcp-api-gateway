@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway.app import create_app
 from mcp_gateway.bootstrap import Keys
-from mcp_gateway.builtin.seed import builtin_service
+from mcp_gateway.builtin.seed import OPEN_TO_ANYONE, builtin_service
 from mcp_gateway.config import Settings, load_settings
 from mcp_gateway.crypto import (
     ApiKeyCredential,
@@ -47,7 +47,9 @@ from mcp_gateway.limits import HALF_A_LIMIT
 from mcp_gateway.mcpsrv.server import mcp_service
 from mcp_gateway.naming import rename_server
 from mcp_gateway.web.detail import (
+    BUILTIN_SETTINGS,
     CREDENTIAL_LABELS,
+    ENABLED_HINT,
     IS_LIMITED,
     NAME_ILLEGAL,
     NAME_REQUIRED,
@@ -57,6 +59,7 @@ from mcp_gateway.web.detail import (
     RATE_CALLS_RANGE,
     RATE_SECONDS_FIELD,
     RATE_SECONDS_RANGE,
+    SWITCH_BACK_ON,
     OperationFilter,
     SettingsInvalid,
     parse_settings,
@@ -293,15 +296,40 @@ def tool_names(http: TestClient) -> list[str]:
 
 
 def settings_form(**overrides: str) -> dict[str, str]:
-    """A complete settings submission, with the checkboxes off unless asked for."""
+    """A complete settings submission, with the checkboxes off unless asked for.
+
+    No ``enabled``: the form stopped carrying it when the switch became the
+    toolbar's button (task 112). It is still accepted here as an override, so a
+    test can post one and check that it changes nothing.
+    """
     form = {
         "name": "Petstore",
         "tool_prefix": "petstore",
         "base_url": "https://petstore.example/api",
-        "enabled": "true",
     }
     form.update(overrides)
     return {name: value for name, value in form.items() if value != ""}
+
+
+def the_built_in_page(http: TestClient) -> str:
+    """The gateway's own server's detail path, found the way an operator would."""
+    listed = http.get(SERVERS_PATH, headers=HTML).text
+    row = re.search(r'<tr id="server-(\d+)">(?:(?!</tr>).)*?>Gateway</a>', listed, re.S)
+    assert row is not None, listed
+    return f"{SERVERS_PATH}/{row.group(1)}"
+
+
+def switched_off(http: TestClient, server_id: int) -> None:
+    """Press the toolbar's button, the way a browser without htmx would."""
+    response = http.post(f"{SERVERS_PATH}/{server_id}/enabled", data={}, headers=HTML)
+    assert response.status_code == 200, response.text
+
+
+def switched_on(http: TestClient, server_id: int) -> None:
+    response = http.post(
+        f"{SERVERS_PATH}/{server_id}/enabled", data={"enabled": "true"}, headers=HTML
+    )
+    assert response.status_code == 200, response.text
 
 
 def a_server(**overrides: Any) -> Server:
@@ -476,10 +504,20 @@ def test_a_prefix_with_nothing_usable_in_it_is_refused() -> None:
 
 
 def test_a_checkbox_that_was_not_posted_is_off() -> None:
-    patch = parse_settings(settings_form(enabled=""), a_server())
+    patch = parse_settings(settings_form(auto_refresh=""), a_server())
 
-    assert patch.enabled is False
     assert patch.auto_refresh is False
+
+
+def test_the_settings_form_does_not_write_whether_the_server_is_on() -> None:
+    """Not "it writes False" — it does not write the field at all (task 112).
+
+    A patch that carried ``enabled`` would carry whatever the page was rendered
+    with, and undo a toolbar press made while the form sat open.
+    """
+    patch = parse_settings(settings_form(enabled="true"), a_server())
+
+    assert "enabled" not in patch.model_fields_set
 
 
 def test_reusing_an_api_credential_there_is_none_of_is_refused() -> None:
@@ -694,7 +732,7 @@ def test_disabling_a_server_from_its_own_page_takes_its_tools_out_of_the_listing
 
     with client(settings, tmp_path, mcp=True) as http:
         before = tool_names(http)
-        http.post(f"{SERVERS_PATH}/{server_id}", data=settings_form(enabled=""), headers=HTML)
+        switched_off(http, server_id)
         after = tool_names(http)
 
     assert before
@@ -1365,9 +1403,9 @@ def test_switching_the_server_off_zeroes_the_active_number_on_its_own_page(
     path = f"{SERVERS_PATH}/{server_id}"
 
     with client(settings, tmp_path) as http:
-        http.post(path, data=settings_form(enabled=""), headers=HTML)
+        switched_off(http, server_id)
         off = http.get(path, headers=HTML).text
-        http.post(path, data=settings_form(), headers=HTML)
+        switched_on(http, server_id)
         on = http.get(path, headers=HTML).text
 
     assert counts_in(off) == [("0", "3", "3")]
@@ -1397,11 +1435,205 @@ def test_the_state_of_the_server_is_still_stated_beside_the_title(tmp_path: Path
 
     with client(settings, tmp_path) as http:
         on = http.get(path, headers=HTML).text
-        http.post(path, data=settings_form(enabled=""), headers=HTML)
+        switched_off(http, server_id)
         off = http.get(path, headers=HTML).text
 
     assert "badge--enabled" in on
     assert "badge--disabled" in off
+
+
+# --- the switch, which is now a button in the toolbar (task 112) --------------
+
+
+def toggle_button(body: str) -> tuple[str, str] | None:
+    """The label and the posted value of the enable/disable form, if there is one."""
+    form = re.search(r'<form[^>]*action="[^"]*/enabled"(?:(?!</form>).)*?</form>', body, re.S)
+    if form is None:
+        return None
+    value = re.search(r'name="enabled" value="([^"]+)"', form.group(0))
+    label = re.search(r"<button[^>]*>([^<]+)</button>", form.group(0))
+    assert value is not None and label is not None, form.group(0)
+    return label.group(1).strip(), value.group(1)
+
+
+def test_the_toolbar_offers_the_switch_and_the_settings_form_no_longer_does(
+    tmp_path: Path,
+) -> None:
+    """One control per fact.
+
+    With both, pressing Enable and then saving the form would turn the server
+    straight back off, because the form still carries the box as it was
+    rendered.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        on = http.get(path, headers=HTML).text
+        switched_off(http, server_id)
+        off = http.get(path, headers=HTML).text
+
+    assert toggle_button(on) == ("Disable", "false")
+    assert toggle_button(off) == ("Enable", "true")
+    # And the form below it asks for none of it: no checkbox, no label under
+    # one, nothing for a Save to write. The badge beside the title still says
+    # "Enabled", which is why this looks for the switch's own markup.
+    # One control, and the count says so: the only ``enabled`` on the page is
+    # the hidden input in that form. No checkbox, no label under one, nothing
+    # for a Save to write. (The badge beside the title still reads "Enabled",
+    # which is why this counts the field rather than the word.)
+    assert on.count('name="enabled"') == 1
+    assert '<span class="switch__label">Enabled</span>' not in on
+
+
+def test_both_pages_offer_the_same_button_for_the_same_server(tmp_path: Path) -> None:
+    """One template, so the label cannot drift between the two (task 112).
+
+    Rendered in both states, because "Disable" agreeing by accident on a server
+    that happens to be on would prove nothing about the other direction.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        assert toggle_button(http.get(SERVERS_PATH, headers=HTML).text) == toggle_button(
+            http.get(path, headers=HTML).text
+        )
+        switched_off(http, server_id)
+        listed = toggle_button(http.get(SERVERS_PATH, headers=HTML).text)
+        page = toggle_button(http.get(path, headers=HTML).text)
+
+    assert listed == page == ("Enable", "true")
+
+
+def test_the_button_works_without_a_script_and_answers_on_this_page(
+    tmp_path: Path,
+) -> None:
+    """A real form, a real action, and a redirect back to where it was pressed.
+
+    ``set_enabled`` used to answer every non-htmx press with the list, which
+    threw an operator off the page they were reading (task 112).
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        page = http.get(path, headers=HTML).text
+        assert f'action="{path}/enabled"' in page
+        # No ``back``: this page's form does not need to say so, and a form
+        # that says nothing means the server's own page.
+        assert 'name="back"' not in page
+        response = http.post(f"{path}/enabled", data={}, headers=HTML, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == path
+        landed = http.get(path, headers=HTML).text
+
+    assert "Petstore is now disabled." in landed
+    assert stored_server(settings, server_id)["enabled"] is False
+
+
+def test_saving_the_settings_form_leaves_the_switch_where_it_was(tmp_path: Path) -> None:
+    """The whole reason the checkbox had to go with the button's arrival."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        switched_off(http, server_id)
+        # Everything the form does post, and a stale ``enabled`` on top of it —
+        # which is exactly what a page rendered before the press would send.
+        http.post(path, data=settings_form(name="Petstore EU", enabled="true"), headers=HTML)
+
+    stored = stored_server(settings, server_id)
+    assert stored["name"] == "Petstore EU"
+    assert stored["enabled"] is False
+
+
+def test_a_server_the_gateway_switched_off_says_why_beside_the_button(
+    tmp_path: Path,
+) -> None:
+    """The sentence the deleted switch was carrying had to land somewhere.
+
+    It is the only place this page says the gateway itself took the server out
+    of service, and it belongs next to the control that undoes that (task 100).
+    """
+    settings = settings_for(tmp_path)
+    reason = "Disabled by the gateway: 3 authentication failures in a row."
+
+    async def failing(session: AsyncSession) -> int:
+        server_id = await register(session)
+        await repo.flag_failing_server(session, server_id, reason=reason, at=NOW, disable=True)
+        return server_id
+
+    server_id = seeded(settings, failing)
+
+    with client(settings, tmp_path) as http:
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    assert reason in page
+    assert SWITCH_BACK_ON in page
+    assert toggle_button(page) == ("Enable", "true")
+
+
+def test_a_server_that_is_simply_off_says_what_that_means(tmp_path: Path) -> None:
+    """No reason to give, so the note says what the state itself costs."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session, enabled=False))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        off = http.get(path, headers=HTML).text
+        switched_on(http, server_id)
+        on = http.get(path, headers=HTML).text
+
+    assert ENABLED_HINT in off
+    # And nothing at all about a running server that was never flagged: a page
+    # does not narrate the state it is in back at the operator.
+    assert ENABLED_HINT not in on
+    assert SWITCH_BACK_ON not in on
+
+
+def test_the_built_in_server_gets_the_button_and_a_card_with_no_controls(
+    tmp_path: Path,
+) -> None:
+    """Whether it is on is the only thing anybody decides about that row.
+
+    That decision moved to the toolbar with every other server's, which leaves
+    its Settings card a note — a note being the whole of what it now has to say
+    (task 112).
+    """
+    settings = settings_for(tmp_path)
+
+    with client(settings, tmp_path, builtin=True) as http:
+        page = http.get(the_built_in_page(http), headers=HTML).text
+
+    assert toggle_button(page) == ("Enable", "true")
+    assert BUILTIN_SETTINGS in page
+    # Not a form any more, so there is nothing on it to submit — and still the
+    # same box in the same place, which is what keeps it lined up under the
+    # summary (task 107).
+    assert '<div class="card form form--wide">' in page
+    assert "Save settings" not in page
+    assert '<span class="switch__label">Enabled</span>' not in page
+
+
+def test_enabling_the_built_in_server_from_its_page_still_warns(tmp_path: Path) -> None:
+    """The same sentence the startup banner uses, at the moment it becomes true.
+
+    It reached the operator through the list's toggle and through that card's
+    Save; the card has no Save any more, so this is the press that has to carry
+    it (task 102).
+    """
+    settings = settings_for(tmp_path)
+
+    with client(settings, tmp_path, builtin=True) as http:
+        path = the_built_in_page(http)
+        landed = http.post(f"{path}/enabled", data={"enabled": "true"}, headers=HTML).text
+
+    assert OPEN_TO_ANYONE.format(path=settings.mcp.path) in landed
 
 
 def test_both_pages_name_what_the_refresh_button_fetches(tmp_path: Path) -> None:
@@ -1461,17 +1693,14 @@ def test_the_settings_card_is_as_wide_as_the_summary_above_it(tmp_path: Path) ->
 
 
 def test_the_built_in_server_gets_the_same_wide_card(tmp_path: Path) -> None:
-    """The one-switch card and the editable form are the same box on the same
-    page, and a summary that lines up over one of them lines up over both."""
+    """Its card and the editable form are the same box on the same page, and a
+    summary that lines up over one of them lines up over both."""
     settings = settings_for(tmp_path)
 
     with client(settings, tmp_path, builtin=True) as http:
-        listed = http.get(SERVERS_PATH, headers=HTML).text
-        row = re.search(r'<tr id="server-(\d+)">(?:(?!</tr>).)*?>Gateway</a>', listed, re.S)
-        assert row is not None, listed
-        page = http.get(f"{SERVERS_PATH}/{row.group(1)}", headers=HTML).text
+        page = http.get(the_built_in_page(http), headers=HTML).text
 
-    # The uneditable branch: one switch, and no Save-settings form.
+    # The uneditable branch: a note, and no Save-settings form.
     assert "Save settings" not in page
     assert 'class="card form form--wide"' in page
     assert ">Status</dt>" in page

@@ -14,6 +14,7 @@
 {% from "partials/credential_fields.html" import credential_fields %}
 {% from "partials/status_badge.html" import status_badge %}
 {% from "partials/tool_counts.html" import tool_counts %}
+{% from "partials/toggle_button.html" import toggle_button %}
 
 {% block title %}{{ settings.server.name }} &middot; mcp-api-gateway{% endblock %}
 
@@ -37,8 +38,24 @@
     <button class="button" type="submit">Refresh Spec</button>
   </form>
   {% endif %}
+  {# The switch, where the operator is already looking (task 112). The same
+     partial the list's Actions column uses, so the two buttons cannot come to
+     read differently, and with no ``target``: switching a server moves the
+     badge above, the active count below and the note under this bar at once,
+     which is the argument Refresh Spec makes on this page for answering with a
+     page rather than a swap. It follows Refresh Spec and precedes All servers
+     because these two act on this server and that one leaves it. Offered for
+     the built-in server too, where it is the only thing anybody decides. #}
+  {{ toggle_button(overview) }}
   <a class="button" href="{{ servers_path }}">All servers</a>
 </div>
+
+{# Why the server is off, beside the button that turns it back on. This is the
+   only place the page says that the gateway itself took it out of service, and
+   it used to be the hint under a switch that is no longer here (task 112). #}
+{% if settings.enabled_note %}
+<p class="page-note">{{ settings.enabled_note }}</p>
+{% endif %}
 
 {% if settings.alerts %}
 <ul class="flashes" role="alert">
@@ -73,20 +90,18 @@
   </div>
 </dl>
 
-{# Nothing on the gateway's own server is an operator's to change but the
-   switch, so that is the whole of its card. The rule underneath is in the
-   repository, which refuses a patch of anything else however it arrives
-   (task 102). #}
+{# Nothing on the gateway's own server is an operator's to change, now that
+   the one thing that was — the switch — is the button in the toolbar above
+   (task 112). So the card is the sentence saying so and nothing else: a box
+   still shaped like the form the other servers get, in the place that form
+   would be, rather than a heading that quietly vanishes on this one page. The
+   rule underneath is in the repository, which refuses a patch of anything but
+   ``enabled`` however it arrives (task 102). #}
 {% if not settings.editable %}
-<form class="card form form--wide" method="post" action="{{ enabled_path }}">
+<div class="card form form--wide">
   <h2 class="card__title">Settings</h2>
   <p class="form__note">{{ settings.uneditable_note }}</p>
-  {{ switch("enabled", "Enabled", checked=settings.enabled, hint=settings.enabled_hint) }}
-  <div class="form-actions">
-    <a class="button" href="{{ servers_path }}">Cancel</a>
-    <button class="button button--primary" type="submit">Save</button>
-  </div>
-</form>
+</div>
 {% else %}
 <form class="card form form--wide" method="post" action="{{ detail_path }}">
   <h2 class="card__title">Settings</h2>
@@ -130,8 +145,9 @@
            hint="Where every tool call this server exposes goes.",
            error=settings.errors.get("base_url")) }}
 
-  {{ switch("enabled", "Enabled", checked=settings.enabled, hint=settings.enabled_hint) }}
-
+  {# No Enabled switch here. It is the button in the toolbar, which writes on
+     the press; a copy on this form would write again on Save, and pressing
+     Enable and then saving would turn the server straight back off (task 112). #}
   {{ switch("auto_refresh", "Refresh automatically", checked=settings.auto_refresh,
             hint="Re-read the spec on the gateway's schedule. Changes are flagged, never applied.") }}
 
