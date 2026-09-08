@@ -93,8 +93,12 @@
         </th>
         <th scope="col">Method</th>
         <th scope="col">Path</th>
-        <th scope="col">Tool name</th>
-        <th scope="col">Description</th>
+        {# Not "Tool name". The column now prints the Tool prefix in front of
+           every box in it, and two headings a card apart reading "Tool prefix"
+           and "Tool name" describe two settings rather than one name built out
+           of the other — which is what they are. The picker's column is headed
+           the same way, for the same reason (tasks 115 and 116). #}
+        <th scope="col">Name</th>
         <th scope="col"><span class="visually-hidden">Review</span></th>
       </tr>
     </thead>
@@ -129,25 +133,43 @@
              an operator who followed "3 new" to three rows with no reason
              (task 114). #}
           <code>{{ row.operation.path }}</code>
-          {{ status_badge(row.operation.status) }}
-          {% if row.operation.summary %}
-          <span class="cell-note">{{ row.operation.summary }}</span>
+          {% if row.badge %}{{ status_badge(row.badge) }}{% endif %}
+          {# The override when there is one: it is the sentence the tool ships,
+             and a page showing the spec's summary while the model is being told
+             something else is a page describing somebody else's gateway. It is
+             read-only here — the column that held it is gone, and the JSON API
+             is where one is set (task 116). #}
+          {% if row.note %}
+          <span class="cell-note">{{ row.note }}</span>
           {% endif %}
         </td>
         <td>
-          <input
-            class="field__input"
-            type="text"
-            name="{{ row.name_field }}"
-            form="{{ operations_form_id }}"
-            value="{{ row.typed_name }}"
-            {# The generated default, so that clearing the box shows what
-               clearing it means before the operator does it. #}
-            placeholder="{{ row.default_name }}"
-            aria-label="Tool name for {{ row.operation.op_key }}"
-            autocomplete="off"
-            spellcheck="false"
-          />
+          {# The server's prefix, printed rather than typed. It is a field in the
+             Settings card on this same page and every name in this column is
+             built out of it, so the box holds the half this row owns and the
+             other half is shown as the fixed thing it is. Empty on a row whose
+             stored name was never built on it, where the box holds all of the
+             name — see ``OperationRow.prefixed`` (task 116). #}
+          <span class="name-box">
+            {% if row.lead %}<code class="name-lead">{{ row.lead }}</code>{% endif %}
+            <input
+              class="field__input"
+              type="text"
+              name="{{ row.name_field }}"
+              form="{{ operations_form_id }}"
+              value="{{ row.typed_stem }}"
+              {# The generated default, shown the way the box shows a name, so
+                 that clearing the box shows what clearing it means before the
+                 operator does it. #}
+              placeholder="{{ row.default_stem }}"
+              aria-label="{{ row.name_label }}"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </span>
+          {% if row.prefix_note %}
+          <span class="cell-note">{{ row.prefix_note }}</span>
+          {% endif %}
           {# Only when the box says something else, which is a save that was
              refused: otherwise the box or its placeholder is already the name,
              and repeating it under every row of two hundred says nothing. #}
@@ -159,18 +181,6 @@
           {% if row.error %}
           <span class="field__error" role="alert">{{ row.error }}</span>
           {% endif %}
-        </td>
-        <td>
-          <input
-            class="field__input"
-            type="text"
-            name="{{ row.description_field }}"
-            form="{{ operations_form_id }}"
-            value="{{ row.typed_description }}"
-            placeholder="{{ row.operation.description or row.operation.summary or '' }}"
-            aria-label="Description for {{ row.operation.op_key }}"
-            autocomplete="off"
-          />
         </td>
         <td class="row-actions">
           {# What spec §5.4 says can be done with this row, if it is waiting on
@@ -212,7 +222,7 @@
       {% endfor %}
       {% if not operations.shown %}
       <tr>
-        <td colspan="6">{{ operations.nothing_here }}</td>
+        <td colspan="5">{{ operations.nothing_here }}</td>
       </tr>
       {% endif %}
     </tbody>

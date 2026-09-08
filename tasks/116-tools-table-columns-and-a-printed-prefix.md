@@ -145,24 +145,24 @@ when a refresh left one.
 
 ## Acceptance
 
-- [ ] The table has five columns, the empty state spans five, and no description box appears in any
+- [x] The table has five columns, the empty state spans five, and no description box appears in any
       row.
-- [ ] Saving the table leaves every stored `description_override` exactly as it was, and the JSON
+- [x] Saving the table leaves every stored `description_override` exactly as it was, and the JSON
       API can still set and clear one.
-- [ ] A row with a description override shows it under the path in place of the spec's summary.
-- [ ] The column is headed **Name**.
-- [ ] Each row's name cell prints the server's tool prefix and `__` as text, and its box holds only
+- [x] A row with a description override shows it under the path in place of the spec's summary.
+- [x] The column is headed **Name**.
+- [x] Each row's name cell prints the server's tool prefix and `__` as text, and its box holds only
       the part after it — with the placeholder, the `aria-label` and the "still published as" note
       all agreeing with that.
-- [ ] Typing a name and saving publishes `<prefix>__<what was typed>`, and clearing the box restores
+- [x] Typing a name and saving publishes `<prefix>__<what was typed>`, and clearing the box restores
       the generated name, both exactly as they do now.
-- [ ] A stored override that does not begin with the server's prefix is shown whole, is said to be
+- [x] A stored override that does not begin with the server's prefix is shown whole, is said to be
       whole, and is not renamed by a save that did not touch it.
-- [ ] An illegal name still refuses the whole submission at `422` with the message on its row, and a
+- [x] An illegal name still refuses the whole submission at `422` with the message on its row, and a
       collision still comes back at `409` marked on the claimant — both against the composed name.
-- [ ] No row carries an **Active** badge; `new`, `changed` and `removed` rows all still carry theirs,
+- [x] No row carries an **Active** badge; `new`, `changed` and `removed` rows all still carry theirs,
       and the review strip's links still land on rows that say what they are.
-- [ ] `?status=active` still narrows the table, and the selector still offers all four statuses.
-- [ ] SPEC §7.1 describes the table as it now is.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] `?status=active` still narrows the table, and the selector still offers all four statuses.
+- [x] SPEC §7.1 describes the table as it now is.
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where this task made them wrong.

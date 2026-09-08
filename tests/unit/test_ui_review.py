@@ -922,7 +922,9 @@ def test_deleting_a_removed_operation_frees_its_name_for_reuse(
     """The reason a ``removed`` row can be retired at all (spec §5.4)."""
     settings = settings_for(tmp_path)
     route = serves(respx_mock)
-    freed = "petstore__addPet"
+    # The stem, because the box holds the part after the prefix printed beside
+    # it and the save composes the two (task 116).
+    freed = "addPet"
 
     with client(settings, tmp_path) as http:
         server_id = registered(http)

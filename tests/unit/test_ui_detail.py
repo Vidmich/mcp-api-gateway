@@ -46,14 +46,17 @@ from mcp_gateway.db.repo import NewServer, OperationInput
 from mcp_gateway.db.session import database_path, database_service, open_database
 from mcp_gateway.limits import HALF_A_LIMIT
 from mcp_gateway.mcpsrv.server import mcp_service
-from mcp_gateway.naming import rename_server
+from mcp_gateway.naming import PREFIX_SEPARATOR, name_lead, rename_server
 from mcp_gateway.web.detail import (
     BUILTIN_SETTINGS,
     CREDENTIAL_LABELS,
     ENABLED_HINT,
     IS_LIMITED,
     NAME_ILLEGAL,
+    NAME_LABEL,
+    NAME_LABEL_WHOLE,
     NAME_REQUIRED,
+    NAME_UNPREFIXED,
     NAMES_MOVED_ONE,
     NOT_LIMITED,
     NOTHING_CHANGED,
@@ -287,19 +290,26 @@ def table_form(
     is a list because it appears once per row — an unticked box sends nothing
     at all, so those ids are the only thing in the submission that says which
     rows were on the page (task 114).
+
+    A name box holds the part after the prefix printed beside it, so a stored
+    override is posted back without that half — unless it never had one, where
+    the box holds the whole name and posting it back is what says the row was
+    not touched (task 116).
     """
     ids = operation_ids(settings, server_id)
-    stored = stored_server(settings, server_id)["operations"]
+    stored_here = stored_server(settings, server_id)
+    lead = name_lead(str(stored_here["tool_prefix"]))
+    stored = stored_here["operations"]
     edits = changes or {}
     form: dict[str, Any] = {"op_id": []}
     for op_key, op_id in ids.items():
-        selected, _, override, description = stored[op_key]
+        selected, _, override, _ = stored[op_key]
         edit = edits.get(op_key, {})
         form["op_id"].append(str(op_id))
         if bool(edit.get("selected", selected)):
             form[f"selected-{op_id}"] = "true"
-        form[f"tool_name-{op_id}"] = str(edit.get("tool_name", override or ""))
-        form[f"description-{op_id}"] = str(edit.get("description", description or ""))
+        held = override[len(lead) :] if override and override.startswith(lead) else (override or "")
+        form[f"tool_name-{op_id}"] = str(edit.get("tool_name", held))
     return form
 
 
@@ -313,13 +323,13 @@ def posted_by_the_page(body: str) -> dict[str, Any]:
     """The table's form exactly as a browser would submit it.
 
     Read off the rendered page rather than built from the database: which rows
-    are in the submission, and what each of their three controls carries, is
+    are in the submission, and what each of their two controls carries, is
     what the template decides — and the questions worth asking here are about
     a submission that came from the page an operator was looking at (task 114).
     """
     posted: dict[str, Any] = {"op_id": re.findall(r'name="op_id" value="(\d+)"', body)}
     for op_id in posted["op_id"]:
-        for name in ("selected", "tool_name", "description"):
+        for name in ("selected", "tool_name"):
             tag = re.search(rf'<input\b[^>]*name="{name}-{op_id}"[^>]*>', body)
             assert tag is not None, f"{name}-{op_id} is not on the page"
             if name == "selected":
@@ -1036,7 +1046,9 @@ def test_renaming_a_tool_changes_the_next_listing(tmp_path: Path) -> None:
         names = tool_names(http)
 
     assert saved.status_code == 303
-    assert "every_pet" in names
+    # The box holds the part after the prefix, and the prefix leads what the
+    # save publishes (task 116).
+    assert "petstore__every_pet" in names
     assert "petstore__listPets" not in names
 
 
@@ -1058,33 +1070,59 @@ def test_clearing_the_override_restores_the_generated_name(tmp_path: Path) -> No
         )
         restored = tool_names(http)
 
-    assert "every_pet" in renamed
+    assert "petstore__every_pet" in renamed
     assert "petstore__listPets" in restored
     assert stored_server(settings, server_id)["operations"][LIST_PETS][2] is None
 
 
-def test_a_row_writes_its_tick_and_its_description_along_with_its_name(
-    tmp_path: Path,
-) -> None:
+def test_a_row_writes_its_tick_along_with_its_name(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
     server_id = seeded(settings, lambda session: register(session, selected=3))
 
     with client(settings, tmp_path) as http:
         answered = http.post(
             table_path(server_id),
-            data=table_form(
-                settings,
-                server_id,
-                {HEALTH: {"selected": False, "description": "A liveness probe."}},
-            ),
+            data=table_form(settings, server_id, {HEALTH: {"selected": False}}),
             headers=HTML,
             follow_redirects=False,
         )
 
     assert answered.status_code == 303
-    selected, _, _, description = stored_server(settings, server_id)["operations"][HEALTH]
+    selected, _, _, _ = stored_server(settings, server_id)["operations"][HEALTH]
     assert selected is False
-    assert description == "A liveness probe."
+
+
+def test_a_saved_table_leaves_every_stored_description_where_it_was(tmp_path: Path) -> None:
+    """The blanking this column's removal could have caused, and did not.
+
+    ``update_operation`` writes the fields a patch sets, so a save that went on
+    naming ``description_override`` would have written ``None`` into every row
+    on the server — a button about ticks and names silently emptying a field it
+    no longer even shows (task 116).
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    rows = operation_ids(settings, server_id)
+
+    async def described(session: AsyncSession) -> None:
+        await repo.update_operation(
+            session, rows[HEALTH], repo.OperationPatch(description_override="A liveness probe.")
+        )
+
+    seeded(settings, described)
+
+    with client(settings, tmp_path) as http:
+        saved = http.post(
+            table_path(server_id),
+            data=table_form(settings, server_id, {LIST_PETS: {"tool_name": "every_pet"}}),
+            headers=HTML,
+            follow_redirects=False,
+        )
+
+    assert saved.status_code == 303
+    stored = stored_server(settings, server_id)["operations"]
+    assert stored[HEALTH][3] == "A liveness probe."
+    assert stored[LIST_PETS][1] == "petstore__every_pet"
 
 
 def test_the_page_a_save_lands_on_has_its_count_brought_up_to_date(tmp_path: Path) -> None:
@@ -1142,18 +1180,27 @@ def test_a_rename_onto_a_name_another_server_publishes_is_refused(tmp_path: Path
     async def two(session: AsyncSession) -> tuple[int, int]:
         return await register(session), await register(session, "staging")
 
-    _, staging = seeded(settings, two)
+    petstore, staging = seeded(settings, two)
+
+    # A name on the other server that this one's prefix can reach. Since a box
+    # here composes ``staging__`` in front of what is typed, the only way to
+    # collide across servers is a name the other server holds as an override —
+    # which is the shape task 116 renders whole and refuses to re-prefix.
+    async def held(session: AsyncSession) -> None:
+        await rename_server(session, petstore, overrides={LIST_PETS: "staging__every_pet"})
+
+    seeded(settings, held)
 
     with client(settings, tmp_path) as http:
         refused = http.post(
             table_path(staging),
-            data=table_form(settings, staging, {LIST_PETS: {"tool_name": "petstore__listPets"}}),
+            data=table_form(settings, staging, {LIST_PETS: {"tool_name": "every_pet"}}),
             headers=HTML,
         )
 
     assert refused.status_code == 409
     # The row comes back holding what was typed, and saying why it was refused.
-    assert 'value="petstore__listPets"' in refused.text
+    assert 'value="every_pet"' in refused.text
     assert "on Petstore" in refused.text
     assert stored_server(settings, staging)["operations"][LIST_PETS][1] == "staging__listPets"
 
@@ -1167,7 +1214,7 @@ def test_a_rename_onto_a_sibling_is_refused_too(tmp_path: Path) -> None:
     with client(settings, tmp_path) as http:
         refused = http.post(
             table_path(server_id),
-            data=table_form(settings, server_id, {LIST_PETS: {"tool_name": "petstore__health"}}),
+            data=table_form(settings, server_id, {LIST_PETS: {"tool_name": "health"}}),
             headers=HTML,
         )
 
@@ -2109,14 +2156,16 @@ def test_the_table_has_one_save_and_no_row_has_one(tmp_path: Path) -> None:
     assert page.count("Save tools") == 1
     form = f'<form id="{OPERATIONS_FORM_ID}" method="post" action="{table_path(server_id)}">'
     assert form in page
-    assert page.count(f'form="{OPERATIONS_FORM_ID}"') == 4 * 3 + 1
+    # Three rows, and two controls plus a hidden id in each. The description
+    # box was the fourth until task 116 took the column out.
+    assert page.count(f'form="{OPERATIONS_FORM_ID}"') == 3 * 3 + 1
     # The one button is bound to the form rather than inside it, like the rows.
     assert f'type="submit" form="{OPERATIONS_FORM_ID}"' in page
     assert ">Save</button>" not in table_of(page)
 
 
 def test_one_press_writes_every_row_it_was_given(tmp_path: Path) -> None:
-    """Tick, rename and re-describe several rows; press once; all of it lands.
+    """Tick and rename several rows; press once; all of it lands.
 
     And the flash counts both things it did, because they are different
     things: a row changing is between the operator and this page, while a
@@ -2133,7 +2182,7 @@ def test_one_press_writes_every_row_it_was_given(tmp_path: Path) -> None:
                 server_id,
                 {
                     LIST_PETS: {"tool_name": "every_pet"},
-                    ADD_PET: {"selected": True, "description": "Takes a pet."},
+                    ADD_PET: {"selected": True},
                     HEALTH: {"selected": True},
                 },
             ),
@@ -2141,9 +2190,8 @@ def test_one_press_writes_every_row_it_was_given(tmp_path: Path) -> None:
         ).text
 
     stored = stored_server(settings, server_id)["operations"]
-    assert stored[LIST_PETS][1] == "every_pet"
+    assert stored[LIST_PETS][1] == "petstore__every_pet"
     assert stored[ADD_PET][0] is True
-    assert stored[ADD_PET][3] == "Takes a pet."
     assert stored[HEALTH][0] is True
     assert ROWS_SAVED.format(count=3) in landed
     assert NAMES_MOVED_ONE in landed
@@ -2211,8 +2259,8 @@ def test_two_rows_may_exchange_tool_names_in_one_press(tmp_path: Path) -> None:
     server_id = seeded(settings, lambda session: register(session))
 
     async def named(session: AsyncSession) -> None:
-        await rename_by_hand(session, server_id, LIST_PETS, "pets_list")
-        await rename_by_hand(session, server_id, HEALTH, "pets_health")
+        await rename_by_hand(session, server_id, LIST_PETS, "petstore__pets_list")
+        await rename_by_hand(session, server_id, HEALTH, "petstore__pets_health")
 
     seeded(settings, named)
 
@@ -2231,10 +2279,10 @@ def test_two_rows_may_exchange_tool_names_in_one_press(tmp_path: Path) -> None:
 
     assert swapped.status_code == 303
     stored = stored_server(settings, server_id)["operations"]
-    assert stored[LIST_PETS][1] == "pets_health"
-    assert stored[HEALTH][1] == "pets_list"
+    assert stored[LIST_PETS][1] == "petstore__pets_health"
+    assert stored[HEALTH][1] == "petstore__pets_list"
     # And both are published under the names they were given.
-    assert {"pets_health", "pets_list"} <= set(names)
+    assert {"petstore__pets_health", "petstore__pets_list"} <= set(names)
 
 
 def test_a_filtered_table_saves_the_ticks_it_is_hiding(tmp_path: Path) -> None:
@@ -2282,8 +2330,6 @@ def test_an_unticked_row_is_told_apart_from_one_that_was_never_on_the_page(
                 f"selected-{ids[LIST_PETS]}": "true",
                 f"tool_name-{ids[LIST_PETS]}": "",
                 f"tool_name-{ids[ADD_PET]}": "",
-                f"description-{ids[LIST_PETS]}": "",
-                f"description-{ids[ADD_PET]}": "",
             },
             headers=HTML,
         )
@@ -2308,7 +2354,7 @@ def test_a_collision_is_said_above_the_table_and_marked_on_the_row(
     with client(settings, tmp_path) as http:
         refused = http.post(
             table_path(staging),
-            data=table_form(settings, staging, {HEALTH: {"tool_name": "petstore__health"}}),
+            data=table_form(settings, staging, {HEALTH: {"tool_name": "listPets"}}),
             headers=HTML,
         )
 
@@ -2398,9 +2444,9 @@ def test_the_last_column_says_what_is_in_it_and_stays_when_it_is_empty(
     assert '<span class="visually-hidden">Review</span>' in table
     assert '<span class="visually-hidden">Save</span>' not in table
     # Nothing is flagged, so every cell in that column is empty and it is still
-    # there. The empty state below fills the six columns that are left.
+    # there. The empty state below fills the five columns that are left.
     assert table.count('<td class="row-actions">') == 3
-    assert '<td colspan="6">' in empty
+    assert '<td colspan="5">' in empty
 
 
 def test_the_per_row_save_route_is_gone(tmp_path: Path) -> None:
@@ -2445,5 +2491,246 @@ def test_the_table_can_be_read_edited_and_saved_with_no_script(tmp_path: Path) -
     assert saved.status_code == 303
     stored = stored_server(settings, server_id)["operations"]
     assert stored[LIST_PETS][0] is True
-    assert stored[LIST_PETS][1] == "every_pet"
+    assert stored[LIST_PETS][1] == "petstore__every_pet"
     assert stored[HEALTH][0] is False
+
+
+# --------------------------------------------------------------------------- #
+# What the table stops saying (task 116)
+# --------------------------------------------------------------------------- #
+
+
+def test_the_table_has_five_columns_and_none_of_them_is_a_description(
+    tmp_path: Path,
+) -> None:
+    """A one-line box for a paragraph, in a table of what an operation *is*."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    table = table_of(page)
+    header = table[table.index("<thead>") : table.index("</thead>")]
+    assert header.count("<th ") == 5
+    assert ">Description<" not in header
+    assert 'name="description-' not in table
+    assert 'aria-label="Description' not in table
+
+
+def test_a_row_shows_the_description_its_tool_actually_ships(tmp_path: Path) -> None:
+    """The override, not the summary, because the override is what is sent.
+
+    Removing the box did not remove the field, and a page still showing the
+    spec's sentence while the model is handed another one would be describing
+    somebody else's gateway (task 116).
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    rows = operation_ids(settings, server_id)
+
+    async def described(session: AsyncSession) -> None:
+        await repo.update_operation(
+            session, rows[LIST_PETS], repo.OperationPatch(description_override="Every pet we hold.")
+        )
+
+    seeded(settings, described)
+
+    with client(settings, tmp_path) as http:
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    table = table_of(page)
+    assert "Every pet we hold." in table
+    assert "List every pet" not in table
+    # The other two rows have no override and still show what the spec said.
+    assert "Is it up" in table
+
+
+def test_the_name_column_is_headed_name(tmp_path: Path) -> None:
+    """The same word the picker's column got, for the same reason."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    table = table_of(page)
+    header = table[table.index("<thead>") : table.index("</thead>")]
+    assert '<th scope="col">Name</th>' in header
+    assert "Tool name" not in header
+
+
+def test_every_name_cell_prints_the_prefix_and_boxes_the_rest(tmp_path: Path) -> None:
+    """The field in the card above, and the column below it, as one thing."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    rows = operation_ids(settings, server_id)
+
+    async def renamed(session: AsyncSession) -> None:
+        await rename_by_hand(session, server_id, LIST_PETS, "petstore__every_pet")
+
+    seeded(settings, renamed)
+
+    with client(settings, tmp_path) as http:
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    table = table_of(page)
+    lead = f'<code class="name-lead">petstore{PREFIX_SEPARATOR}</code>'
+    assert table.count(lead) == 3
+    # The override, without the half printed beside it.
+    assert 'value="every_pet"' in table
+    assert 'value="petstore__every_pet"' not in table
+    # And an untouched row's placeholder is its generated name, the same way.
+    assert 'placeholder="health"' in table
+    assert 'placeholder="petstore__health"' not in table
+    # The label says which half the box is, because nothing visible does.
+    labelled = NAME_LABEL.format(op_key=HEALTH, lead="petstore__")
+    assert f'aria-label="{labelled}"' in table
+    assert f'name="tool_name-{rows[HEALTH]}"' in table
+
+
+def test_a_name_typed_into_a_box_is_published_under_the_prefix(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path, mcp=True) as http:
+        http.post(
+            table_path(server_id),
+            data=table_form(settings, server_id, {LIST_PETS: {"tool_name": "every_pet"}}),
+            headers=HTML,
+        )
+        renamed = tool_names(http)
+        http.post(
+            table_path(server_id),
+            data=table_form(settings, server_id, {LIST_PETS: {"tool_name": ""}}),
+            headers=HTML,
+        )
+        restored = tool_names(http)
+
+    assert "petstore__every_pet" in renamed
+    assert "petstore__listPets" in restored
+    assert stored_server(settings, server_id)["operations"][LIST_PETS][2] is None
+
+
+def test_a_name_that_never_carried_the_prefix_is_shown_whole_and_left_alone(
+    tmp_path: Path,
+) -> None:
+    """Legal, published, and held by clients outside this gateway.
+
+    Two ways to have one: an override typed before this column printed a
+    prefix, and a prefix renamed afterwards — a rename recomputes generated
+    names and leaves overrides exactly where they were (spec 5.3). Neither is
+    a row this table may quietly re-prefix.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    async def bare(session: AsyncSession) -> None:
+        await rename_by_hand(session, server_id, LIST_PETS, "every_pet")
+
+    seeded(settings, bare)
+
+    with client(settings, tmp_path) as http:
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+        saved = http.post(
+            table_path(server_id),
+            data=posted_by_the_page(page),
+            headers=HTML,
+            follow_redirects=False,
+        )
+
+    table = table_of(page)
+    # Two rows lead with the prefix; this one shows all of what it holds.
+    assert table.count('<code class="name-lead">') == 2
+    assert 'value="every_pet"' in table
+    assert NAME_UNPREFIXED.format(lead="petstore__") in table
+    assert f'aria-label="{NAME_LABEL_WHOLE.format(op_key=LIST_PETS)}"' in table
+    # And pressing Save with it on the page renames nothing.
+    assert saved.status_code == 303
+    assert stored_server(settings, server_id)["operations"][LIST_PETS][1] == "every_pet"
+
+
+def test_retyping_a_whole_name_puts_the_row_back_into_the_ordinary_shape(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    async def bare(session: AsyncSession) -> None:
+        await rename_by_hand(session, server_id, LIST_PETS, "every_pet")
+
+    seeded(settings, bare)
+
+    with client(settings, tmp_path) as http:
+        saved = http.post(
+            table_path(server_id),
+            data=table_form(settings, server_id, {LIST_PETS: {"tool_name": "all_pets"}}),
+            headers=HTML,
+            follow_redirects=False,
+        )
+
+    assert saved.status_code == 303
+    assert stored_server(settings, server_id)["operations"][LIST_PETS][1] == "petstore__all_pets"
+
+
+def test_an_illegal_name_is_refused_before_a_prefix_is_put_in_front_of_it(
+    tmp_path: Path,
+) -> None:
+    """A stem of nothing composed first would publish the bare prefix."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        refused = http.post(
+            table_path(server_id),
+            data=table_form(settings, server_id, {LIST_PETS: {"tool_name": "???"}}),
+            headers=HTML,
+        )
+
+    assert refused.status_code == 422
+    assert NAME_ILLEGAL in refused.text
+    # The box comes back holding what was typed, not the prefix on its own.
+    assert 'value="???"' in refused.text
+    assert stored_server(settings, server_id)["operations"][LIST_PETS][1] == "petstore__listPets"
+
+
+def test_only_the_three_statuses_a_refresh_leaves_behind_carry_a_badge(
+    tmp_path: Path,
+) -> None:
+    """Two hundred rows reading Active is not news, it is wallpaper."""
+    settings = settings_for(tmp_path)
+    quiet = seeded(settings, lambda session: register(session))
+    noisy = seeded(settings, lambda session: register(session, "staging", status="new"))
+
+    with client(settings, tmp_path) as http:
+        settled = table_of(http.get(f"{SERVERS_PATH}/{quiet}", headers=HTML).text)
+        flagged = table_of(http.get(f"{SERVERS_PATH}/{noisy}", headers=HTML).text)
+
+    assert "badge--active" not in settled
+    assert ">Active<" not in settled
+    assert flagged.count("badge--new") == 3
+
+
+def test_active_is_still_a_filter_and_still_narrows_the_table(tmp_path: Path) -> None:
+    """The selector answers why the rows it leaves look alike (task 116)."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    async def one_is_new(session: AsyncSession) -> None:
+        rows = await session.scalars(
+            select(Operation).where(Operation.server_id == server_id).order_by(Operation.op_key)
+        )
+        next(iter(rows)).status = "new"
+
+    seeded(settings, one_is_new)
+
+    with client(settings, tmp_path) as http:
+        body = http.get(
+            f"{SERVERS_PATH}/{server_id}", params={"status": "active"}, headers=HTML
+        ).text
+
+    assert '<option value="active" selected>' in body
+    for status in ("new", "changed", "removed"):
+        assert f'<option value="{status}"' in body
+    # Two rows left, and the third is on the page but hidden rather than dropped.
+    assert table_of(body).count("hidden\n") == 1

@@ -1126,7 +1126,7 @@ def ui_router() -> APIRouter:
 
     @router.post(OPERATIONS_PATH)
     async def save_operations_table(request: Request, server_id: int, session: Session) -> Response:
-        """The whole table in one press: every tick, name and description (task 114).
+        """The whole table in one press: every tick and every name (task 114).
 
         All of it or none of it, like the settings form above it. Both refusals
         happen before anything is written — a name that is not a name, and a set

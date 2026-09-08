@@ -47,12 +47,12 @@ from mcp_gateway.naming import (
     MAX_TOOL_NAME,
     MORE_CONFLICTS,
     PREFIX_REQUIRED,
-    PREFIX_SEPARATOR,
     NameConflict,
     NamedOperation,
     NamePlan,
     NamesTaken,
     conflict_alerts,
+    name_lead,
     plan_names,
     plan_tool_names,
     sanitize,
@@ -294,8 +294,7 @@ def build(
     collisions = (*plan.conflicts, *conflicts)
     taken = {conflict.claimant.op_key: conflict.message for conflict in collisions}
 
-    head = sanitize(prefix)
-    lead = f"{head}{PREFIX_SEPARATOR}" if head else ""
+    lead = name_lead(prefix)
     rows = tuple(
         OperationRow(
             op_key=operation.op_key,

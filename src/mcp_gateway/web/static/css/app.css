@@ -392,6 +392,27 @@ textarea.field__input {
   color: var(--ink-soft);
 }
 
+/* The same prefix in the detail page's table, where it is fixed text in front
+ * of a box holding the rest. Not italic, because here it is not a slot standing
+ * in for a value — it is the value — but quiet for the same reason: it is
+ * identical on every row, and the eye should run down the boxes (task 116). */
+.name-lead {
+  color: var(--ink-soft);
+}
+
+/* Keeps the printed prefix on the line of the box it leads. A flex row rather
+ * than ``white-space: nowrap`` on the cell, which would also stop the notes
+ * underneath from wrapping. */
+.name-box {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.name-box .name-lead {
+  white-space: nowrap;
+}
+
 /* --- the review strip ----------------------------------------------------- */
 
 /* What the last refresh left to decide, above the table it left it in. One

@@ -1127,6 +1127,30 @@ def test_an_operation_patch_touches_only_what_it_names(
     assert stored[4] == "Every pet"
 
 
+def test_a_description_can_still_be_set_and_cleared_here(
+    tmp_path: Path, respx_mock: respx.MockRouter
+) -> None:
+    """The only place it can be, now that the table's column is gone (task 116).
+
+    The UI stopped carrying a description box because it was a one-line field
+    for a paragraph; the field itself did not move, and this is the door it is
+    behind.
+    """
+    settings = settings_for(tmp_path)
+    serves_the_document(respx_mock)
+
+    with client(settings, tmp_path) as http:
+        created = registered(http)
+        ids = operation_ids(settings, created["id"])
+        row = f"/api/v1/operations/{ids[LIST_PETS]}"
+        http.patch(row, json={"description_override": "Every pet we hold."})
+        after_set = stored_server(settings, created["id"])["operations"][LIST_PETS][4]
+        http.patch(row, json={"description_override": None})
+
+    assert after_set == "Every pet we hold."
+    assert stored_server(settings, created["id"])["operations"][LIST_PETS][4] is None
+
+
 def test_unselecting_an_operation_takes_it_out_of_tools_list(
     tmp_path: Path, respx_mock: respx.MockRouter
 ) -> None:

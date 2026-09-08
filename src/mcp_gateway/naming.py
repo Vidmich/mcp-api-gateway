@@ -143,6 +143,22 @@ def path_slug(path: str) -> str:
     return RUNS.sub("_", sanitize(path)) or ROOT_SLUG
 
 
+def name_lead(prefix: str) -> str:
+    """What every name this server generates begins with: the prefix and ``__``.
+
+    The one place that answers it, because two pages now print it. The picker
+    shows it as a slot and the detail table shows it as text, and a name that
+    begins with this is a name whose remainder can be shown on its own; a name
+    that does not is shown whole (tasks 115 and 116).
+
+    Empty for a prefix with nothing usable in it, which is what
+    :func:`default_tool_name` does with one too: no prefix means no separator
+    either, so there is nothing in front of the name to print.
+    """
+    head = sanitize(prefix)
+    return f"{head}{PREFIX_SEPARATOR}" if head else ""
+
+
 def default_tool_name(
     prefix: str, *, operation_id: str | None = None, method: str = "GET", path: str = "/"
 ) -> str:
@@ -155,8 +171,7 @@ def default_tool_name(
     stem = sanitize(operation_id or "")
     if not stem:
         stem = f"{sanitize(method).lower() or FALLBACK_NAME}_{path_slug(path)}"
-    head = sanitize(prefix)
-    return _fit(f"{head}{PREFIX_SEPARATOR}{stem}" if head else stem)
+    return _fit(f"{name_lead(prefix)}{stem}")
 
 
 def tool_name(
@@ -608,6 +623,7 @@ __all__ = [
     "conflict_alerts",
     "default_tool_name",
     "is_legal_tool_name",
+    "name_lead",
     "path_slug",
     "plan_names",
     "plan_tool_names",

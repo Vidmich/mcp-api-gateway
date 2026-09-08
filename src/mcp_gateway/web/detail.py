@@ -65,6 +65,7 @@ from mcp_gateway.naming import (
     NamesTaken,
     conflict_alerts,
     default_tool_name,
+    name_lead,
     sanitize,
 )
 from mcp_gateway.naming import (
@@ -119,11 +120,12 @@ STATUS_FIELD: Final = "status"
 QUERY_FIELD: Final = "q"
 METHOD_FIELD: Final = "method"
 
-#: One row's three editable things. Every one of them is suffixed with the row
-#: it belongs to, because one form now carries the whole table (task 114) —
-#: see :func:`row_field`.
+#: One row's two editable things. Both are suffixed with the row they belong to,
+#: because one form carries the whole table (task 114) — see :func:`row_field`.
+#: A description was the third until task 116 took the column out: it is a
+#: paragraph, it was a one-line box almost nobody filled in, and it is still
+#: settable through ``PATCH /api/servers/{id}/operations/{op_id}``.
 TOOL_NAME_FIELD: Final = "tool_name"
-DESCRIPTION_FIELD: Final = "description"
 SELECTED_FIELD: Final = "selected"
 
 #: Which rows were on the page, one hidden value each. Nothing else can say so:
@@ -198,6 +200,18 @@ NAME_ILLEGAL: Final = (
     "A tool name may only contain letters, digits, hyphens and underscores. "
     "Clear the box to go back to the generated name."
 )
+
+#: What a row's name box is called to a reader who cannot see the prefix printed
+#: beside it. Two, because two rows in ten thousand hold a name that prefix was
+#: never put in front of, and their box holds the whole of it (task 116).
+NAME_LABEL: Final = "Tool name for {op_key}, the part after {lead}"
+NAME_LABEL_WHOLE: Final = "Tool name for {op_key}, in full"
+
+#: Said under such a box. It is not an error and there is nothing to fix: the
+#: name is legal, it is published, and something outside this gateway may be
+#: holding it. It is said because the cell alone would read as though the prefix
+#: had simply been forgotten (task 116).
+NAME_UNPREFIXED: Final = "Not built on {lead} — saving this row as it stands keeps it that way."
 
 SAVED: Final = "{name} was saved."
 SAVED_RENAMED: Final = "{name} was saved, and {count} tool names changed."
@@ -931,15 +945,23 @@ class OperationRow:
     ``default_name`` is the name this operation would have with no override at
     all. It is the placeholder in the tool-name box, so that clearing the box
     shows the operator what clearing it means before they do it.
+
+    The name cell prints ``prefix`` in front of a box holding only the rest, so
+    that the field the whole column is built out of is visible rather than
+    something the operator has to know (task 116). Which half is which is
+    decided here rather than sliced in the template — see :attr:`prefixed`.
     """
 
     operation: repo.OperationView
     default_name: str
     shown: bool
+    #: The server's ``tool_prefix``, which every generated name on this page
+    #: begins with and which the name cell prints.
+    prefix: str = ""
     #: What the tool-name box holds: the stored override, or what was just typed
-    #: and refused.
+    #: and refused. The whole name either way — :attr:`typed_stem` is the part
+    #: of it the box actually shows.
     typed_name: str = ""
-    typed_description: str = ""
     #: Whether the box is ticked. Read from the row, or from a submission that
     #: was refused — a refusal writes nothing, so the ticks that come back have
     #: to be the operator's rather than the database's (task 114).
@@ -962,9 +984,96 @@ class OperationRow:
         return row_field(TOOL_NAME_FIELD, self.id)
 
     @property
-    def description_field(self) -> str:
-        """What this row's description box posts under."""
-        return row_field(DESCRIPTION_FIELD, self.id)
+    def prefixed(self) -> bool:
+        """Whether the name in the box is one built on this server's prefix.
+
+        True of every generated name and of every override typed into this
+        table, which composes one. False for the two ways of holding a name
+        that is not: an override typed before this column printed a prefix, and
+        a server whose prefix was renamed afterwards — a rename recomputes the
+        generated names and leaves overrides exactly where they were, which is
+        what :func:`~mcp_gateway.naming.tool_name` promises (spec §5.3).
+
+        An empty box is prefixed: it has no name in it, and what it stands for
+        is the generated one.
+        """
+        return not self.typed_name or self.typed_name.startswith(name_lead(self.prefix))
+
+    @property
+    def lead(self) -> str:
+        """What is printed in front of the box, if anything.
+
+        Empty on a row holding a whole name, where the box shows all of it and
+        there is nothing fixed to print.
+        """
+        return name_lead(self.prefix) if self.prefixed else ""
+
+    @property
+    def typed_stem(self) -> str:
+        """What the box shows: the part after :attr:`lead`, or the whole name.
+
+        One expression for both, because :attr:`lead` is empty in the second
+        case — which is the only reason this cell needs one box rather than two.
+        """
+        return self.typed_name[len(self.lead) :]
+
+    @property
+    def default_stem(self) -> str:
+        """The placeholder: the generated name, shown the way the box shows one.
+
+        Clearing the box publishes :attr:`default_name`, which is always built
+        on the prefix. On an ordinary row the printed lead supplies that half,
+        so the placeholder is the other; on a row holding a whole name nothing
+        is printed, so the placeholder is the whole of it — and either way what
+        the operator reads across the cell is the name they would get.
+        """
+        lead = self.lead
+        if lead and self.default_name.startswith(lead):
+            return self.default_name[len(lead) :]
+        return self.default_name
+
+    @property
+    def name_label(self) -> str:
+        """What the box is called to a reader who cannot see the cell.
+
+        The visible label is gone: the column is headed **Name** and the prefix
+        is text beside the box, neither of which a screen reader announces on
+        focus, so the label has to say which of the two the box is.
+        """
+        wording = NAME_LABEL if self.lead else NAME_LABEL_WHOLE
+        return wording.format(op_key=self.operation.op_key, lead=self.lead)
+
+    @property
+    def prefix_note(self) -> str | None:
+        """Said under a box holding a whole name, and ``None`` otherwise."""
+        if self.prefixed:
+            return None
+        return NAME_UNPREFIXED.format(lead=name_lead(self.prefix))
+
+    @property
+    def note(self) -> str:
+        """The line under the path: what this operation is said to do.
+
+        The override when there is one, because that is the sentence the model
+        is given — :func:`mcp_gateway.mcpsrv.tools.describe` reads it and the
+        spec's summary only when there is none. A page showing the summary
+        while the tool ships something else would be telling the operator the
+        wrong thing about their own gateway (task 116).
+        """
+        return self.operation.description_override or self.operation.summary or ""
+
+    @property
+    def badge(self) -> str:
+        """This row's status when a refresh left it behind, and ``""`` otherwise.
+
+        Only the three. ``active`` is the absence of news, and printed beside
+        two hundred paths it makes the three that are news harder to find rather
+        than easier — which is the opposite of why task 114 put a badge in this
+        cell. The selector above the table still offers all four, and it saying
+        **Active** is the answer to why those rows look alike (task 116).
+        """
+        status = self.operation.status
+        return status if status in REVIEW_STATUSES else ""
 
     @property
     def overridden(self) -> bool:
@@ -1171,12 +1280,16 @@ class Operations:
 
 @dataclass(frozen=True, slots=True)
 class RowEdit:
-    """One row of the table as it was submitted (task 114)."""
+    """One row of the table as it was submitted (task 114).
+
+    ``tool_name`` is what the box held, which is the part after the prefix
+    printed beside it rather than the whole name — :func:`save_table` composes
+    the two (task 116).
+    """
 
     op_id: int
     selected: bool
     tool_name: str
-    description: str | None
 
 
 def submitted_rows(ids: Sequence[str], fields: Mapping[str, str]) -> tuple[RowEdit, ...]:
@@ -1201,7 +1314,6 @@ def submitted_rows(ids: Sequence[str], fields: Mapping[str, str]) -> tuple[RowEd
             op_id=op_id,
             selected=_ticked(fields, row_field(SELECTED_FIELD, op_id)),
             tool_name=_clean(fields.get(row_field(TOOL_NAME_FIELD, op_id))),
-            description=_clean(fields.get(row_field(DESCRIPTION_FIELD, op_id))) or None,
         )
     return tuple(seen.values())
 
@@ -1242,6 +1354,38 @@ def build_operations(
     return Operations(server=detail, filter=narrowing, rows=rows, alerts=tuple(alerts), path=path)
 
 
+def compose_name(prefix: str, typed: str, stored: str | None) -> str:
+    """The whole name a row's name box means (task 116).
+
+    The box holds the part after the prefix that is printed beside it, so an
+    ordinary row composes: the prefix, ``__``, and what was typed. Two other
+    answers, and both are about not renaming a tool nobody asked to rename:
+
+    An empty box is not a name at all. It clears the override, and the operation
+    goes back to its generated name — which is what the box's placeholder has
+    been showing all along (spec §5.3).
+
+    A box posted back exactly as it was stored is a row the operator did not
+    touch. That only happens on a name the prefix was never put in front of,
+    since an ordinary row's box holds a stem and its stored value is the whole
+    name; those rows show all of what they hold, and pressing Save with them on
+    the page leaves them alone. Re-prefixing one would rename a published tool
+    on a submission that said nothing about it, and clients outside this gateway
+    hold those names (spec §5.3). Retyping it, or clearing it, puts the row into
+    the ordinary shape.
+
+    Takes the typed text as-is: :func:`save_table` sanitises before composing,
+    because a stem that sanitises away to nothing is an error rather than a
+    prefix on its own, and :func:`_row` does not, because a refused box has to
+    come back holding what was typed into it.
+    """
+    if not typed:
+        return ""
+    if stored is not None and typed == stored:
+        return stored
+    return f"{name_lead(prefix)}{typed}"
+
+
 def _row(
     operation: repo.OperationView,
     prefix: str,
@@ -1260,9 +1404,16 @@ def _row(
         # A row carrying a message the operator has to read is not a row to
         # narrow away.
         shown=True if error else narrowing.matches(operation),
-        typed_name=edit.tool_name if edit else (operation.tool_name_override or ""),
-        typed_description=(
-            (edit.description or "") if edit else (operation.description_override or "")
+        prefix=prefix,
+        # The whole name either way, and the cell shows whichever part of it the
+        # box shows. A refused submission holds what the box held, so it is put
+        # back through the same composition the save would have done — including
+        # when it is not a legal name, since that is the row the operator has to
+        # read the error on.
+        typed_name=(
+            compose_name(prefix, edit.tool_name, operation.tool_name_override)
+            if edit
+            else (operation.tool_name_override or "")
         ),
         ticked=edit.selected if edit else operation.selected,
         error=error,
@@ -1321,7 +1472,13 @@ async def save_table(session: AsyncSession, server_id: int, edits: Sequence[RowE
     because it has to be checked against this server's own operations as well as
     everybody else's — the two rows that collide are very often siblings, and a
     check scoped to "some other server" would miss exactly those.
+
+    The server is read for its ``tool_prefix``, which every box on the page is
+    the tail of: the table prints the prefix and posts the rest, and this is
+    where the two are put back together (task 116). What is stored is unchanged
+    — an override is still the whole published name, and no existing one moves.
     """
+    server = await repo.require_server(session, server_id)
     rows = []
     for edit in edits:
         operation = await repo.get_operation(session, edit.op_id)
@@ -1334,17 +1491,17 @@ async def save_table(session: AsyncSession, server_id: int, edits: Sequence[RowE
     changed = 0
     for edit, operation in rows:
         typed = edit.tool_name.strip()
-        override = sanitize(typed) or None
-        if typed and override is None:
+        # Checked on the typed half rather than on the composed name: a stem of
+        # ``"///"`` has nothing in it, and composing first would quietly publish
+        # the bare prefix instead of saying so.
+        stem = sanitize(typed)
+        if typed and not stem:
             faults[edit.op_id] = NAME_ILLEGAL
             continue
+        override = compose_name(server.tool_prefix, stem, operation.tool_name_override) or None
         if override != operation.tool_name_override:
             overrides[operation.op_key] = override
-        if (
-            edit.selected != operation.selected
-            or override != operation.tool_name_override
-            or edit.description != operation.description_override
-        ):
+        if edit.selected != operation.selected or override != operation.tool_name_override:
             changed += 1
     if faults:
         raise RowsInvalid(faults)
@@ -1354,10 +1511,13 @@ async def save_table(session: AsyncSession, server_id: int, edits: Sequence[RowE
         raise NamesTaken(plan.conflicts)
 
     for edit, operation in rows:
+        # The tick, and nothing else this patch could carry. Not the description:
+        # the column is gone, so a submission says nothing about one, and
+        # ``update_operation`` writes the fields a patch *sets* — passing
+        # ``description_override=None`` would blank every override on the server
+        # in one press of a button that was never about descriptions (task 116).
         await repo.update_operation(
-            session,
-            operation.id,
-            repo.OperationPatch(selected=edit.selected, description_override=edit.description),
+            session, operation.id, repo.OperationPatch(selected=edit.selected)
         )
     moved = len(plan.changes)
     logger.info("Saved %d of %d operations of server %d", changed, len(rows), server_id)
@@ -1457,7 +1617,6 @@ __all__ = [
     "CREDENTIAL_NOTES",
     "CUSTOM_NEEDS_CREDENTIAL",
     "DELETE_OPERATION",
-    "DESCRIPTION_FIELD",
     "EDIT_FIELD",
     "EDIT_ON",
     "ENABLED_HINT",
@@ -1470,8 +1629,11 @@ __all__ = [
     "NAMES_MOVED_ONE",
     "NAME_FIELD",
     "NAME_ILLEGAL",
+    "NAME_LABEL",
+    "NAME_LABEL_WHOLE",
     "NAME_REQUIRED",
     "NAME_TOO_LONG",
+    "NAME_UNPREFIXED",
     "NOTHING_CHANGED",
     "NOTHING_MATCHES",
     "NOT_LIMITED",
@@ -1525,6 +1687,7 @@ __all__ = [
     "apply_operation",
     "apply_patch",
     "build_operations",
+    "compose_name",
     "credentials",
     "kept_fields",
     "mode_path",
