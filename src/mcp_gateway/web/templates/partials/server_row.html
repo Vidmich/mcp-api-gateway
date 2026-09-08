@@ -85,7 +85,7 @@
     {% if row.refreshable %}
     <form class="toggle" method="post" action="{{ row.refresh_path }}">
       <input type="hidden" name="back" value="list" />
-      <button class="button" type="submit">Refresh</button>
+      <button class="button" type="submit">Refresh Spec</button>
     </form>
     {% endif %}
     {# No Delete for the gateway's own server, and nothing in its place: the

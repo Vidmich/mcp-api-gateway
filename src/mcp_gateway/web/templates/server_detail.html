@@ -13,6 +13,7 @@
 {% from "partials/field.html" import field, choice, switch %}
 {% from "partials/credential_fields.html" import credential_fields %}
 {% from "partials/status_badge.html" import status_badge %}
+{% from "partials/tool_counts.html" import tool_counts %}
 
 {% block title %}{{ settings.server.name }} &middot; mcp-api-gateway{% endblock %}
 
@@ -33,7 +34,7 @@
      gateway's own server, which has no document to re-read (task 102). #}
   {% if settings.editable %}
   <form method="post" action="{{ refresh_path }}">
-    <button class="button" type="submit">Refresh</button>
+    <button class="button" type="submit">Refresh Spec</button>
   </form>
   {% endif %}
   <a class="button" href="{{ servers_path }}">All servers</a>
@@ -62,11 +63,13 @@
       {{ status_badge(overview.state, label=overview.refreshed, title=overview.refresh_title) }}
     </dd>
   </div>
+  {# The list's Status cell, restated: an operator arrives here from that
+     table and should not have to re-learn the numbers they just read. Whether
+     the server is on is said by the badge in the toolbar above, which is why
+     the green number can be a bare 0 here as it is there (task 106). #}
   <div class="summary__pair">
-    <dt class="summary__term">Exposed</dt>
-    <dd class="summary__value" title="{{ overview.counts_title }}">
-      {{ settings.server.counts.selected }} of {{ settings.server.counts.total }} tools
-    </dd>
+    <dt class="summary__term">Status</dt>
+    <dd class="summary__value">{{ tool_counts(overview.counts) }}</dd>
   </div>
 </dl>
 
@@ -75,7 +78,7 @@
    repository, which refuses a patch of anything else however it arrives
    (task 102). #}
 {% if not settings.editable %}
-<form class="card form" method="post" action="{{ enabled_path }}">
+<form class="card form form--wide" method="post" action="{{ enabled_path }}">
   <h2 class="card__title">Settings</h2>
   <p class="form__note">{{ settings.uneditable_note }}</p>
   {{ switch("enabled", "Enabled", checked=settings.enabled, hint=settings.enabled_hint) }}
@@ -85,7 +88,7 @@
   </div>
 </form>
 {% else %}
-<form class="card form" method="post" action="{{ detail_path }}">
+<form class="card form form--wide" method="post" action="{{ detail_path }}">
   <h2 class="card__title">Settings</h2>
 
   {{ field("name", "Display name", value=settings.fields.name, required=true,

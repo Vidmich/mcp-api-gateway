@@ -76,21 +76,70 @@ Nothing here changes a route, a form field or what the gateway serves.
 
 ## Acceptance
 
-- [ ] The detail page and the server list both label that action "Refresh Spec", it posts to the
+- [x] The detail page and the server list both label that action "Refresh Spec", it posts to the
       route it posted to before, and both pages still redirect the way they did.
-- [ ] "Last spec download" renders on one line in the detail summary, and the preview page's summary
+- [x] "Last spec download" renders on one line in the detail summary, and the preview page's summary
       still lines up.
-- [ ] The detail summary's fourth row is headed "Status" and shows active, selected and total in
+- [x] The detail summary's fourth row is headed "Status" and shows active, selected and total in
       that order; no page says "Exposed" or renders the old `N of M tools` line.
-- [ ] The three numbers come from one partial shared with the server list, and a test renders both
+- [x] The three numbers come from one partial shared with the server list, and a test renders both
       pages for one server and asserts the same three numbers in both.
-- [ ] Disabling the server makes the active number `0` on this page as well, and enabling it puts the
+- [x] Disabling the server makes the active number `0` on this page as well, and enabling it puts the
       number back.
-- [ ] Each number is named in the cell's tooltip and in visually-hidden text; a test reads text, not
+- [x] Each number is named in the cell's tooltip and in visually-hidden text; a test reads text, not
       colour.
-- [ ] Task 106's wording is amended: both pages call the middle number "selected", and no template
+- [x] Task 106's wording is amended: both pages call the middle number "selected", and no template
       or test says "checked".
-- [ ] The Settings card and the summary above it have the same left and right edges, for an editable
+- [x] The Settings card and the summary above it have the same left and right edges, for an editable
       server and for the built-in one, and the fields inside the card keep a readable measure.
-- [ ] The Configuration page, the wizard and the login card are unchanged in width.
-- [ ] The existing UI and end-to-end tests pass with only the assertions this task changes.
+- [x] The Configuration page, the wizard and the login card are unchanged in width.
+- [x] The existing UI and end-to-end tests pass with only the assertions this task changes.
+
+## Notes
+
+**The partial was already there.** Task 106 landed first and built
+`partials/tool_counts.html`, so this task included it rather than extracting it. The detail page's
+Status row is `{{ tool_counts(overview.counts) }}` and the list's cell is the same call on the same
+`ServerRow.counts` — one property, one template, two pages.
+`test_both_pages_say_the_same_three_things_about_one_server` renders both for one server and
+compares the two triples against each other rather than each against a literal, which is the
+assertion that actually holds them together.
+
+**`ServerRow.counts_title` is gone.** It existed for the `Exposed` cell's tooltip and nothing else,
+and 106 kept it alive on purpose: this Jinja environment is not strict about undefined names, so
+removing it then would have quietly emptied that tooltip instead of failing a test. The cell it
+belonged to is what this task replaced, so the property went with it. The three numbers name
+themselves now — `ToolCounts.title` for the tooltip, `visually-hidden` words for a reader who never
+sees a colour.
+
+**The badge in the toolbar stayed, and is tested.** The list says whether a server is on by the
+button offering the other state; this page says it in a heading, where there is room for it and
+nothing beside it to disagree. `test_the_state_of_the_server_is_still_stated_beside_the_title`
+toggles the server and reads both badges, so the two pages' different answers to the same question
+are both deliberate and both covered.
+
+**Widening the term column, and the one place it was too wide.** `.summary__term` went from `8rem`
+to `11rem`, which fits "Last spec download" with room over. The preview page's summary simply gained
+gutter. The `.summary--inline` lists inside the Settings fieldsets did read as a hole — their terms
+are `Mode` and `Credential` — so the inline variant keeps `8rem` of its own rather than compromising
+the width the page-level summary needs.
+
+  Noticed while checking that, and left alone as out of scope: the rest of the `.summary--inline`
+  block is dead. It asks for no background, no border and a smaller bottom margin, but the plain
+  `.summary` rule is further down the stylesheet at the same specificity, so it wins every one of
+  them and those lists render as bordered boxes inside the fieldsets. Only the term width added here
+  takes effect, because a two-class selector does not depend on where it sits.
+
+**The card grew; the boxes in it did not.** `.form--wide` sets `max-width: none` on this page's two
+cards, and caps `.field`, `.switch`, `.fieldset`, `.rename` and the notes at the `34rem` every form
+on the site has. `.form` itself is untouched, so the wizard, the Configuration page and the login
+card keep their column —
+`test_the_settings_card_is_as_wide_as_the_summary_above_it` asserts the class is on this page and on
+neither of the others. Both branches carry it, and
+`test_the_built_in_server_gets_the_same_wide_card` renders the gateway's own page — through
+`builtin_service`, which the detail tests can now start — to check the one-switch card is the same
+box.
+
+**SPEC amended in two places:** §5.4 names the button "Refresh Spec", and §7.1's detail-page bullet
+says the summary repeats the list's Status from the same template, and that the state is said here
+by the badge beside the title.

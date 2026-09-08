@@ -209,6 +209,24 @@ pre {
   max-width: 34rem;
 }
 
+/* A form whose card has to share an edge with the summary above it: two
+ * stacked boxes stopping at different right edges read as a rendering fault
+ * (task 107). Only the box grows. What is inside it keeps the measure every
+ * other form on the site has, because a Display name stretched across the page
+ * is a worse form than the misalignment this fixes. */
+.form--wide {
+  max-width: none;
+}
+
+.form--wide .field,
+.form--wide .switch,
+.form--wide .fieldset,
+.form--wide .rename,
+.form--wide .form__lead,
+.form--wide .form__note {
+  max-width: 34rem;
+}
+
 .form__lead {
   margin: 0 0 1.25rem;
   color: var(--ink-soft);
@@ -452,6 +470,10 @@ a.badge:hover {
   border: 0;
 }
 
+.summary--inline .summary__term {
+  flex: 0 0 8rem;
+}
+
 /* A table whose cells hold controls needs its rows to breathe less than a
  * reading table and its inputs to be smaller than a form's. */
 .table--editable td {
@@ -690,7 +712,7 @@ a.badge:hover {
 }
 
 .summary__term {
-  flex: 0 0 8rem;
+  flex: 0 0 11rem;
   color: var(--ink-soft);
 }
 

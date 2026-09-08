@@ -352,18 +352,13 @@ class ServerRow:
 
     @property
     def counts(self) -> ToolCounts:
-        """The three numbers under the Status heading (task 106)."""
-        return tool_counts(self.server)
+        """The three numbers under the Status heading.
 
-    @property
-    def counts_title(self) -> str:
-        """The detail page's summary still shows two numbers and this tooltip.
-
-        The list shows three and reads :attr:`counts` instead; task 107 is what
-        brings the two pages back into one wording, and takes this with it.
+        Both pages read this one property: the list's Status cell and the
+        detail page's Status row are the same three numbers, rendered by the
+        same partial (tasks 106 and 107).
         """
-        counts = self.server.counts
-        return f"{counts.selected} of {plural(counts.total, 'tool')} exposed."
+        return tool_counts(self.server)
 
     @property
     def toggle_label(self) -> str:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, Final, TypeVar
@@ -29,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway.app import create_app
 from mcp_gateway.bootstrap import Keys
+from mcp_gateway.builtin.seed import builtin_service
 from mcp_gateway.config import Settings, load_settings
 from mcp_gateway.crypto import (
     ApiKeyCredential,
@@ -66,6 +68,19 @@ from mcp_gateway.web.routes_ui import SERVERS_PATH
 from mcp_gateway.web.wizard import BASE_URL_SCHEME, NOTHING_TO_REUSE
 
 T = TypeVar("T")
+
+#: The three numbers of a Status cell, wherever one is rendered (task 106).
+COUNTS: Final = re.compile(
+    r'counts__number--active">(\d+)<.*?'
+    r'counts__number--selected">(\d+)<.*?'
+    r'counts__number--total">(\d+)<',
+    re.S,
+)
+
+
+def counts_in(body: str) -> list[tuple[str, str, str]]:
+    return COUNTS.findall(body)
+
 
 HTML = {"accept": "text/html,application/xhtml+xml"}
 HTMX = {**HTML, "HX-Request": "true"}
@@ -115,8 +130,12 @@ def cipher() -> CredentialCipher:
     return CredentialCipher(KEY)
 
 
-def client(settings: Settings, tmp_path: Path, *, mcp: bool = False) -> TestClient:
+def client(
+    settings: Settings, tmp_path: Path, *, mcp: bool = False, builtin: bool = False
+) -> TestClient:
     services: list[Any] = [database_service(settings)]
+    if builtin:
+        services.append(builtin_service)
     if mcp:
         services.append(mcp_service)
     app = create_app(settings, keys_for(tmp_path), services=services)
@@ -1324,3 +1343,140 @@ def test_a_form_with_half_a_limit_changes_nothing(tmp_path: Path) -> None:
     assert refused.status_code == 422
     assert HALF_A_LIMIT in refused.text
     assert limits_of(settings, server_id) == (5, 60)
+
+
+# --------------------------------------------------------------------------- #
+# The page in the list's terms (task 107)
+# --------------------------------------------------------------------------- #
+
+
+def test_both_pages_say_the_same_three_things_about_one_server(tmp_path: Path) -> None:
+    """One partial, one property, two templates.
+
+    The point of the shared cell is that nobody can adjust a number on one page
+    and leave the other saying something else, so the test compares the pages
+    against each other rather than each against a literal.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session, selected=2))
+
+    with client(settings, tmp_path) as http:
+        listed = http.get(SERVERS_PATH, headers=HTML).text
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    assert counts_in(listed) == [("2", "2", "3")]
+    assert counts_in(page) == counts_in(listed)
+
+
+def test_the_summary_is_headed_status_and_no_longer_counts_in_prose(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    assert ">Status</dt>" in body
+    assert "Exposed" not in body
+    assert "3 of 3 tools" not in body
+
+
+def test_switching_the_server_off_zeroes_the_active_number_on_its_own_page(
+    tmp_path: Path,
+) -> None:
+    """Active is what the server is contributing, here as on the list."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        http.post(path, data=settings_form(enabled=""), headers=HTML)
+        off = http.get(path, headers=HTML).text
+        http.post(path, data=settings_form(), headers=HTML)
+        on = http.get(path, headers=HTML).text
+
+    assert counts_in(off) == [("0", "3", "3")]
+    assert counts_in(on) == [("3", "3", "3")]
+
+
+def test_each_number_on_this_page_says_which_it_is_without_its_colour(
+    tmp_path: Path,
+) -> None:
+    """Read as text, the way a screen reader reads it."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session, selected=2))
+
+    with client(settings, tmp_path) as http:
+        body = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    assert "2 active, 2 selected, 3 tools in all." in body
+    for word in ("active,", "selected,", "in all"):
+        assert f'<span class="visually-hidden">{word}</span>' in body
+
+
+def test_the_state_of_the_server_is_still_stated_beside_the_title(tmp_path: Path) -> None:
+    """Unlike the list, this page has room to say it and a heading to say it in."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+    path = f"{SERVERS_PATH}/{server_id}"
+
+    with client(settings, tmp_path) as http:
+        on = http.get(path, headers=HTML).text
+        http.post(path, data=settings_form(enabled=""), headers=HTML)
+        off = http.get(path, headers=HTML).text
+
+    assert "badge--enabled" in on
+    assert "badge--disabled" in off
+
+
+def test_both_pages_name_what_the_refresh_button_fetches(tmp_path: Path) -> None:
+    """One action, one name, on the two pages that offer it."""
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        listed = http.get(SERVERS_PATH, headers=HTML).text
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+
+    for body in (listed, page):
+        assert ">Refresh Spec</button>" in body
+        assert ">Refresh</button>" not in body
+    assert f'action="{SERVERS_PATH}/{server_id}/refresh"' in page
+
+
+def test_the_settings_card_is_as_wide_as_the_summary_above_it(tmp_path: Path) -> None:
+    """A modifier on this page's card, not a new width for every form.
+
+    Asserted as the class the stylesheet keys off, because the width itself is
+    a rule in a file no test parses; what a test can hold is that the card asks
+    for it and that the narrow forms elsewhere do not.
+    """
+    settings = settings_for(tmp_path)
+    server_id = seeded(settings, lambda session: register(session))
+
+    with client(settings, tmp_path) as http:
+        page = http.get(f"{SERVERS_PATH}/{server_id}", headers=HTML).text
+        configuration = http.get("/ui/configuration", headers=HTML).text
+        wizard = http.get("/ui/servers/new", headers=HTML).text
+
+    assert 'class="card form form--wide"' in page
+    assert "form--wide" not in configuration
+    assert "form--wide" not in wizard
+
+
+def test_the_built_in_server_gets_the_same_wide_card(tmp_path: Path) -> None:
+    """The one-switch card and the editable form are the same box on the same
+    page, and a summary that lines up over one of them lines up over both."""
+    settings = settings_for(tmp_path)
+
+    with client(settings, tmp_path, builtin=True) as http:
+        listed = http.get(SERVERS_PATH, headers=HTML).text
+        row = re.search(r'<tr id="server-(\d+)">(?:(?!</tr>).)*?>Gateway</a>', listed, re.S)
+        assert row is not None, listed
+        page = http.get(f"{SERVERS_PATH}/{row.group(1)}", headers=HTML).text
+
+    # The uneditable branch: one switch, and no Save-settings form.
+    assert "Save settings" not in page
+    assert 'class="card form form--wide"' in page
+    assert ">Status</dt>" in page
+    # And no Refresh Spec button at all, because there is no document to fetch.
+    assert "Refresh Spec" not in page
