@@ -87,19 +87,19 @@ Verified before writing this, against an app built by `create_app`:
 
 ## Acceptance
 
-- [ ] `GET /` answers a redirect to `/ui/servers`, in an app with no admin account and in one with
+- [x] `GET /` answers a redirect to `/ui/servers`, in an app with no admin account and in one with
       an admin account configured.
-- [ ] `GET /ui` and `GET /ui/` answer the same redirect as `/`.
-- [ ] The redirect is temporary, and a comment at the route says which status was chosen and why a
+- [x] `GET /ui` and `GET /ui/` answer the same redirect as `/`.
+- [x] The redirect is temporary, and a comment at the route says which status was chosen and why a
       permanent one was not.
-- [ ] With a login configured, following `/` twice arrives at `/ui/login` carrying
+- [x] With a login configured, following `/` twice arrives at `/ui/login` carrying
       `next=%2Fui%2Fservers`, and signing in from there lands on the server list.
-- [ ] In an app built with `mcp.path = "/"`, `GET /` and `POST /` reach the MCP endpoint and not the
+- [x] In an app built with `mcp.path = "/"`, `GET /` and `POST /` reach the MCP endpoint and not the
       redirect; with the default `mcp.path`, `/mcp` is untouched.
-- [ ] `/healthz`, a static asset, an `/api/v1` route and `mcp.path` answer what they answered before.
-- [ ] An address matching nothing still gets the 404 page for a browser and the JSON error for a
+- [x] `/healthz`, a static asset, an `/api/v1` route and `mcp.path` answer what they answered before.
+- [x] An address matching nothing still gets the 404 page for a browser and the JSON error for a
       client that did not ask for HTML.
-- [ ] SPEC §7.1 says the root redirects to `/ui/servers`, in the same sentence that already calls it
+- [x] SPEC §7.1 says the root redirects to `/ui/servers`, in the same sentence that already calls it
       where the UI starts.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the existing suite passes with no
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the existing suite passes with no
       assertion changed except any this task's routes make wrong.

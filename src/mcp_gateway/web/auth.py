@@ -67,9 +67,12 @@ LOGOUT_PATH: Final = f"{UI_PREFIX}/logout"
 #: Where a login with nowhere particular to go ends up (spec §7.1).
 HOME_PATH: Final = f"{UI_PREFIX}/servers"
 
-#: The routes under a protected prefix that are themselves open, because
-#: requiring a session to reach them would make signing in impossible.
-OPEN_PATHS: Final = frozenset({LOGIN_PATH, LOGOUT_PATH})
+#: The routes under a protected prefix that are themselves open. The login and
+#: logout routes, because requiring a session to reach them would make signing
+#: in impossible; ``/ui`` and ``/ui/``, because they are redirects to
+#: ``/ui/servers`` holding nothing of their own (:mod:`mcp_gateway.web.landing`)
+#: and the page they point at does the guarding.
+OPEN_PATHS: Final = frozenset({LOGIN_PATH, LOGOUT_PATH, UI_PREFIX, f"{UI_PREFIX}/"})
 
 SESSION_COOKIE: Final = "mcp_gateway_session"
 

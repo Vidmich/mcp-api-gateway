@@ -45,6 +45,7 @@ from mcp_gateway.web.account import admin_service
 from mcp_gateway.web.api import Health, health_report
 from mcp_gateway.web.auth import FROM_DATABASE, AdminAuth, mount_admin, signing_key
 from mcp_gateway.web.configuration import mount_configuration
+from mcp_gateway.web.landing import mount_landing
 from mcp_gateway.web.monitoring import mount_monitoring
 from mcp_gateway.web.routes_api import mount_api
 from mcp_gateway.web.routes_ui import mount_ui
@@ -265,6 +266,10 @@ def create_app(
     #: The MCP endpoint. Mounted here so the route exists however the app is
     #: built; it answers 503 until ``mcp_service`` starts it (spec §6).
     app.state.mcp = mount_mcp(app)
+    #: ``/``, ``/ui`` and ``/ui/``, redirected to where the UI starts (task
+    #: 109). After the MCP endpoint rather than with the other pages: the first
+    #: route to match wins, and ``mcp.path`` may be ``/``.
+    mount_landing(app)
     return app
 
 
