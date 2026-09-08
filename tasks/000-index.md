@@ -65,4 +65,8 @@ names its dependencies; none of them is needed for v1 to ship.
 | 106 | [The server list, at a glance](106-server-list-status-column.md) | 11 · UI polish |
 | 107 | [The server page, in the same terms as the list](107-server-detail-status-and-layout.md) | 11 · UI polish |
 | 108 | [The annotations the language has moved on from](108-deprecated-annotations.md) | 13 · Housekeeping |
+| 109 | [The front door](109-landing-page.md) | 11 · UI polish |
+| 110 | [The row that is not there yet](110-new-server-row-not-shown.md) | 11 · UI polish |
+| 111 | [The identifier that identified nothing](111-remove-server-slug.md) | 13 · Housekeeping |
+| 112 | [Turning a server off from its own page](112-detail-page-enable-disable.md) | 11 · UI polish |
 
