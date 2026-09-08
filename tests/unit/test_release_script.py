@@ -216,3 +216,131 @@ def test_the_command_exits_nonzero_on_a_mismatch() -> None:
 
     assert code == 1
     assert "0.0.0" in said
+
+
+# --------------------------------------------------------------------------- #
+# Finding the command this interpreter installed (task 117)
+# --------------------------------------------------------------------------- #
+
+
+def layout(
+    tmp_path: Path, *, windows: bool, venv: bool, installed: bool = True
+) -> tuple[Path, Path]:
+    """A prefix laid out the way that platform and that kind of install lay it out.
+
+    Returns the interpreter and the directory its entry points go in. The
+    combination that failed every Windows cell in CI is ``windows=True,
+    venv=False``: the interpreter in the prefix root, the scripts in ``Scripts``
+    underneath it, and nothing beside ``python.exe`` at all.
+    """
+    prefix = tmp_path / ("venv" if venv else "prefix")
+    scripts = prefix / ("Scripts" if windows else "bin")
+    scripts.mkdir(parents=True)
+
+    interpreter = prefix if windows and not venv else scripts
+    (interpreter / ("python.exe" if windows else "python")).write_bytes(b"")
+    if installed:
+        name = f"{release.CONSOLE_SCRIPT}.exe" if windows else release.CONSOLE_SCRIPT
+        (scripts / name).write_bytes(b"")
+    return interpreter / ("python.exe" if windows else "python"), scripts
+
+
+def pretend(
+    monkeypatch: pytest.MonkeyPatch,
+    interpreter: Path,
+    scripts: Path,
+    user: Path | None = None,
+) -> None:
+    """Answer as that interpreter would about itself, and about nothing else."""
+    real = release.sysconfig.get_path
+
+    def get_path(name: str, scheme: str | None = None, **rest: object) -> str:
+        if name != "scripts":
+            return real(name) if scheme is None else real(name, scheme)
+        if scheme is None:
+            return str(scripts)
+        return str(user if user is not None else scripts.parent / "user-scripts")
+
+    monkeypatch.setattr(release.sysconfig, "get_path", get_path)
+    monkeypatch.setattr(release.sys, "executable", str(interpreter))
+
+
+def test_a_windows_install_that_is_not_a_venv_keeps_its_scripts_elsewhere(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression: nothing is beside ``python.exe``, and that is normal."""
+    interpreter, scripts = layout(tmp_path, windows=True, venv=False)
+    pretend(monkeypatch, interpreter, scripts)
+
+    found = release.installed_script()
+
+    assert found.parent == scripts
+    assert found.parent != interpreter.parent
+    assert found.name == f"{release.CONSOLE_SCRIPT}.exe"
+
+
+@pytest.mark.parametrize("windows", [False, True])
+def test_a_venv_finds_the_command_beside_its_own_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, windows: bool
+) -> None:
+    """The layout the smoke test has always run in, and still does."""
+    interpreter, scripts = layout(tmp_path, windows=windows, venv=True)
+    pretend(monkeypatch, interpreter, scripts)
+
+    found = release.installed_script()
+
+    assert found.parent == scripts == interpreter.parent
+
+
+def test_a_user_install_is_looked_for_after_the_interpreters_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    interpreter, scripts = layout(tmp_path, windows=False, venv=False, installed=False)
+    user = tmp_path / "user-scripts"
+    user.mkdir()
+    (user / release.CONSOLE_SCRIPT).write_bytes(b"")
+    pretend(monkeypatch, interpreter, scripts, user=user)
+
+    assert release.installed_script().parent == user
+
+
+def test_a_command_only_on_the_path_is_not_this_interpreters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The promise the docstring makes, and the reason for not asking the PATH.
+
+    Two gateways installed at once is the ordinary case for anyone releasing
+    one: the smoke test has to exercise the environment it was pointed at.
+    """
+    interpreter, scripts = layout(tmp_path, windows=False, venv=True, installed=False)
+    elsewhere = tmp_path / "somebody-elses-bin"
+    elsewhere.mkdir()
+    (elsewhere / release.CONSOLE_SCRIPT).write_bytes(b"")
+    pretend(monkeypatch, interpreter, scripts)
+    monkeypatch.setenv("PATH", str(elsewhere))
+
+    with pytest.raises(SystemExit) as refused:
+        release.installed_script()
+
+    assert str(elsewhere) not in str(refused.value)
+
+
+def test_an_interpreter_with_nothing_installed_is_told_where_it_was_looked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refusal whose whole value is saying where to install it."""
+    interpreter, scripts = layout(tmp_path, windows=True, venv=False, installed=False)
+    user = tmp_path / "user-scripts"
+    pretend(monkeypatch, interpreter, scripts, user=user)
+
+    with pytest.raises(SystemExit) as refused:
+        release.installed_script()
+
+    said = str(refused.value)
+    assert release.CONSOLE_SCRIPT in said
+    assert str(interpreter) in said
+    for directory in (scripts, user, interpreter.parent):
+        assert f"  {directory}" in said
+    # Each of them once: on POSIX two of the three are the same bin/ directory.
+    listed = [line.strip() for line in said.splitlines() if line.startswith("  ")]
+    assert len(listed) == len(set(listed))

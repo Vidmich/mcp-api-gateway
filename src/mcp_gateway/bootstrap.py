@@ -141,15 +141,15 @@ def ensure_data_dir(path: Path) -> None:
         raise ConfigError(f"{path}: cannot create data directory: {exc}") from exc
 
 
-def _restrict_permissions(path: Path) -> None:
-    """Make ``path`` readable by its owner only, as far as the platform allows."""
-    if sys.platform != "win32":
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-        return
+def _restrict_acl(path: Path) -> None:
+    """Break inheritance and grant the current user alone, on Windows.
 
-    # Windows ignores POSIX modes, so break inheritance and grant the current
-    # user alone. Best effort: a failure here is worth knowing about but is not
-    # a reason to refuse to start.
+    Which is what taking a POSIX mode away amounts to there, since Windows
+    ignores one.
+
+    Best effort: a failure here is worth knowing about but is not a reason to
+    refuse to start.
+    """
     user = os.environ.get("USERNAME")
     if not user:
         return
@@ -162,6 +162,23 @@ def _restrict_permissions(path: Path) -> None:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         logger.debug("Could not tighten the ACL on %s: %s", path, exc)
+
+
+def _restrict_permissions(path: Path) -> None:
+    """Make ``path`` readable by its owner only, as far as the platform allows.
+
+    One guarded branch each rather than an early return for the common case,
+    because mypy narrows ``sys.platform`` to the platform it is checking for: an
+    early return leaves the rest of the function dead on two of the three
+    runners, and ``warn_unreachable`` says so. A block the platform check itself
+    skips is exempt, which is why the same test spelled this way round passes
+    everywhere — see :func:`~mcp_gateway.config.platform_config_dir`, which has
+    always been written like this (task 117).
+    """
+    if sys.platform == "win32":
+        _restrict_acl(path)
+    else:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
 def _read_keys_file(path: Path) -> dict[str, str]:

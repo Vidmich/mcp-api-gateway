@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 from types import ModuleType
 
@@ -70,9 +71,16 @@ def test_a_gateway_that_never_starts_is_reported_rather_than_waited_out() -> Non
     assert "exited with 3" in str(exit_info.value)
 
 
-def test_the_console_script_is_found_beside_this_interpreter() -> None:
-    """How the smoke test reaches the venv it was pointed at, not the PATH."""
+def test_the_console_script_belongs_to_the_interpreter_running_this() -> None:
+    """How the smoke test reaches the venv it was pointed at, not the PATH.
+
+    Not *beside* the interpreter, which is what this asserted until task 117: a
+    Windows installation that is not a venv keeps ``python.exe`` in the prefix
+    root and the entry points in ``Scripts`` underneath, so the old assertion
+    was the bug written down as an expectation. ``sysconfig`` is asked here
+    rather than ``release``, so the two have to agree independently.
+    """
     script = release.installed_script()
 
-    assert script.parent == Path(sys.executable).parent
+    assert script.parent == Path(sysconfig.get_path("scripts"))
     assert script.stem == release.CONSOLE_SCRIPT

@@ -71,7 +71,15 @@ jobs:
 
       # The suite needs no network and binds only to the loopback, so a runner
       # with no outbound access is a valid place to run it.
+      #
+      # Run even when mypy has already failed the cell. The two say different
+      # things, and a cell that stops at the first of them reports half of what
+      # is wrong with it: task 117 was two separate defects that looked like one
+      # per operating system, because the eight cells failing mypy never reached
+      # the suite. `!cancelled()` rather than `always()`, so a cancelled run
+      # still stops.
       - run: pytest
+        if: ${{ !cancelled() }}
 
   # The same build the release runs, so the packaging failure that only shows
   # up in a wheel is found on the commit that caused it.

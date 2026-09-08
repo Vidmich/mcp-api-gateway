@@ -35,11 +35,13 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import re
 import signal
 import socket
 import subprocess
 import sys
+import sysconfig
 import time
 import urllib.error
 import urllib.request
@@ -209,20 +211,56 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def script_dirs() -> list[Path]:
+    """Everywhere a console script installed for *this* interpreter can be.
+
+    ``sysconfig`` first, because that is the interpreter answering the question
+    about itself: in a venv it is the venv's own script directory, and outside
+    one it is wherever that installation keeps its entry points. Then the user
+    scheme, for a ``pip install --user``. Then the directory holding the
+    interpreter, which costs nothing to try and is where a wheel unpacked by
+    hand may have left it.
+
+    In order, and de-duplicated, because on POSIX the first and the last are
+    usually the same ``bin/`` (task 117).
+    """
+    wanted = [Path(sysconfig.get_path("scripts"))]
+    user_scheme = "nt_user" if os.name == "nt" else "posix_user"
+    if user_scheme in sysconfig.get_scheme_names():
+        wanted.append(Path(sysconfig.get_path("scripts", scheme=user_scheme)))
+    wanted.append(Path(sys.executable).parent)
+
+    seen: list[Path] = []
+    for directory in wanted:
+        if directory not in seen:
+            seen.append(directory)
+    return seen
+
+
 def installed_script() -> Path:
     """The ``mcp-api-gateway`` that belongs to the interpreter running this.
 
-    Looked up beside ``sys.executable`` rather than on the PATH, so that running
-    this with a venv's python tests *that* venv even when another copy is
-    installed and earlier on the PATH.
+    Looked up in that interpreter's own script directories rather than on the
+    PATH, so that running this with a venv's python tests *that* venv even when
+    another copy is installed and earlier on the PATH.
+
+    Not simply beside ``sys.executable``: that is true of a venv on every
+    platform, and of a POSIX prefix install, where ``bin/`` holds the
+    interpreter and the entry points together — but a Windows installation that
+    is not a venv keeps ``python.exe`` in the prefix root and its scripts in a
+    ``Scripts`` directory underneath. ``sysconfig`` knows which of the two it is
+    in; ``sys.executable`` does not (task 117).
     """
-    for name in (CONSOLE_SCRIPT, f"{CONSOLE_SCRIPT}.exe"):
-        candidate = Path(sys.executable).parent / name
-        if candidate.exists():
-            return candidate
+    looked = script_dirs()
+    for directory in looked:
+        for name in (CONSOLE_SCRIPT, f"{CONSOLE_SCRIPT}.exe"):
+            candidate = directory / name
+            if candidate.exists():
+                return candidate
+    where = "\n".join(f"  {directory}" for directory in looked)
     raise SystemExit(
-        f"no {CONSOLE_SCRIPT} beside {sys.executable}: install the wheel into this "
-        f"environment first"
+        f"no {CONSOLE_SCRIPT} for {sys.executable}: install the wheel into this "
+        f"environment first. Looked in:\n{where}"
     )
 
 

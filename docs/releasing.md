@@ -65,7 +65,7 @@ You can run all of it yourself:
 python scripts/release.py version --tag v0.2.0
 python -m build
 python scripts/release.py wheel dist/mcp_api_gateway-0.2.0-py3-none-any.whl
-python scripts/release.py smoke   # uses the mcp-api-gateway beside this interpreter
+python scripts/release.py smoke   # uses the mcp-api-gateway installed for this interpreter
 ```
 
 ## A dry run
