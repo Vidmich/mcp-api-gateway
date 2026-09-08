@@ -69,4 +69,14 @@ names its dependencies; none of them is needed for v1 to ship.
 | 110 | [The row that is not there yet](110-new-server-row-not-shown.md) | 11 · UI polish |
 | 111 | [The identifier that identified nothing](111-remove-server-slug.md) | 13 · Housekeeping |
 | 112 | [Turning a server off from its own page](112-detail-page-enable-disable.md) | 11 · UI polish |
+| 113 | [Settings you read before you change](113-detail-settings-view-and-edit.md) | 11 · UI polish |
+| 114 | [One Save, and a box that ticks the column](114-tools-table-one-save-and-a-header-tick.md) | 11 · UI polish |
+| 115 | [What step 2 shows, and what Back gives back](115-picker-header-tick-prefixed-names-and-back.md) | 11 · UI polish |
+| 116 | [What the tools table stops saying](116-tools-table-columns-and-a-printed-prefix.md) | 11 · UI polish |
+| 117 | [Three checks that assumed the machine they were written on](117-release-checks-that-assumed-their-machine.md) | 8 · Ship |
+| 118 | [Naming the tools before the server exists](118-naming-the-tools-before-the-server-exists.md) | 11 · UI polish |
+| 119 | [The measure that leaves the settings card half empty](119-the-measure-that-left-the-settings-card-half-empty.md) | 11 · UI polish |
+| 120 | [Two bars that hold nothing but a heading](120-two-bars-that-hold-nothing-but-a-heading.md) | 11 · UI polish |
+| 121 | [Two narrow cards above a wide one](121-two-narrow-cards-above-a-wide-one.md) | 11 · UI polish |
+| 122 | [The zero on the Sent total, and the charts Back leaves blank](122-sent-bytes-and-the-charts-back-leaves-blank.md) | 11 · UI polish |
 
