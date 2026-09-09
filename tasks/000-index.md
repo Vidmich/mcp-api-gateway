@@ -79,4 +79,6 @@ names its dependencies; none of them is needed for v1 to ship.
 | 120 | [Two bars that hold nothing but a heading](120-two-bars-that-hold-nothing-but-a-heading.md) | 11 · UI polish |
 | 121 | [Two narrow cards above a wide one](121-two-narrow-cards-above-a-wide-one.md) | 11 · UI polish |
 | 122 | [The zero on the Sent total, and the charts Back leaves blank](122-sent-bytes-and-the-charts-back-leaves-blank.md) | 11 · UI polish |
+| 123 | [Charts that do not draw until something else moves](123-charts-that-do-not-draw-until-something-else-moves.md) | 11 · UI polish |
+| 124 | [Keep the canvas, swap the numbers](124-keep-the-canvas-and-swap-the-numbers.md) | 11 · UI polish |
 

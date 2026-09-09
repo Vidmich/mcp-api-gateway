@@ -770,6 +770,31 @@ def test_the_page_draws_every_chart(settings: Settings, tmp_path: Path) -> None:
         assert f'id="{chart["canvas"]}"' in body
 
 
+def test_the_frame_around_each_canvas_survives_a_swap(settings: Settings, tmp_path: Path) -> None:
+    """hx-preserve, so that the chart drawn on the canvas survives with it.
+
+    Everything else in the region is replaced on every range change and every
+    poll. A canvas cannot be, because the chart on it holds a pixel size worked
+    out from a box that is only measurable once the layout has settled — which
+    it has not, in the middle of a swap (task 124).
+
+    The frame and not the figure: the caption, the fallback line and the note an
+    empty window shows all belong to the range being shown, and preserving the
+    figure would freeze them at whatever the first render said.
+    """
+    with client(settings, tmp_path) as http:
+        body = http.get(MONITORING_PATH, headers=HTML).text
+
+    for chart in embedded(body):
+        frame = (
+            rf'<div class="chart__frame" id="frame-{chart["id"]}" hx-preserve="true">'
+            rf'\s*<canvas id="{chart["canvas"]}"'
+        )
+        assert re.search(frame, body), chart["id"]
+        # Nothing after the id, so nothing preserves the figure itself.
+        assert f'<figure class="chart" id="figure-{chart["id"]}">' in body
+
+
 def test_an_empty_database_renders_charts_rather_than_an_error(
     settings: Settings, tmp_path: Path
 ) -> None:
@@ -1027,6 +1052,50 @@ def test_the_script_redraws_on_a_history_restore_as_well_as_a_swap() -> None:
 
     assert '"htmx:historyRestore"' in source
     assert '"htmx:afterSwap"' in source
+
+
+def test_the_script_measures_its_charts_again_after_building_them() -> None:
+    """A chart built mid-restore measures the box the region had before it settled.
+
+    Chart.js sizes a canvas once and leaves it alone until its own observer says
+    otherwise, so a chart that measured too early keeps the default drawing
+    buffer under a correctly sized element: blank, and then drawn in pieces
+    under the pointer. One frame later the region is laid out and a resize puts
+    it right; a chart already the right size is untouched (task 123).
+
+    Since task 124 the only charts this can happen to are the ones the script
+    actually builds — first paint, and the history restore that replaces the
+    body — because a range switch no longer builds anything.
+
+    Asserted against the source text for the reason the tests above give.
+    """
+    source = (STATIC_DIR / "js" / "monitoring.js").read_text(encoding="utf-8")
+
+    assert "requestAnimationFrame" in source
+    assert "chart.resize()" in source
+    assert 'chart.update("none")' in source
+
+
+def test_a_canvas_that_already_has_a_chart_is_handed_numbers_not_a_new_chart() -> None:
+    """The frames survive a swap, so a range switch has a chart to update.
+
+    Destroying four charts and building four more on every range change and
+    every poll forced Chart.js to measure a container in the middle of a swap,
+    which is the one moment on this page where that measurement cannot be
+    trusted. Two goes at correcting the measurement afterwards (tasks 122, 123)
+    each fixed something real and neither fixed this, because the fix is not to
+    correct the measurement but not to take it (task 124).
+
+    One construction site is the point: a second one is how "build only if there
+    is not already a chart here" quietly stops being true.
+
+    Asserted against the source text for the reason the tests above give.
+    """
+    source = (STATIC_DIR / "js" / "monitoring.js").read_text(encoding="utf-8")
+
+    assert source.count("new window.Chart") == 1
+    assert "chart.data = data(spec)" in source
+    assert "destroyAll" not in source
 
 
 # --- the guard ----------------------------------------------------------------

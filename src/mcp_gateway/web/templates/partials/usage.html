@@ -80,7 +80,17 @@
       <h2 class="chart__title">{{ chart.title }}</h2>
       <p class="chart__note">{{ chart.note }}</p>
     </figcaption>
-    <div class="chart__frame">
+    {# The one thing on this page that survives a swap. Chart.js works out the
+       pixel size of a canvas when it builds a chart on it, and building one in
+       the middle of a swap means measuring a box the browser has not finished
+       with — which leaves a canvas that draws as nothing until something changes
+       its size. htmx puts this node back where it was, so the measurement
+       happens once, at load, and a range switch hands the chart already on this
+       canvas new numbers instead of a new canvas (task 124).
+
+       The frame and not the figure: the caption, the fallback line and the note
+       an empty window shows all change with the range. #}
+    <div class="chart__frame" id="frame-{{ chart.id }}" hx-preserve="true">
       <canvas id="{{ chart.canvas_id }}" role="img" aria-label="{{ chart.summary }}"></canvas>
     </div>
     {# Replaced by the drawing when there is a script to draw it. #}
