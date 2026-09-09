@@ -67,8 +67,15 @@ from mcp_gateway.web.account import (
     USERNAME_KEY,
     admin_service,
 )
-from mcp_gateway.web.auth import FROM_CONFIG, FROM_DATABASE, LOGIN_PATH, SESSION_COOKIE
+from mcp_gateway.web.auth import (
+    FROM_CONFIG,
+    FROM_DATABASE,
+    LOGIN_PATH,
+    SESSION_COOKIE,
+    login_url,
+)
 from mcp_gateway.web.configuration import (
+    ADMIN_DISABLED,
     ADMIN_PATH,
     AUTO_REFRESH_PATH,
     DEFAULT_SOURCE,
@@ -180,10 +187,13 @@ def client(settings: Settings) -> TestClient:
     return TestClient(app_for(settings))
 
 
-def sign_in(http: TestClient, username: str, password: str) -> Any:
-    return http.post(
-        LOGIN_PATH, data={"username": username, "password": password}, follow_redirects=False
-    )
+def sign_in(http: TestClient, username: str, password: str, next_path: str = "") -> Any:
+    form = {"username": username, "password": password}
+    if next_path:
+        # The real form carries this in a hidden field; without it the login
+        # route sends everybody to the home page, which is its own behaviour.
+        form["next"] = next_path
+    return http.post(LOGIN_PATH, data=form, follow_redirects=False)
 
 
 def save_admin(http: TestClient, **form: str) -> Any:
@@ -192,6 +202,11 @@ def save_admin(http: TestClient, **form: str) -> Any:
 
 def cookie_in(response: Any) -> str:
     return SimpleCookie(response.headers["set-cookie"])[SESSION_COOKIE].value
+
+
+def signed_in(http: TestClient) -> bool:
+    """Whether the client is holding a session cookie worth anything."""
+    return bool(http.cookies.get(SESSION_COOKIE))
 
 
 # --- the account, resolved ---------------------------------------------------
@@ -466,9 +481,13 @@ def test_changing_the_interval_needs_a_session(tmp_path: Path) -> None:
 # --- the admin account, from the browser -------------------------------------
 
 
-def test_turning_login_on_leaves_the_operator_signed_in_on_the_same_response(
-    tmp_path: Path,
-) -> None:
+def test_turning_login_on_sends_the_operator_to_the_login_form(tmp_path: Path) -> None:
+    """With nothing to get back in on but the password they just typed.
+
+    The page can never show that password again, so being made to use it is the
+    only check it gets; a typo found here costs ten seconds and a typo found in
+    a week costs ``--reset-admin`` and a restart.
+    """
     settings = settings_for(tmp_path)
 
     with client(settings) as http:
@@ -476,12 +495,19 @@ def test_turning_login_on_leaves_the_operator_signed_in_on_the_same_response(
             http, **{ENABLED_FIELD: "true", USERNAME_FIELD: "root", PASSWORD_FIELD: "hunter2"}
         )
         assert saved.status_code == 303
-        assert cookie_in(saved)
-        # No second sign-in: the redirect lands on the page they were on.
-        page = http.get(CONFIGURATION_PATH, headers=HTML)
+        assert saved.headers["location"] == login_url(CONFIGURATION_PATH)
+        assert not signed_in(http)
 
-    assert page.status_code == 200
-    assert "This browser is signed in as root" in page.text
+        form = http.get(saved.headers["location"], headers=HTML)
+        back = sign_in(http, "root", "hunter2", CONFIGURATION_PATH)
+
+    assert form.status_code == 200
+    # The login form explains itself, or it is a login form nobody asked for,
+    # and it remembers where the operator was.
+    assert "Sign in as root" in form.text
+    assert f'name="next" value="{CONFIGURATION_PATH}"' in form.text
+    assert back.status_code == 303
+    assert back.headers["location"] == CONFIGURATION_PATH
 
 
 def test_a_password_set_from_the_page_is_the_one_that_works_afterwards(tmp_path: Path) -> None:
@@ -502,26 +528,51 @@ def test_a_password_set_from_the_page_is_the_one_that_works_afterwards(tmp_path:
     assert accepted.status_code == 303
 
 
-def test_changing_the_password_keeps_you_in_and_puts_everybody_else_out(tmp_path: Path) -> None:
+def test_changing_the_password_puts_everybody_out_including_you(tmp_path: Path) -> None:
+    """The salt is bound to the credentials, so the old cookies all die.
+
+    The operator's own used to be re-issued past that; now it is not, and the
+    two browsers below are in the same position as each other.
+    """
     settings = locked(tmp_path)
 
     with client(settings) as http:
-        signed_in = sign_in(http, "operator", "s3cret")
-        old_cookie = cookie_in(signed_in)
+        signed_in_response = sign_in(http, "operator", "s3cret")
+        old_cookie = cookie_in(signed_in_response)
 
         saved = save_admin(
             http, **{ENABLED_FIELD: "true", USERNAME_FIELD: "operator", PASSWORD_FIELD: "newer"}
         )
-        assert cookie_in(saved) != old_cookie
-        still_in = http.get(CONFIGURATION_PATH, headers=HTML, follow_redirects=False)
+        assert not signed_in(http)
+        yours = http.get(CONFIGURATION_PATH, headers=HTML, follow_redirects=False)
 
         # The same gateway, a browser holding the cookie issued a moment ago.
         elsewhere = TestClient(http.app, cookies={SESSION_COOKIE: old_cookie})
         stale = elsewhere.get(CONFIGURATION_PATH, headers=HTML, follow_redirects=False)
 
-    assert still_in.status_code == 200
+    assert saved.headers["location"] == login_url(CONFIGURATION_PATH)
+    assert yours.status_code == 303
+    assert yours.headers["location"].startswith(LOGIN_PATH)
     assert stale.status_code == 303
     assert stale.headers["location"].startswith(LOGIN_PATH)
+
+
+def test_switching_login_off_goes_back_to_the_page_and_not_to_a_login(
+    tmp_path: Path,
+) -> None:
+    """There is nothing to sign in to: ``/ui/login`` answers 404 while open."""
+    settings = locked(tmp_path)
+
+    with client(settings) as http:
+        sign_in(http, "operator", "s3cret")
+        saved = save_admin(http)
+        page = http.get(CONFIGURATION_PATH, headers=HTML)
+        login = http.get(LOGIN_PATH, headers=HTML)
+
+    assert saved.headers["location"] == CONFIGURATION_PATH
+    assert page.status_code == 200
+    assert ADMIN_DISABLED in page.text
+    assert login.status_code == 404
 
 
 def test_the_username_can_change_without_retyping_the_password(tmp_path: Path) -> None:
@@ -531,6 +582,9 @@ def test_the_username_can_change_without_retyping_the_password(tmp_path: Path) -
         save_admin(
             http, **{ENABLED_FIELD: "true", USERNAME_FIELD: "root", PASSWORD_FIELD: "hunter2"}
         )
+        # Saving an account ends the session that saved it (task 128), so the
+        # second change is made by somebody who has signed in for it.
+        sign_in(http, "root", "hunter2")
         renamed = save_admin(http, **{ENABLED_FIELD: "true", USERNAME_FIELD: "admin"})
         assert renamed.status_code == 303
 
@@ -570,6 +624,7 @@ def test_turning_login_off_warns_in_the_words_the_startup_log_uses(tmp_path: Pat
         save_admin(
             http, **{ENABLED_FIELD: "true", USERNAME_FIELD: "root", PASSWORD_FIELD: "hunter2"}
         )
+        sign_in(http, "root", "hunter2")
         switched_off = save_admin(http)
         assert switched_off.status_code == 303
         body = http.get(CONFIGURATION_PATH, headers=HTML).text
@@ -591,6 +646,7 @@ def test_a_restart_changes_nothing_an_operator_set_here(tmp_path: Path) -> None:
         save_admin(
             http, **{ENABLED_FIELD: "true", USERNAME_FIELD: "root", PASSWORD_FIELD: "hunter2"}
         )
+        sign_in(http, "root", "hunter2")
         http.post(AUTO_REFRESH_PATH, data={INTERVAL_FIELD: "30"}, headers=HTML)
 
     restarted = app_for(settings)

@@ -64,7 +64,7 @@ from mcp_gateway.mcpsrv import auth as mcp_auth
 from mcp_gateway.mcpsrv.auth import MINIMUM_TOKEN_CHARS, McpAuth
 from mcp_gateway.scheduler import INTERVAL_KEY, interval_minutes
 from mcp_gateway.web import account
-from mcp_gateway.web.auth import FROM_DATABASE, AdminAuth, require_session
+from mcp_gateway.web.auth import FROM_DATABASE, AdminAuth, login_url, require_session
 from mcp_gateway.web.formatting import plural, time_ago
 from mcp_gateway.web.passwords import derive
 from mcp_gateway.web.shell import CONFIGURATION_PATH, Shell
@@ -133,13 +133,15 @@ ADMIN_GROUP: Final = "admin-login"
 USERNAME_REQUIRED: Final = "A login needs a username."
 PASSWORD_REQUIRED: Final = "Set a password for this account."
 
+#: Both are read on the login form, since that is where a save now lands
+#: (task 128), so each has to say why a login form appeared at all.
 ADMIN_ENABLED: Final = (
-    "Admin login is on. This browser is signed in as {username}; anybody else reaching "
-    "these pages is now asked for the password."
+    "Admin login is on. Sign in as {username} to carry on — these pages now ask "
+    "everybody for the password, this browser included."
 )
 ADMIN_SAVED: Final = (
-    "The admin account is saved. This browser is still signed in as {username}, and every "
-    "session opened under the old credentials has ended."
+    "The admin account is saved. Every session opened under the old credentials has "
+    "ended, this one included: sign in as {username}."
 )
 ADMIN_DISABLED: Final = "Admin login is off."
 
@@ -937,9 +939,11 @@ def configuration_router() -> APIRouter:
         """Set the admin account, or take it away (spec §3.3).
 
         The account is rebuilt on ``app.state.admin`` before the response is
-        written, and the operator's own session is re-issued with it, so that a
-        credential change does not read as a logout and switching login on does
-        not lock the operator out of the page they are standing on.
+        written, so the door the save describes is the door the next request
+        meets. Setting one ends at the login form with no session on the
+        browser (task 128): the operator signs in with what they have just
+        typed, which is the only check a password this page can never show
+        again is ever going to get.
         """
         settings: Settings = request.app.state.settings
         previous: AdminAuth | None = request.app.state.admin
@@ -971,9 +975,11 @@ def configuration_router() -> APIRouter:
         admin = await account.load_admin(session, settings, request.app.state.secret_key)
         request.app.state.admin = admin
 
-        response = RedirectResponse(CONFIGURATION_PATH, status_code=303)
         shell = _shell(request)
         if admin is None:
+            # Nowhere to sign in to: the login routes answer 404 while the
+            # gateway is open, so this one goes back to the page.
+            response = RedirectResponse(CONFIGURATION_PATH, status_code=303)
             logger.info("Admin login was switched off from the Configuration page")
             if previous is not None:
                 # The cookie proves nothing now, and leaving it would leave a
@@ -984,10 +990,18 @@ def configuration_router() -> APIRouter:
             if warning is not None:
                 shell.flash(request, response, warning, level="warning")
         else:
+            # To the login form, carrying no session (task 128). The salt is
+            # bound to the credentials, so the save has already ended every
+            # session including the operator's; the cookie could be re-issued
+            # here and deliberately is not. A password this page can never show
+            # again is only proven by being used, and ten seconds later is the
+            # cheapest moment to discover it was a typo.
+            response = RedirectResponse(login_url(CONFIGURATION_PATH), status_code=303)
+            # Unconditionally, rather than only when there was an account: a
+            # browser can be holding a cookie from one switched off since, and
+            # nothing gets past the new door on an old one.
+            admin.revoke(response)
             logger.info("Admin login was set to %r from the Configuration page", admin.username)
-            # The salt is bound to the credentials, so this cookie is the only
-            # one that still verifies — the operator's included, until now.
-            admin.issue(response, request)
             template = ADMIN_SAVED if previous is not None else ADMIN_ENABLED
             shell.flash(
                 request, response, template.format(username=admin.username), level="success"

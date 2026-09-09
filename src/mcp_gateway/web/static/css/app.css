@@ -34,6 +34,12 @@
   --gap: 1rem;
   --shadow: 0 1px 2px rgb(28 30 33 / 8%);
 
+  /* How wide a narrow card is, and so how wide anything standing with one is.
+   * A token because two rules have to agree on it: the card on the login page
+   * and the message above it, which is about that card and looks like a
+   * separate thing on the screen when it is three times the width (task 129). */
+  --narrow: min(22rem, 90vw);
+
   /* How wide a line of prose is allowed to get. A token because four rules want
    * it and they have to agree: a hint under a box, the sentence over a form and
    * the sentence over a page are the same kind of thing to read (task 119). */
@@ -131,6 +137,17 @@ pre {
 .page--centred .page {
   display: grid;
   place-items: center;
+  /* Rows sized to their content and the group centred, rather than the spare
+   * height split between them: with a flash above the card, ``normal`` puts the
+   * message in the middle of the top half and the card in the middle of the
+   * bottom half, with an empty row between the sentence and the thing it is
+   * about (task 129). */
+  align-content: center;
+}
+
+/* The message belongs to the card under it, so it is the same width. */
+.page--centred .flashes {
+  width: var(--narrow);
 }
 
 .footer {
@@ -149,7 +166,7 @@ pre {
 }
 
 .card--narrow {
-  width: min(22rem, 90vw);
+  width: var(--narrow);
 }
 
 /* A card that follows something on a page rather than starting one, which

@@ -84,4 +84,6 @@ names its dependencies; none of them is needed for v1 to ship.
 | 125 | [Sending the numbers on](125-metrics-export-to-new-relic.md) | 14 · Observability |
 | 126 | [The second door, and the page it was never on](126-mcp-token-on-the-configuration-page.md) | 15 · Access control |
 | 127 | [The line that says INFO and error at once](127-the-line-that-says-info-and-error-at-once.md) | 13 · Housekeeping |
+| 128 | [Sign in with what you just set](128-sign-in-with-what-you-just-set.md) | 15 · Access control |
+| 129 | [The form that fell to the bottom half of the page](129-the-form-that-fell-to-the-bottom-half.md) | 11 · UI polish |
 

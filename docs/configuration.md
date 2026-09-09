@@ -235,6 +235,13 @@ this file says. Only the hash is ever stored, never the password. The startup
 banner reports the account actually in force and says when it came from the
 page.
 
+**Saving an account there sends you to the login form.** The signing salt is
+bound to the credentials, so a save ends every session opened under the old ones
+— the browser that made the change included — and that browser is not carried
+across. The password can never be shown again, so being made to use it once is
+the only check it gets, and a typo is a great deal cheaper to find ten seconds
+later than a week later.
+
 That leaves one way back from a password nobody remembers, and it is not a
 reinstall:
 
