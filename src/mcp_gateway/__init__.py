@@ -7,4 +7,4 @@ packaging metadata in ``pyproject.toml`` reads it from this file via
 
 __all__ = ["__version__"]
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
