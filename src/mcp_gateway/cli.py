@@ -86,6 +86,53 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+#: The width of uvicorn's level gutter: the level name, a colon, and padding.
+#:
+#: Nine characters, so the message starts at column 10 for every level from
+#: ``TRACE`` to ``CRITICAL``. It is arithmetic rather than decoration: a
+#: ``WARNING`` in a page of ``INFO`` is the only thing anybody is scanning a
+#: startup log for, and it is findable because the column does not move.
+_GUTTER = 9
+
+#: What a line looks like, and what it looks like when somebody is debugging.
+#:
+#: The first is uvicorn's own shape, which matters because ``log_config=None``
+#: (see :func:`mcp_gateway.app.uvicorn_config`) sends uvicorn's records through
+#: this handler: one format governs its lines and ours, and its logger name —
+#: ``uvicorn.error``, which is where uvicorn puts *everything* that is not an
+#: access line, errors included — stops appearing in front of "Application
+#: startup complete." as though something had gone wrong.
+#:
+#: The name comes back at debug because the reader has changed. At info the
+#: audience is an operator, and every message here names its own subject. At
+#: debug the audience is finding out which of thirty modules — or httpx, or
+#: mcp, or asyncio — produced a line, and for those the name is the whole
+#: answer, since their messages were not written to be read beside ours.
+_FORMAT = "%(levelprefix)s %(message)s"
+_DEBUG_FORMAT = "%(levelprefix)s %(name)s: %(message)s"
+
+
+class _LevelPrefixFormatter(logging.Formatter):
+    """Uvicorn's line shape, without importing uvicorn to get it.
+
+    ``uvicorn.logging.DefaultFormatter`` produces exactly this, and is not used
+    for two reasons. It colours the level name whenever ``sys.stderr`` is a
+    terminal, and nothing here emits colour. And :func:`configure_logging` runs
+    on paths where no server is ever started — writing a first config file,
+    ``--reset-admin`` — so reaching into a web server's module to print them
+    would have the dependency the wrong way round.
+    """
+
+    # N802: the name is stdlib logging's, not a choice; typing.override
+    # would say so instead, and it needs 3.12.
+    def formatMessage(self, record: logging.LogRecord) -> str:  # noqa: N802
+        # Through ``__dict__`` because ``levelprefix`` is not an attribute
+        # ``LogRecord`` declares; assigning it directly is a type error and
+        # writing it here is what uvicorn's own formatter does.
+        record.__dict__["levelprefix"] = f"{record.levelname}:".ljust(_GUTTER)
+        return super().formatMessage(record)
+
+
 #: Loggers that must not follow the root level down.
 #:
 #: ``--log-level debug`` is a request to see what the gateway is doing, not to
@@ -97,14 +144,15 @@ _NOISY_FLOOR = logging.WARNING
 
 
 def configure_logging(level: str = "info") -> None:
-    """Point the root logger at stderr at ``level``."""
+    """Point the root logger at stderr at ``level``, in uvicorn's line shape."""
     resolved = _LOG_LEVELS.get(level, logging.INFO)
-    logging.basicConfig(
-        level=resolved,
-        format="%(levelname)-8s %(name)s: %(message)s",
-        stream=sys.stderr,
-        force=True,
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        _LevelPrefixFormatter(_DEBUG_FORMAT if resolved <= logging.DEBUG else _FORMAT)
     )
+    # ``handlers=`` rather than ``format=``: the format above names a field no
+    # stock formatter knows how to fill in.
+    logging.basicConfig(level=resolved, handlers=[handler], force=True)
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(max(resolved, _NOISY_FLOOR))
 

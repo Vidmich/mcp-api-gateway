@@ -79,14 +79,16 @@ database, and starts listening. Two warnings in the log say the admin pages and
 `/mcp` are open — step 5 deals with that.
 
 ```
-INFO     mcp_gateway.app: mcp-api-gateway 0.1.0
+INFO:     mcp-api-gateway 0.1.0
 config file:  /home/you/gateway/config.toml
 listening on: http://127.0.0.1:8080
 data dir:     /home/you/gateway/data
 key file:     /home/you/gateway/data/keys.json
 mcp endpoint: /mcp (open)
 admin login:  disabled
-INFO     uvicorn.error: Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+usage export: off
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
 ```
 
 ### 2. Register a service

@@ -57,8 +57,8 @@ A config file that cannot be written is not fatal. The process says why and runs
 on defaults:
 
 ```
-WARNING  mcp_gateway.bootstrap: Could not write a config file at /etc/config.toml
-         (Permission denied); using defaults
+WARNING:  Could not write a config file at /etc/config.toml (Permission denied);
+          using defaults
 ```
 
 The file is TOML, parsed with the standard library. Section names are the ones
@@ -68,8 +68,8 @@ An unknown key is a warning, not a failure — a file written for a newer releas
 still starts:
 
 ```
-WARNING  mcp_gateway.config: Ignoring unknown config key server.workers (from ./config.toml)
-WARNING  mcp_gateway.config: Ignoring unknown config section [cache]
+WARNING:  Ignoring unknown config key server.workers (from ./config.toml)
+WARNING:  Ignoring unknown config section [cache]
 ```
 
 ## Environment variables
@@ -189,7 +189,10 @@ loaded there is nothing to anchor to, and the working directory is used.
 
 `log_level` is one of `critical`, `error`, `warning`, `info`, `debug`, `trace`
 (`trace` is uvicorn's own, and behaves as `debug` for everything else). `debug`
-adds a line per HTTP request. It deliberately does *not* turn on SQLAlchemy's
+adds a line per HTTP request, and puts the name of the logger that wrote each
+line in front of the message — which is how you find the module, or the library,
+a line came from. At every other level the messages stand on their own and the
+names are left out. `debug` deliberately does *not* turn on SQLAlchemy's
 statement echo, which logs every statement and its bound parameters — upstream
 credentials among them; raise `sqlalchemy.engine` by name if you actually want
 that.
@@ -264,9 +267,9 @@ auth_token = "a-long-random-string"
 the endpoint is open, which the startup log says out loud every time:
 
 ```
-WARNING  mcp_gateway.mcpsrv.auth: /mcp requires no token: anyone who can reach it can
-         call every enabled operation. Set a token on the Configuration page, or
-         [mcp].auth_token in the configuration file, to require one.
+WARNING:  /mcp requires no token: anyone who can reach it can call every enabled
+          operation. Set a token on the Configuration page, or [mcp].auth_token in
+          the configuration file, to require one.
 ```
 
 Any high-entropy string will do:

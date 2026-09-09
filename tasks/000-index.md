@@ -83,4 +83,5 @@ names its dependencies; none of them is needed for v1 to ship.
 | 124 | [Keep the canvas, swap the numbers](124-keep-the-canvas-and-swap-the-numbers.md) | 11 · UI polish |
 | 125 | [Sending the numbers on](125-metrics-export-to-new-relic.md) | 14 · Observability |
 | 126 | [The second door, and the page it was never on](126-mcp-token-on-the-configuration-page.md) | 15 · Access control |
+| 127 | [The line that says INFO and error at once](127-the-line-that-says-info-and-error-at-once.md) | 13 · Housekeeping |
 

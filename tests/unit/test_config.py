@@ -324,14 +324,33 @@ def test_a_successful_run_serves_the_resolved_configuration(
 
 @pytest.fixture
 def restore_logging() -> Iterator[None]:
-    """Put the process-wide logger levels back after a test changes them."""
+    """Put the process-wide logger levels and root handlers back afterwards.
+
+    The levels because a test asks for one; the handlers because
+    ``configure_logging`` installs its own with ``force=True``, so a test that
+    asked for the debug format would otherwise leave it on the root logger for
+    every test that runs after it.
+    """
     watched = ["", "sqlalchemy.engine", "sqlalchemy.pool", "aiosqlite"]
     before = {name: logging.getLogger(name).level for name in watched}
+    handlers = logging.getLogger().handlers[:]
     try:
         yield
     finally:
+        logging.getLogger().handlers[:] = handlers
         for name, level in before.items():
             logging.getLogger(name).setLevel(level)
+
+
+def rendered(name: str, level: int = logging.INFO, message: str = "a message") -> str:
+    """What the configured handler would actually print for such a record.
+
+    Through the handler rather than by reading the format string back: the only
+    part of this that can be wrong is the padding arithmetic, and a test that
+    compares ``formatter._fmt`` to a literal passes while it is.
+    """
+    record = logging.LogRecord(name, level, __file__, 1, message, None, None)
+    return logging.getLogger().handlers[0].format(record)
 
 
 def test_debug_logging_does_not_turn_on_sqlalchemy_s_statement_echo(
@@ -351,3 +370,68 @@ def test_a_quieter_level_still_quiets_the_noisy_loggers(restore_logging: None) -
     configure_logging("error")
 
     assert logging.getLogger("sqlalchemy.engine").level == logging.ERROR
+
+
+def test_no_line_carries_the_logger_that_wrote_it(restore_logging: None) -> None:
+    """Including uvicorn's, which is the whole reason for the shape.
+
+    ``uvicorn.error`` is uvicorn's name for the logger everything non-access
+    goes through, so "INFO uvicorn.error: Application startup complete." reads
+    as an error that isn't one. With ``log_config=None`` its records arrive at
+    this handler, so one format decides that for its lines and ours together.
+    """
+    configure_logging("info")
+
+    ours = rendered("mcp_gateway.app", message="mcp-api-gateway 0.1.0")
+    uvicorns = rendered("uvicorn.error", message="Application startup complete.")
+
+    assert ours == "INFO:     mcp-api-gateway 0.1.0"
+    assert uvicorns == "INFO:     Application startup complete."
+    assert "uvicorn" not in uvicorns.removesuffix("Application startup complete.")
+    assert "mcp_gateway" not in ours
+
+
+def test_debug_puts_the_logger_name_back(restore_logging: None) -> None:
+    """At debug the name is the answer to the question being asked.
+
+    Which of thirty modules — or httpx, or mcp, or asyncio — wrote this line.
+    """
+    configure_logging("debug")
+
+    assert rendered("mcp_gateway.app") == "INFO:     mcp_gateway.app: a message"
+    assert rendered("httpx", logging.DEBUG) == "DEBUG:    httpx: a message"
+
+
+def test_trace_is_shaped_like_debug_because_it_resolves_to_it(
+    restore_logging: None,
+) -> None:
+    configure_logging("trace")
+
+    assert rendered("mcp_gateway.app") == "INFO:     mcp_gateway.app: a message"
+
+
+def test_every_level_starts_its_message_at_the_same_column(
+    restore_logging: None,
+) -> None:
+    """A WARNING in a page of INFO is the only thing anybody is scanning for."""
+    configure_logging("debug")
+
+    columns = {
+        rendered("x", level).index("x: a message")
+        for level in (
+            logging.DEBUG,
+            logging.INFO,
+            logging.WARNING,
+            logging.ERROR,
+            logging.CRITICAL,
+        )
+    }
+
+    assert columns == {10}
+
+
+def test_nothing_is_coloured(restore_logging: None) -> None:
+    """Uvicorn's formatter colours on a terminal; this one is not that one."""
+    configure_logging("info")
+
+    assert "" not in rendered("mcp_gateway.app", logging.ERROR)
