@@ -37,6 +37,7 @@ from mcp_gateway.export import ExportConfig, export_service
 from mcp_gateway.export import resolve as resolve_export
 from mcp_gateway.health import Watcher, health_service
 from mcp_gateway.limits import Limiter
+from mcp_gateway.mcpsrv.auth import McpAuth, configured, mcp_auth_service
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
 from mcp_gateway.metrics import Meter, metrics_service
 from mcp_gateway.outbound import outbound_service
@@ -79,6 +80,7 @@ def startup_banner(
     keys: Keys | None = None,
     *,
     admin: AdminAuth | None,
+    mcp: McpAuth | None = None,
     export: ExportConfig | None = None,
 ) -> str:
     """Summarise the resolved configuration for the operator, without secrets.
@@ -89,10 +91,18 @@ def startup_banner(
     without a default, so that no caller can leave it out and quietly report an
     open gateway.
 
-    ``export`` has a default, because it can: the state it describes when it is
-    missing is "nothing is being sent anywhere", which is the harmless one. It
-    is here at all because an operator who has turned the export on wants the
-    startup log to agree with them (task 125), and never carries the key.
+    ``mcp`` is passed for the same reason — the token can be stored in the
+    database too (task 126) — and does have a default, because the state it
+    describes when it is missing is the open endpoint. That is the alarming one
+    rather than the harmless one, which is the right way round for a default: a
+    caller that forgets it reports a door that may be shut as open, and an
+    operator who goes and looks finds nothing wrong. The reverse would be a
+    banner that quietly reassures.
+
+    ``export`` has a default for the ordinary reason: the state it describes when
+    it is missing is "nothing is being sent anywhere". It is here at all because
+    an operator who has turned the export on wants the startup log to agree with
+    them (task 125), and never carries the key.
     """
     stored = None if keys is None else keys.path
     key_file = stored or "none (keys come from the config)"
@@ -103,14 +113,22 @@ def startup_banner(
             f"listening on: http://{settings.server.host}:{settings.server.port}",
             f"data dir:     {settings.server.data_dir}",
             f"key file:     {key_file}",
-            f"mcp endpoint: {settings.mcp.path}"
-            + (" (bearer token required)" if settings.mcp.auth_required else " (open)"),
+            f"mcp endpoint: {settings.mcp.path}" + _mcp_line(mcp or McpAuth()),
             "admin login:  " + _admin_line(admin),
             # "usage" rather than "metrics", so the label fits the column the
             # five above it line up in. They are the same counts either way.
             "usage export: " + (export or ExportConfig()).summary,
         ]
     )
+
+
+def _mcp_line(mcp: McpAuth) -> str:
+    """Whether the endpoint is guarded and — when it is not the file — from where."""
+    if not mcp.required:
+        return " (open)"
+    if mcp.stored:
+        return " (bearer token required, set on the Configuration page)"
+    return " (bearer token required)"
 
 
 def _admin_line(admin: AdminAuth | None) -> str:
@@ -185,7 +203,11 @@ def _build_lifespan(
             logger.info(
                 "%s",
                 startup_banner(
-                    app.state.settings, keys, admin=app.state.admin, export=app.state.export
+                    app.state.settings,
+                    keys,
+                    admin=app.state.admin,
+                    mcp=app.state.mcp_auth,
+                    export=app.state.export,
                 ),
             )
             logger.debug("Startup complete: %d background service(s)", len(services))
@@ -257,6 +279,12 @@ def create_app(
     #: and ``export_service`` reads it over the top of this as the app starts.
     #: It never holds the licence key — see :mod:`mcp_gateway.export`.
     app.state.export = resolve_export(settings, None)
+    #: Who may call ``/mcp`` (spec §3.2). The config file's answer to begin
+    #: with, for the reason the export above and ``mount_admin`` below have
+    #: theirs: the table that may override it is not open yet, and
+    #: ``mcp_auth_service`` reads it over the top of this as the app starts. It
+    #: holds a digest and never the token — see :mod:`mcp_gateway.mcpsrv.auth`.
+    app.state.mcp_auth = configured(settings.mcp)
     #: Set by the export service; ``None`` in an app that does not run one, and
     #: then nothing is sent however the export is configured.
     app.state.export_service = None
@@ -319,6 +347,11 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     while the stored one was still being read would be one request answered by
     the wrong door.
 
+    The MCP token is resolved next, for the same reason and before the built-in
+    server: it may live in the ``settings`` table as well (task 126), and the
+    warning about an enabled built-in server on an open endpoint is only worth
+    anything if it is measured against the token actually in force.
+
     The built-in server is seeded straight after the database and before
     anything that could serve a tool list, so that no client ever sees its
     operations half-written (task 102). It has nothing to stop, and unwinds in
@@ -344,6 +377,7 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     return (
         database_service(settings),
         admin_service,
+        mcp_auth_service,
         builtin_service,
         outbound_service(settings.http),
         metrics_service,

@@ -5,18 +5,27 @@ there would be the beginning of two places to change one thing. What is left is
 small and unrelated: how often specs are re-read, who has to sign in, and a
 read-only account of everything else in force.
 
-**The two forms are the two things that can change without a restart.** The
-refresh interval was already a row in ``settings`` overriding the config file,
-read where it is used; the admin account now works the same way
-(:mod:`mcp_gateway.web.account`). Anything that could not take effect until a
-restart — the bind address, the port, the data directory — is shown and not
-offered: a form that quietly does nothing for an hour is worse than no form.
+**The forms are the things that can change without a restart.** The refresh
+interval was already a row in ``settings`` overriding the config file, read
+where it is used; the admin account works the same way
+(:mod:`mcp_gateway.web.account`), and so do the metrics export (task 125) and
+the bearer token on ``/mcp`` (:mod:`mcp_gateway.mcpsrv.auth`, task 126).
+Anything that could not take effect until a restart — the bind address, the
+port, the data directory — is shown and not offered: a form that quietly does
+nothing for an hour is worse than no form.
+
+**The two doors sit next to each other.** ``docs/security.md`` says there are
+two ways in, guarded by two unrelated mechanisms, and both are open by default;
+a page with the admin login at the top and the MCP token below the metrics
+export would make them look unrelated. So the token card is the second one, and
+an operator closing one door is looking at the other while they do it.
 
 **Everything shown says where it came from.** Four layers decide a value and
 nothing in a running process announces which one won, so an operator debugging
 precedence has the spec, which is a document, and this table, which is the
 process. No secret is among them: the bearer token is reported as set or not
-set, and the credential keys are not reported at all.
+set — and now also as set *from where*, since the page can be the answer — and
+the credential keys are not reported at all.
 
 **Changing your own credentials does not sign you out.** The cookie's signature
 is salted with the username and the password hash, deliberately, so that a
@@ -44,11 +53,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import RedirectResponse, Response
 
 from mcp_gateway import export
+from mcp_gateway.builtin.seed import Seeded
+from mcp_gateway.builtin.seed import warn_if_open as warn_builtin_open
 from mcp_gateway.config import ENV_SOURCE, Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
 from mcp_gateway.db.session import CommittingRoute, request_session
 from mcp_gateway.export import ExportConfig, MetricsExport, Status
+from mcp_gateway.mcpsrv import auth as mcp_auth
+from mcp_gateway.mcpsrv.auth import MINIMUM_TOKEN_CHARS, McpAuth
 from mcp_gateway.scheduler import INTERVAL_KEY, interval_minutes
 from mcp_gateway.web import account
 from mcp_gateway.web.auth import FROM_DATABASE, AdminAuth, require_session
@@ -66,6 +79,10 @@ ADMIN_PATH: Final = f"{CONFIGURATION_PATH}/admin"
 #: One number for the whole gateway, which is what makes it this page's and not
 #: the server list's (task 104).
 AUTO_REFRESH_PATH: Final = f"{CONFIGURATION_PATH}/auto-refresh"
+#: The bearer token on ``/mcp``: the other door, on the page that has the first
+#: one (task 126). Named for the endpoint rather than for the token, because
+#: what an operator is deciding is whether that endpoint is open.
+MCP_PATH: Final = f"{CONFIGURATION_PATH}/mcp"
 #: Where the usage counters are pushed, if anywhere (task 125).
 EXPORT_PATH: Final = f"{CONFIGURATION_PATH}/export"
 #: Deleting the stored licence key, which is its own action rather than a value
@@ -143,6 +160,88 @@ LEAD_OPEN: Final = (
 
 PASSWORD_HINT_STORED: Final = "Leave this empty to keep the password already saved here."
 PASSWORD_HINT_NEW: Final = "Stored as a PBKDF2-SHA256 hash. The gateway never keeps the password."
+
+# --- the token on /mcp -------------------------------------------------------
+
+MCP_ENABLED_FIELD: Final = "mcp_auth_enabled"
+MCP_TOKEN_FIELD: Final = "mcp_auth_token"
+#: The switch that says the token is being replaced rather than kept, which is
+#: the idiom the export card and the server detail page's credentials both use.
+MCP_REPLACE_FIELD: Final = "mcp_replace_token"
+
+#: The reveal groups: the switch governs the whole panel, and the Replace switch
+#: inside it governs the box holding the token. See ``static/js/forms.js``.
+MCP_GROUP: Final = "mcp-token"
+MCP_TOKEN_GROUP: Final = "mcp-token-value"
+
+MCP_TOKEN_REQUIRED: Final = "Requiring a token means setting one."
+#: The digest is not stretched, so the token has to carry its own entropy. Said
+#: as a count rather than as a rule, because the operator can see the box.
+MCP_TOKEN_TOO_SHORT: Final = (
+    "A token needs at least {minimum} characters; this one has {typed}. "
+    "Only a digest of it is stored, so its own length is what protects it."
+)
+
+MCP_TOKEN_SAVED: Final = (
+    "{path} now requires a bearer token, from this moment rather than from the next "
+    "restart. Every client that calls this gateway needs it."
+)
+MCP_TOKEN_REPLACED: Final = (
+    "The bearer token for {path} was replaced. A client still sending the old one is "
+    "refused from now on."
+)
+MCP_TOKEN_KEPT: Final = (
+    "{path} requires the bearer token that was already stored, from this moment rather "
+    "than from the next restart."
+)
+#: Three of them, because there are three true things to say and only one of
+#: them is true at a time. Telling an operator that the stored token was kept
+#: when none was stored is the kind of small lie a page never recovers from.
+MCP_TOKEN_OPENED: Final = (
+    "{path} no longer requires a token. The stored one is kept, so switching this back "
+    "on does not mean issuing a new one to every client."
+)
+MCP_TOKEN_OPENED_OVER_FILE: Final = (
+    "{path} no longer requires a token. [mcp].auth_token in the configuration file is "
+    "not consulted while this is off."
+)
+MCP_TOKEN_OPENED_PLAIN: Final = "{path} no longer requires a token."
+
+#: What the card says above the form, so an operator knows which of the two
+#: places this can be configured from they are looking at.
+MCP_LEAD_STORED: Final = (
+    "Calls to {path} must carry the token set here. While it exists, [mcp].auth_token in "
+    "the configuration file is ignored."
+)
+MCP_LEAD_CONFIGURED: Final = (
+    "Calls to {path} must carry [mcp].auth_token from the configuration file. A token "
+    "saved here replaces it, without a restart."
+)
+MCP_LEAD_OPEN: Final = (
+    "Anyone who can reach {path} can list and call every enabled operation. A token here "
+    "closes it, from the next request rather than from the next restart."
+)
+
+#: Said on the card rather than only in the two module docstrings that say it:
+#: an operator looking at two login-shaped forms on one page has every reason to
+#: assume one of them covers the other.
+MCP_WHAT_IT_GUARDS: Final = (
+    "This is not the admin login. It guards {path} and nothing else, no browser session "
+    "opens that endpoint, and this token opens no page."
+)
+
+MCP_TOKEN_HINT_NEW: Final = (
+    "At least {minimum} characters. The gateway keeps only a SHA-256 digest, so it can "
+    "never show this back to you — put it into your clients before you save."
+)
+MCP_TOKEN_HINT_STORED: Final = "A token is stored, set {ago}. Leave this alone to keep it."
+#: The third case: a token in the config file rather than in the table. Saving
+#: from this page writes a stored configuration, and there is nothing to carry
+#: over — the file holds a token, and what is stored here is a digest of one.
+MCP_TOKEN_HINT_FILE: Final = (
+    "The configuration file's token is in use, and saving here replaces it. At least "
+    "{minimum} characters; only a digest is kept, so the gateway can never show it back."
+)
 
 # --- the metrics export ------------------------------------------------------
 
@@ -238,6 +337,10 @@ EXPORT_STATUS_STOPPED: Final = (
 #: config file set. An environment variable and a flag name themselves.
 DEFAULT_SOURCE: Final = "built-in default"
 FILE_SOURCE: Final = "config file"
+#: The fifth layer, which only one row can name: a value this page wrote into
+#: the ``settings`` table. The others in that table are on this page as forms
+#: and so are not in this table at all.
+PAGE_SOURCE: Final = "Configuration page"
 TOKEN_SET: Final = "set"
 TOKEN_UNSET: Final = "not set"
 
@@ -289,14 +392,21 @@ class Fact:
     source: str
 
 
-def facts(settings: Settings) -> list[Fact]:
+def facts(settings: Settings, auth: McpAuth | None = None) -> list[Fact]:
     """Everything in force that this page does not offer to change.
 
     Written out rather than generated from the models. A loop over
     :data:`~mcp_gateway.config.SECTION_MODELS` would be shorter and would put
     ``security.encryption_key`` on a web page the first time somebody added a
     field; every value here is one somebody chose to show.
+
+    ``auth`` is the token in force, which since task 126 is not always what
+    ``settings`` says: the card above this table may have overridden it. It has
+    a default so that a caller with no app to read it off — a test of the other
+    rows — need not invent one, and that default is the config file's answer,
+    which is what this function used to report unconditionally.
     """
+    in_force = mcp_auth.configured(settings.mcp) if auth is None else auth
 
     def fact(key: str, value: object) -> Fact:
         return Fact(key, str(value), source_label(settings, key))
@@ -309,8 +419,13 @@ def facts(settings: Settings) -> list[Fact]:
         fact("mcp.path", settings.mcp.path),
         # Never the token itself, in any circumstance: whether one is required
         # is the question an operator has, and the value is not an answer they
-        # need a browser to give them.
-        fact("mcp.auth_token", TOKEN_SET if settings.mcp.auth_required else TOKEN_UNSET),
+        # need a browser to give them. Neither is the digest, which is not a
+        # secret and is also not a thing anybody can do anything with.
+        Fact(
+            "mcp.auth_token",
+            TOKEN_SET if in_force.required else TOKEN_UNSET,
+            PAGE_SOURCE if in_force.stored else source_label(settings, "mcp.auth_token"),
+        ),
         fact("http.timeout_seconds", settings.http.timeout_seconds),
         fact("http.max_response_bytes", settings.http.max_response_bytes),
         fact("http.user_agent", settings.http.user_agent),
@@ -394,6 +509,72 @@ class Admin:
     @property
     def password_field(self) -> str:
         return PASSWORD_FIELD
+
+
+@dataclass(frozen=True, slots=True)
+class Mcp:
+    """The bearer token on ``/mcp``, as the page offers to change it (task 126).
+
+    It carries the endpoint's path, which no other card here needs: every
+    sentence on it is about one route, and a card that said "the endpoint"
+    while the operator had moved it to ``/gw`` would be describing something
+    they would have to go and check.
+    """
+
+    #: What the switch shows: whether a token is required right now.
+    enabled: bool
+    #: ``mcp.path``, so every sentence can name what it is talking about.
+    path: str
+    #: Whether a digest is stored — never a token, which the page cannot reach,
+    #: and never the digest either, which would only look like one.
+    has_token: bool
+    #: Whether what is in force came from the ``settings`` table.
+    stored: bool
+    lead: str
+    token_hint: str
+    errors: Mapping[str, str] = field(default_factory=dict)
+
+    @property
+    def form_path(self) -> str:
+        return MCP_PATH
+
+    @property
+    def group(self) -> str:
+        return MCP_GROUP
+
+    @property
+    def token_group(self) -> str:
+        return MCP_TOKEN_GROUP
+
+    @property
+    def enabled_field(self) -> str:
+        return MCP_ENABLED_FIELD
+
+    @property
+    def token_field(self) -> str:
+        return MCP_TOKEN_FIELD
+
+    @property
+    def replace_field(self) -> str:
+        return MCP_REPLACE_FIELD
+
+    @property
+    def minimum(self) -> int:
+        return MINIMUM_TOKEN_CHARS
+
+    @property
+    def guards(self) -> str:
+        return MCP_WHAT_IT_GUARDS.format(path=self.path)
+
+    @property
+    def replace_hint(self) -> str:
+        """What the box says when it sits behind a Replace switch.
+
+        :attr:`token_hint` is then about the token already stored, which is what
+        the switch is offering to keep; the box below it is about the one that
+        would take its place.
+        """
+        return MCP_TOKEN_HINT_NEW.format(minimum=MINIMUM_TOKEN_CHARS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -548,6 +729,59 @@ def export_view(
     )
 
 
+async def mcp_view(
+    request: Request,
+    session: AsyncSession,
+    *,
+    enabled: bool | None = None,
+    errors: Mapping[str, str] | None = None,
+) -> Mcp:
+    """The token as it now stands, for the form that changes it.
+
+    What is in force comes off ``app.state``, because that is what the guard on
+    the router reads; whether there is a stored digest comes from the table,
+    because a token that has been switched off is still one the card has to be
+    able to offer back. The same division :func:`admin_view` makes, for the same
+    reason.
+
+    ``enabled`` and ``errors`` are how a rejected save comes back — never the
+    token, which is not put back into the box: a value the gateway would not
+    take is one the operator should replace rather than repair, and a rejected
+    form is not a place to leave a secret sitting.
+    """
+    settings: Settings = request.app.state.settings
+    auth: McpAuth = request.app.state.mcp_auth
+    stored = await mcp_auth.stored_token(session)
+    has_token = stored is not None and stored.digest is not None
+    path = settings.mcp.path
+
+    if not auth.required:
+        lead = MCP_LEAD_OPEN.format(path=path)
+    elif auth.stored:
+        lead = MCP_LEAD_STORED.format(path=path)
+    else:
+        lead = MCP_LEAD_CONFIGURED.format(path=path)
+
+    if has_token:
+        assert stored is not None
+        token_hint = MCP_TOKEN_HINT_STORED.format(ago=time_ago(stored.set_at))
+    elif auth.required:
+        # In force, and not from the table: the config file's.
+        token_hint = MCP_TOKEN_HINT_FILE.format(minimum=MINIMUM_TOKEN_CHARS)
+    else:
+        token_hint = MCP_TOKEN_HINT_NEW.format(minimum=MINIMUM_TOKEN_CHARS)
+
+    return Mcp(
+        enabled=auth.required if enabled is None else enabled,
+        path=path,
+        has_token=has_token,
+        stored=auth.stored,
+        lead=lead,
+        token_hint=token_hint,
+        errors=dict(errors or {}),
+    )
+
+
 async def auto_refresh_view(
     session: AsyncSession, settings: Settings, *, typed: str | None = None, error: str | None = None
 ) -> AutoRefresh:
@@ -633,6 +867,7 @@ def configuration_router() -> APIRouter:
         *,
         interval: AutoRefresh | None = None,
         admin: Admin | None = None,
+        mcp: Mcp | None = None,
         export: Export | None = None,
         status_code: int = 200,
     ) -> Response:
@@ -640,8 +875,9 @@ def configuration_router() -> APIRouter:
         context = {
             "auto_refresh": interval or await auto_refresh_view(session, settings),
             "admin": admin or await admin_view(request, session),
+            "mcp": mcp or await mcp_view(request, session),
             "export": export or export_view(request),
-            "facts": facts(settings),
+            "facts": facts(settings, request.app.state.mcp_auth),
             "config_note": _config_note(settings),
         }
         return _shell(request).render(
@@ -758,6 +994,73 @@ def configuration_router() -> APIRouter:
             )
         return response
 
+    @router.post(MCP_PATH)
+    async def save_mcp_token(
+        request: Request,
+        session: Session,
+        #: Absent when the box is unchecked, which is how a checkbox says "off".
+        enabled: Annotated[bool, Form(alias=MCP_ENABLED_FIELD)] = False,
+        replace_token: Annotated[bool, Form(alias=MCP_REPLACE_FIELD)] = False,
+        token: Annotated[str, Form(alias=MCP_TOKEN_FIELD)] = "",
+    ) -> Response:
+        """Require a bearer token on ``/mcp``, or stop requiring one (task 126).
+
+        What is in force is rebuilt on ``app.state.mcp_auth`` before the
+        response is written, exactly as saving the admin account rebuilds
+        ``app.state.admin``, and the guard on the router asks that per request —
+        so the next call to the endpoint is measured against what was just
+        saved, with no restart and no route replaced.
+        """
+        settings: Settings = request.app.state.settings
+        typed = token.strip()
+        stored = await mcp_auth.stored_token(session)
+        has_token = stored is not None and stored.digest is not None
+
+        if enabled:
+            # A digest already stored counts, unless the operator asked to
+            # replace it and then left the box empty — which is a form half
+            # filled in, not an instruction to keep what is there.
+            keep = has_token and not replace_token
+            error = None
+            if not typed and not keep:
+                error = MCP_TOKEN_REQUIRED
+            elif typed and len(typed) < MINIMUM_TOKEN_CHARS:
+                error = MCP_TOKEN_TOO_SHORT.format(minimum=MINIMUM_TOKEN_CHARS, typed=len(typed))
+            if error is not None:
+                view = await mcp_view(
+                    request, session, enabled=True, errors={MCP_TOKEN_FIELD: error}
+                )
+                return await _page(request, session, mcp=view, status_code=422)
+            await mcp_auth.store_token(session, typed or None)
+            if not typed:
+                message = MCP_TOKEN_KEPT.format(path=settings.mcp.path)
+            elif has_token:
+                message = MCP_TOKEN_REPLACED.format(path=settings.mcp.path)
+            else:
+                message = MCP_TOKEN_SAVED.format(path=settings.mcp.path)
+        else:
+            await mcp_auth.store_open(session)
+            if has_token:
+                opened = MCP_TOKEN_OPENED
+            elif settings.mcp.auth_required:
+                # Nothing stored to keep, and a file whose token has just
+                # stopped being consulted — which is the surprising half of
+                # "the table wins whole", said where it is surprising.
+                opened = MCP_TOKEN_OPENED_OVER_FILE
+            else:
+                opened = MCP_TOKEN_OPENED_PLAIN
+            message = opened.format(path=settings.mcp.path)
+
+        auth = await _reload_mcp_auth(request, session)
+        logger.info("%s", message)
+        response = RedirectResponse(CONFIGURATION_PATH, status_code=303)
+        shell = _shell(request)
+        shell.flash(request, response, message, level="success")
+        warning = _open_endpoint_warning(request, settings, auth)
+        if warning is not None:
+            shell.flash(request, response, warning, level="warning")
+        return response
+
     @router.post(EXPORT_PATH)
     async def save_export(
         request: Request,
@@ -857,6 +1160,35 @@ def configuration_router() -> APIRouter:
     return router
 
 
+async def _reload_mcp_auth(request: Request, session: AsyncSession) -> McpAuth:
+    """Put the token that was just written into force, and return it.
+
+    Read back through the same session, so what the guard picks up is what the
+    table says rather than something assembled here from the parts.
+    """
+    settings: Settings = request.app.state.settings
+    auth = await mcp_auth.load_auth(session, settings)
+    request.app.state.mcp_auth = auth
+    return auth
+
+
+def _open_endpoint_warning(request: Request, settings: Settings, auth: McpAuth) -> str | None:
+    """What to say when the endpoint has just been left open, if anything.
+
+    Two sentences and one of them, because an open endpoint means more when the
+    gateway's own tools are on it: whoever can reach the port can then register
+    upstreams here and store credentials in this gateway. That is
+    :mod:`mcp_gateway.builtin.seed`'s wording, said by the toggle that enables
+    the built-in server and now by the switch that opens the endpoint under it.
+    """
+    seeded: Seeded | None = request.app.state.builtin
+    if seeded is not None:
+        stronger = warn_builtin_open(settings, seeded, auth)
+        if stronger is not None:
+            return stronger
+    return mcp_auth.warn_if_open(settings, auth)
+
+
 async def _reload_export(request: Request, session: AsyncSession) -> None:
     """Put the export that was just written into force, and try it now.
 
@@ -922,6 +1254,28 @@ __all__ = [
     "INTERVAL_HINT_OVERRIDDEN",
     "INTERVAL_INVALID",
     "INTERVAL_SAVED",
+    "MCP_ENABLED_FIELD",
+    "MCP_GROUP",
+    "MCP_LEAD_CONFIGURED",
+    "MCP_LEAD_OPEN",
+    "MCP_LEAD_STORED",
+    "MCP_PATH",
+    "MCP_REPLACE_FIELD",
+    "MCP_TOKEN_FIELD",
+    "MCP_TOKEN_GROUP",
+    "MCP_TOKEN_HINT_FILE",
+    "MCP_TOKEN_HINT_NEW",
+    "MCP_TOKEN_HINT_STORED",
+    "MCP_TOKEN_KEPT",
+    "MCP_TOKEN_OPENED",
+    "MCP_TOKEN_OPENED_OVER_FILE",
+    "MCP_TOKEN_OPENED_PLAIN",
+    "MCP_TOKEN_REPLACED",
+    "MCP_TOKEN_REQUIRED",
+    "MCP_TOKEN_SAVED",
+    "MCP_TOKEN_TOO_SHORT",
+    "MCP_WHAT_IT_GUARDS",
+    "PAGE_SOURCE",
     "PASSWORD_FIELD",
     "PASSWORD_REQUIRED",
     "TOKEN_SET",
@@ -932,6 +1286,7 @@ __all__ = [
     "AutoRefresh",
     "Export",
     "Fact",
+    "Mcp",
     "admin_view",
     "auto_refresh_view",
     "configuration_router",
@@ -940,6 +1295,7 @@ __all__ = [
     "facts",
     "how_often",
     "interval_words",
+    "mcp_view",
     "mount_configuration",
     "source_label",
 ]

@@ -1,4 +1,5 @@
-{# One labelled control, in the four shapes the configuration forms need.
+{# One labelled control, in the four shapes the configuration forms need, plus
+   one button that belongs to a box rather than to a form.
 
    Macros rather than includes so a caller cannot forget to set the variable one
    reads, and so the distinction that matters here is structural: ``field`` and
@@ -6,7 +7,7 @@
    no value parameter at all. A credential cannot be echoed into a page by
    somebody passing the wrong argument, because there is no argument to pass.
 
-     {% from "partials/field.html" import field, secret, choice %}
+     {% from "partials/field.html" import field, secret, choice, generate %}
      {{ field("name", "Display name", value=fields.name, hint="Defaults to the spec's title.") }}
      {{ secret("token", "Token", error=errors.get("token")) }}
      {{ choice("auth_type", "Authentication", auth_options, fields.auth_type) }}
@@ -117,4 +118,24 @@
   </select>
   {{ _messages(name, hint, error) }}
 </label>
+{%- endmacro %}
+
+{# A button that fills the box named by ``field`` with a freshly generated
+   secret, for a value the operator has to invent rather than be given: the MCP
+   bearer token, so far (task 126).
+
+   Hidden here and unhidden by static/js/forms.js. Everything else in this file
+   works without a script and this cannot — a button that fills a box needs
+   something to fill it with — and a control that does nothing when clicked is
+   worse than one that was never offered. The hint beside the box says how to
+   make a token at a shell instead.
+
+   The value is generated in the browser, never on the server. It would
+   otherwise have to come back through the flash cookie, which is signed,
+   written to the browser's disk and sent again on the next request, or the
+   route would have to stop redirecting after a POST. Generated here it only
+   ever travels the direction it has to travel anyway. #}
+{% macro generate(field, label="Generate one") -%}
+<button class="button button--quiet field__aside" type="button"
+        data-generate="{{ field }}" hidden>{{ label }}</button>
 {%- endmacro %}

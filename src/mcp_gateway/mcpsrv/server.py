@@ -6,9 +6,9 @@ Three things live here, in the order a request meets them.
 FastAPI router at ``mcp.path``. It is a route rather than a mount so that the
 path the operator configured is the path clients POST to — a mount would only
 match ``<path>/…`` and answer ``<path>`` itself with a redirect, which an MCP
-client sending a POST has no reason to follow. When ``mcp.auth_token`` is set
-the endpoint goes on the router wrapped in :mod:`mcp_gateway.mcpsrv.auth`'s
-guard, so an unauthenticated request is refused before any of what follows.
+client sending a POST has no reason to follow. It goes on the router wrapped in
+:mod:`mcp_gateway.mcpsrv.auth`'s guard, which asks on every request whether a
+token is required and refuses an unauthenticated one before any of what follows.
 
 **The session manager.** The SDK's :class:`StreamableHTTPSessionManager` owns
 the sessions and the task group they run in. That task group can only exist
@@ -72,7 +72,7 @@ from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import Database
 from mcp_gateway.mcpsrv import proxy, tools
-from mcp_gateway.mcpsrv.auth import protect
+from mcp_gateway.mcpsrv.auth import app_auth, protect
 from mcp_gateway.mcpsrv.notify import ToolListWatchers, session_key
 from mcp_gateway.mcpsrv.proxy import Upstream
 from mcp_gateway.metrics import Meter
@@ -422,7 +422,10 @@ def mount_mcp(app: FastAPI) -> MCPEndpoint:
     endpoint = MCPEndpoint(app_sessions(app), app_upstreams(app), app.state.metrics)
     # The route serves the guarded application; ``app.state.mcp`` stays the
     # endpoint itself, because that is what the lifespan has to start.
-    guarded = protect(endpoint, settings.mcp)
+    # The guard goes on whatever the configuration says, and asks ``app.state``
+    # per request: the token can be changed from the Configuration page, and a
+    # route chosen once could not follow it (task 126).
+    guarded = protect(endpoint, app_auth(app))
     app.router.routes.append(Route(settings.mcp.path, endpoint=guarded, name=ROUTE_NAME))
     return endpoint
 

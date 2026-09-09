@@ -9,7 +9,7 @@
    With no script the panel is simply visible and the form submits the same
    fields — see static/js/forms.js. #}
 {% extends "base.html" %}
-{% from "partials/field.html" import choice, field, secret, switch %}
+{% from "partials/field.html" import choice, field, generate, secret, switch %}
 
 {% block title %}Configuration · mcp-api-gateway{% endblock %}
 
@@ -32,6 +32,41 @@
              error=admin.errors.get(admin.username_field)) }}
     {{ secret(admin.password_field, "Password", hint=admin.password_hint,
               error=admin.errors.get(admin.password_field)) }}
+  </div>
+  <div class="form-actions">
+    <button class="button" type="submit">Save</button>
+  </div>
+</form>
+
+{# The bearer token on /mcp (task 126). Second rather than last: this and the
+   card above it are the gateway's two doors, and a page with one of them at the
+   top and the other below the metrics export would make them look unrelated.
+
+   Two nested reveal panels, as on the export card: the switch governs the whole
+   thing, and "Replace the token" governs the box holding one — which is only
+   offered when there is a token to replace. The Generate button is hidden until
+   forms.js unhides it, because a button that fills a box needs a script to fill
+   it with; without one the hint says how to make a token at a shell. #}
+<form class="card card--below form form--wide" method="post" action="{{ mcp.form_path }}">
+  <h2 class="card__title">MCP endpoint</h2>
+  <p class="form__lead">{{ mcp.lead }}</p>
+  {{ switch(mcp.enabled_field, "Require a bearer token on " ~ mcp.path,
+            checked=mcp.enabled, reveal=mcp.group) }}
+  <div class="reveal" data-reveal-for="{{ mcp.group }}" data-reveal-when="on">
+    {% if mcp.has_token %}
+    {{ switch(mcp.replace_field, "Replace the token", reveal=mcp.token_group,
+              hint=mcp.token_hint) }}
+    <div class="reveal" data-reveal-for="{{ mcp.token_group }}" data-reveal-when="on">
+      {{ field(mcp.token_field, "Bearer token", hint=mcp.replace_hint,
+               error=mcp.errors.get(mcp.token_field)) }}
+      {{ generate(mcp.token_field) }}
+    </div>
+    {% else %}
+    {{ field(mcp.token_field, "Bearer token", hint=mcp.token_hint,
+             error=mcp.errors.get(mcp.token_field)) }}
+    {{ generate(mcp.token_field) }}
+    {% endif %}
+    <p class="form__note">{{ mcp.guards }}</p>
   </div>
   <div class="form-actions">
     <button class="button" type="submit">Save</button>

@@ -217,20 +217,34 @@ def test_an_uncreatable_data_dir_exits_2(
     assert "cannot create data directory" in capsys.readouterr().err
 
 
-def test_open_access_is_announced_loudly(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_the_key_file_is_announced(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     settings = load_settings(environ={}, cwd=tmp_path)
 
     with caplog.at_level(logging.INFO, logger="mcp_gateway.bootstrap"):
         keys = bootstrap(settings)
 
-    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("requires no token" in message for message in warnings)
-    # Whether the *pages* are open is not decided here: the account may be in
-    # the database, which is not open yet (task 104). That warning belongs to
-    # ``web.account``, and is tested there.
-    assert not any("Admin login" in message for message in warnings)
     assert str(keys.path) in caplog.text
     assert "entered again" in caplog.text
+
+
+def test_neither_open_door_is_announced_here(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Both may be stored in a database this has not opened yet.
+
+    The admin account since task 104, the MCP token since task 126. Warning from
+    here would mean warning about a config file, which is not the question an
+    operator has; each warning belongs to the thing that resolves it, and both
+    are tested where they live.
+    """
+    settings = load_settings(environ={}, cwd=tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="mcp_gateway.bootstrap"):
+        bootstrap(settings)
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert not any("requires no token" in message for message in warnings)
+    assert not any("Admin login" in message for message in warnings)
 
 
 def test_a_locked_down_gateway_warns_about_nothing(

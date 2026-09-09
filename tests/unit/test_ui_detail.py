@@ -45,6 +45,7 @@ from mcp_gateway.db.models import Operation, Server
 from mcp_gateway.db.repo import NewServer, OperationInput
 from mcp_gateway.db.session import database_path, database_service, open_database
 from mcp_gateway.limits import HALF_A_LIMIT
+from mcp_gateway.mcpsrv.auth import FROM_DATABASE, McpAuth, digest_of
 from mcp_gateway.mcpsrv.server import mcp_service
 from mcp_gateway.naming import PREFIX_SEPARATOR, name_lead, rename_server
 from mcp_gateway.web.detail import (
@@ -1811,6 +1812,35 @@ def test_enabling_the_built_in_server_from_its_page_still_warns(tmp_path: Path) 
     settings = settings_for(tmp_path)
 
     with client(settings, tmp_path, builtin=True) as http:
+        path = the_built_in_page(http)
+        landed = http.post(f"{path}/enabled", data={"enabled": "true"}, headers=HTML).text
+
+    assert OPEN_TO_ANYONE.format(path=settings.mcp.path) in landed
+
+
+def test_the_toggle_warning_follows_the_token_in_force(tmp_path: Path) -> None:
+    """The config file has no token and the endpoint is guarded anyway (task 126).
+
+    Reading ``settings`` here would warn about a door that is shut, which is the
+    one thing this warning must not do: an operator who meets it and finds
+    nothing wrong stops reading the next one.
+    """
+    settings = settings_for(tmp_path)
+
+    with client(settings, tmp_path, builtin=True) as http:
+        http.app.state.mcp_auth = McpAuth(digest=digest_of("t" * 40), source=FROM_DATABASE)
+        path = the_built_in_page(http)
+        landed = http.post(f"{path}/enabled", data={"enabled": "true"}, headers=HTML).text
+
+    assert "register upstream services" not in landed
+
+
+def test_the_toggle_warns_when_the_page_opened_the_endpoint(tmp_path: Path) -> None:
+    """And the other way round: the file has a token, and nothing is using it."""
+    settings = settings_for(tmp_path, '[mcp]\nauth_token = "from-the-file"\n')
+
+    with client(settings, tmp_path, builtin=True) as http:
+        http.app.state.mcp_auth = McpAuth(source=FROM_DATABASE)
         path = the_built_in_page(http)
         landed = http.post(f"{path}/enabled", data={"enabled": "true"}, headers=HTML).text
 

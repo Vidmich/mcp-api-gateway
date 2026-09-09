@@ -18,8 +18,12 @@ live on the next `tools/list`.
 - **Monitoring page** — calls, bytes in and out, failures and throttled calls
   over time, total and per server.
 - **Configuration page** — the gateway's own settings: how often specs are
-  re-read, who has to sign in, and everything else in force with the layer it
-  came from.
+  re-read, who has to sign in, whether `/mcp` requires a bearer token, and
+  everything else in force with the layer it came from.
+- **Both doors, closed from the browser** — the admin login and the `/mcp`
+  bearer token can each be set without editing a file or restarting, and each
+  takes effect on the next request. The token is kept as a digest, so the
+  gateway can check it and can never show it back.
 - **Optional metrics export** — push the same counters to New Relic, so a
   gateway going quiet is noticed by whatever notices everything else going
   quiet. Off unless you turn it on; counts only, never request content.
@@ -192,9 +196,11 @@ password = "something-better-than-this"
 auth_token = "a-long-random-string"
 ```
 
-The login half can also be set from `/ui/configuration` without a restart, and
-without the password ever reaching a file; `mcp-api-gateway --reset-admin` is the way
-back if it is forgotten.
+Both halves can also be set from `/ui/configuration` without a restart and
+without either secret ever reaching a file — the page stores a password hash and
+a token digest, never the values. `mcp-api-gateway --reset-admin` is the way back
+if the login is forgotten; a forgotten token locks out your MCP clients rather
+than you, and the same page opens the endpoint again.
 
 Now `/ui` asks for a login and `/mcp` requires `Authorization: Bearer …`. See
 [docs/security.md](docs/security.md) for what is still not protected — the SSRF

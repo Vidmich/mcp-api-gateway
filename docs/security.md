@@ -21,7 +21,7 @@ are unlocked by default:
 
 | Door | Guarded by | Default |
 |---|---|---|
-| `/mcp` | `mcp.auth_token` — a bearer token | **open** |
+| `/mcp` | `mcp.auth_token`, or a token saved on the Configuration page — a bearer token either way | **open** |
 | `/ui/**` and `/api/v1/**` | `[admin]`, or an account saved on the Configuration page — one username and password either way | **open** |
 | `/healthz` | nothing, by design | open |
 
@@ -51,18 +51,25 @@ is a v2 item.
 
 ### 2. `/mcp` is open unless a token is set
 
-With `mcp.auth_token` empty or absent, the endpoint is mounted unguarded and
-anyone who can reach it can list and call every enabled operation. Set it:
+With nothing set anywhere, the endpoint is open and anyone who can reach it can
+list and call every enabled operation. Close it either from the config file:
 
 ```toml
 [mcp]
 auth_token = "a-long-random-string"
 ```
 
+or from **Configuration → MCP endpoint** in the browser, which takes effect on
+the next request rather than the next restart and overrides the file while it
+exists. The page keeps only a SHA-256 digest of the token, so it can never show
+one back to you; copy it into your clients before you save. Replacing it there
+refuses the old one from that moment, which makes rotation a page and a redeploy
+of your clients rather than a restart of this process.
+
 The token is compared in constant time, and a missing or wrong one is refused
 with `401` and `WWW-Authenticate: Bearer` before a session is created. There is
-one token, shared by every client; rotating it means restarting the process and
-updating each client.
+one token, shared by every client: this is a door, not an identity, and nothing
+here tells one caller from another.
 
 This is why the built-in **Gateway** server is disabled until you switch it on.
 Its tools register upstreams and store their credentials in this gateway, and
@@ -124,6 +131,12 @@ the data directory to the service account and nobody else.
 
 The flag sets no password of its own, and there is no way to trigger it over
 HTTP.
+
+There is no equivalent flag for the `/mcp` token, and there does not need to be:
+losing that token locks out your MCP clients, not you. `/ui` is the other door,
+it is guarded by the other mechanism, and the switch that opens `/mcp` again is
+behind it. Somebody who has lost both uses `--reset-admin` for the pages and then
+the Configuration page for the endpoint, in that order.
 
 ### 7. No rate limiting or quotas
 

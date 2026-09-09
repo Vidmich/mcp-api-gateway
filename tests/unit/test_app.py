@@ -21,6 +21,8 @@ from mcp_gateway.bootstrap import Keys
 from mcp_gateway.config import ConfigError, Settings, load_settings
 from mcp_gateway.crypto import CredentialCipher, generate_key
 from mcp_gateway.db.session import CommittingRoute, request_session
+from mcp_gateway.mcpsrv.auth import FROM_DATABASE as MCP_FROM_DATABASE
+from mcp_gateway.mcpsrv.auth import McpAuth, configured, digest_of
 from mcp_gateway.web.auth import FROM_DATABASE, AdminAuth, build_admin
 from mcp_gateway.web.passwords import derive
 from mcp_gateway.web.routes_ui import SERVERS_PATH
@@ -182,12 +184,40 @@ def test_the_banner_names_what_is_locked_down(tmp_path: Path) -> None:
 
     admin = build_admin(settings, secret_key="k")
 
-    banner = startup_banner(settings, Keys("SIGNING-KEY", "ENCRYPTION-KEY", path=None), admin=admin)
+    banner = startup_banner(
+        settings,
+        Keys("SIGNING-KEY", "ENCRYPTION-KEY", path=None),
+        admin=admin,
+        mcp=configured(settings.mcp),
+    )
 
     assert "/mcp (bearer token required)" in banner
     assert "admin login:  enabled as root" in banner
     assert "hunter2" not in banner
     assert "keys come from the config" in banner
+
+
+def test_the_banner_says_when_the_token_came_from_the_page(tmp_path: Path) -> None:
+    """The other thing reading the config file could not tell an operator (task 126)."""
+    stored = McpAuth(digest=digest_of("x" * 32), source=MCP_FROM_DATABASE)
+
+    banner = startup_banner(settings_for(tmp_path), admin=None, mcp=stored)
+
+    assert "/mcp (bearer token required, set on the Configuration page)" in banner
+
+
+def test_a_banner_told_nothing_about_the_token_reports_the_open_endpoint(
+    tmp_path: Path,
+) -> None:
+    """The default is the alarming state, which is the right way round.
+
+    A caller that forgets ``mcp`` describes a door that may be shut as open, and
+    an operator who goes and looks finds nothing wrong. The reverse would be a
+    banner that quietly reassures.
+    """
+    settings = settings_for(tmp_path, '[mcp]\nauth_token = "t"\n')
+
+    assert "/mcp (open)" in startup_banner(settings, admin=None)
 
 
 def test_the_banner_says_when_the_account_came_from_the_page(tmp_path: Path) -> None:

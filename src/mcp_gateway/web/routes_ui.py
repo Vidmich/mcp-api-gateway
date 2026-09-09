@@ -96,6 +96,7 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.models import utcnow
 from mcp_gateway.db.repo import ServerSummary
 from mcp_gateway.db.session import CommittingRoute, request_session
+from mcp_gateway.mcpsrv.auth import McpAuth
 from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken, conflict_alerts
 from mcp_gateway.openapi.diagnostics import SpecError
@@ -566,15 +567,20 @@ def _open_to_anyone(request: Request, row: ServerRow) -> str | None:
     """The sentence to show when the gateway's own tools have just been opened.
 
     Only for the built-in server, only when it has just been switched on, and
-    only while ``mcp.auth_token`` is unset — which is exactly the state where
-    anyone who can reach the port can now register upstreams here. The same
-    words the startup banner uses, at the moment the operator can still do
-    something about it (task 102).
+    only while no token is in force — which is exactly the state where anyone
+    who can reach the port can now register upstreams here. The same words the
+    startup banner uses, at the moment the operator can still do something about
+    it (task 102).
+
+    What is in force, not what the config file says: the token can be stored in
+    the ``settings`` table instead (task 126), and a warning reading the file
+    would be answering a question nobody asked.
     """
     if not (row.server.builtin and row.server.enabled):
         return None
     settings: Settings = request.app.state.settings
-    return None if settings.mcp.auth_required else OPEN_TO_ANYONE.format(path=settings.mcp.path)
+    auth: McpAuth = request.app.state.mcp_auth
+    return None if auth.required else OPEN_TO_ANYONE.format(path=settings.mcp.path)
 
 
 def _back_to_the_list(request: Request, message: str) -> Response:

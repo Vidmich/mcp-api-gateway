@@ -136,21 +136,32 @@ flag, or the default. It is the quickest answer to "why is this not what my file
 says", and nothing secret appears on it: the bearer token is reported as *set* or
 *not set*, and the two keys in `[security]` are not reported at all.
 
-Three of those values can also be *changed* there, without a restart, because
+Four of those values can also be *changed* there, without a restart, because
 each is stored in the database and read where it is used:
 
 | Setting | Stored as | What the file's value becomes |
 |---|---|---|
 | The auto-refresh interval | `refresh.auto_refresh_interval_minutes` | the value in force again once the box is emptied |
 | The admin account | `admin.enabled`, `admin.username`, `admin.password_hash` | ignored entirely while an account is saved |
+| The `/mcp` bearer token | `mcp.auth_enabled`, `mcp.auth_token_sha256`, `mcp.auth_token_set_at` | ignored entirely while a token is saved |
 | The metrics export | `export.destination`, `export.region`, `export.service_name`, `export.api_key` | ignored entirely while an export is saved |
 
-The licence key is the one of those that is a secret, and it is treated as one:
-stored encrypted with the same key that protects upstream credentials, never
-rendered back — the card says *set* or *not set*, with a **Replace** box — and
-absent from the read-only table. Switching the export off leaves the key where
-it is, so switching it back on does not mean going to find it again; a **Forget
-the stored licence key** button deletes it.
+The licence key is a secret and is treated as one: stored encrypted with the same
+key that protects upstream credentials, never rendered back — the card says *set*
+or *not set*, with a **Replace** box — and absent from the read-only table.
+Switching the export off leaves the key where it is, so switching it back on does
+not mean going to find it again; a **Forget the stored licence key** button
+deletes it.
+
+The bearer token is a secret too, and is not stored at all. What the card writes
+is a SHA-256 digest of it, which is the only form the check ever needed, so
+nothing that could be presented to `/mcp` is anywhere in the database. The
+consequence is worth knowing before you save: **the gateway can never show you
+that token again.** Copy it into your clients first — the card has a **Generate
+one** button that makes a token in your browser, and the token in the box is the
+only copy that will ever exist outside them. Switching the requirement off keeps
+the digest, so switching it back on does not mean issuing a new token to every
+client; replacing it is what the **Replace** box is for.
 
 Nothing else on the page is a form. A setting that could not take effect until
 the next restart is shown and not offered, because a box that quietly does
@@ -253,8 +264,9 @@ auth_token = "a-long-random-string"
 the endpoint is open, which the startup log says out loud every time:
 
 ```
-WARNING  mcp_gateway.bootstrap: /mcp requires no token: anyone who can reach it can
-         call every enabled operation. Set [mcp].auth_token to require a bearer token.
+WARNING  mcp_gateway.mcpsrv.auth: /mcp requires no token: anyone who can reach it can
+         call every enabled operation. Set a token on the Configuration page, or
+         [mcp].auth_token in the configuration file, to require one.
 ```
 
 Any high-entropy string will do:
@@ -262,6 +274,18 @@ Any high-entropy string will do:
 ```bash
 python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
+
+**A token saved on the [Configuration page](#the-configuration-page) overrides
+this one entirely**, from the next request rather than from the next restart, and
+switching the requirement off there opens the endpoint whatever this file says.
+Without those rows this section decides, exactly as it always has. The page will
+not accept a token shorter than 32 characters, because only a digest of it is
+kept and the token has to carry its own entropy; this file still takes anything,
+because it is edited by somebody at a shell who has just read this paragraph.
+
+`path` is not settable from the page and needs a restart: the route is added
+when the process builds its application, and moving one under a running session
+manager is not a settings change.
 
 ### `[security]`
 

@@ -50,6 +50,7 @@ from mcp_gateway.builtin.catalog import CATALOG, FORMAT, NAME, PREFIX
 from mcp_gateway.config import Settings
 from mcp_gateway.db import repo
 from mcp_gateway.db.session import Database
+from mcp_gateway.mcpsrv.auth import McpAuth
 from mcp_gateway.openapi.schema import schema_hash
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,8 @@ logger = logging.getLogger(__name__)
 OPEN_TO_ANYONE: Final = (
     "The built-in Gateway server is enabled and {path} requires no token: anyone who can "
     "reach it can register upstream services in this gateway and store credentials in it. "
-    "Set [mcp].auth_token to require a bearer token."
+    "Set a token on the Configuration page, or [mcp].auth_token in the configuration file, "
+    "to require one."
 )
 
 
@@ -163,14 +165,20 @@ async def ensure_builtin_server(session: AsyncSession) -> Seeded:
     )
 
 
-def warn_if_open(settings: Settings, seeded: Seeded) -> str | None:
+def warn_if_open(settings: Settings, seeded: Seeded, auth: McpAuth) -> str | None:
     """Say out loud that the gateway's own tools are open, or say nothing.
 
     Returns the sentence as well as logging it, so the enable toggle can put the
     same words in front of the operator at the moment they turn it on rather
     than in a log they may never read.
+
+    ``auth`` is the token in force rather than ``settings.mcp``, because since
+    task 126 those are two different questions: a token stored on the
+    Configuration page guards an endpoint whose config file has none, and a
+    stored ``false`` opens one whose config file has one. This warning is about
+    what a caller would actually meet.
     """
-    if not seeded.enabled or settings.mcp.auth_required:
+    if not seeded.enabled or auth.required:
         return None
     warning = OPEN_TO_ANYONE.format(path=settings.mcp.path)
     logger.warning("%s", warning)
@@ -202,7 +210,7 @@ async def builtin_service(app: FastAPI) -> AsyncIterator[None]:
     async with database.session() as session:
         seeded = await ensure_builtin_server(session)
     app.state.builtin = seeded
-    warn_if_open(app.state.settings, seeded)
+    warn_if_open(app.state.settings, seeded, app.state.mcp_auth)
     yield
 
 

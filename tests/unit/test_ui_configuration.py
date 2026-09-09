@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway.app import create_app
 from mcp_gateway.bootstrap import Keys
+from mcp_gateway.builtin.seed import Seeded
 from mcp_gateway.cli import main
 from mcp_gateway.config import Settings, load_settings
 from mcp_gateway.crypto import CredentialCipher, generate_key
@@ -46,6 +47,16 @@ from mcp_gateway.export import (
     Status,
     export_service,
 )
+from mcp_gateway.mcpsrv.auth import DIGEST_KEY as MCP_DIGEST_KEY
+from mcp_gateway.mcpsrv.auth import ENABLED_KEY as MCP_ENABLED_KEY
+from mcp_gateway.mcpsrv.auth import (
+    MINIMUM_TOKEN_CHARS,
+    McpAuth,
+    configured,
+    digest_of,
+    mcp_auth_service,
+)
+from mcp_gateway.mcpsrv.auth import SET_AT_KEY as MCP_SET_AT_KEY
 from mcp_gateway.scheduler import INTERVAL_KEY
 from mcp_gateway.web import account
 from mcp_gateway.web.account import (
@@ -81,6 +92,15 @@ from mcp_gateway.web.configuration import (
     FILE_SOURCE,
     INTERVAL_FIELD,
     INTERVAL_INVALID,
+    MCP_ENABLED_FIELD,
+    MCP_PATH,
+    MCP_REPLACE_FIELD,
+    MCP_TOKEN_FIELD,
+    MCP_TOKEN_OPENED,
+    MCP_TOKEN_OPENED_OVER_FILE,
+    MCP_TOKEN_OPENED_PLAIN,
+    MCP_TOKEN_REQUIRED,
+    PAGE_SOURCE,
     PASSWORD_FIELD,
     PASSWORD_REQUIRED,
     TOKEN_SET,
@@ -149,8 +169,11 @@ def store(settings: Settings, **rows: str) -> None:
 
 
 def app_for(settings: Settings) -> FastAPI:
-    """An app that runs the two services this page's behaviour depends on."""
-    return create_app(settings, services=[database_service(settings), admin_service])
+    """An app that runs the three services this page's behaviour depends on."""
+    return create_app(
+        settings,
+        services=[database_service(settings), admin_service, mcp_auth_service],
+    )
 
 
 def client(settings: Settings) -> TestClient:
@@ -632,12 +655,46 @@ def test_the_read_only_table_shows_each_value_with_where_it_came_from(tmp_path: 
     assert DEFAULT_SOURCE in body
 
 
+def token_row(settings: Settings, auth: McpAuth | None = None) -> Any:
+    """The one row of the read-only table this card can change under."""
+    (row,) = [f for f in facts(settings, auth) if f.key == "mcp.auth_token"]
+    return row
+
+
 def test_whether_a_bearer_token_is_set_is_shown_and_the_token_is_not(tmp_path: Path) -> None:
     open_gateway = settings_for(tmp_path)
     locked_down = settings_for(tmp_path / "locked", '[mcp]\nauth_token = "s3cret-token"\n')
 
-    assert [f.value for f in facts(open_gateway) if f.key == "mcp.auth_token"] == [TOKEN_UNSET]
-    assert [f.value for f in facts(locked_down) if f.key == "mcp.auth_token"] == [TOKEN_SET]
+    assert token_row(open_gateway).value == TOKEN_UNSET
+    assert token_row(locked_down).value == TOKEN_SET
+    assert token_row(locked_down).source == FILE_SOURCE
+
+
+def test_the_table_reports_a_token_the_page_set_as_the_pages(tmp_path: Path) -> None:
+    """And not as the config file's, which is a different thing to go and edit."""
+    settings = settings_for(tmp_path, '[mcp]\nauth_token = "from-the-file"\n')
+    stored = McpAuth(digest=digest_of("T" * 40), source=FROM_DATABASE)
+
+    row = token_row(settings, stored)
+
+    assert row.value == TOKEN_SET
+    assert row.source == PAGE_SOURCE
+
+
+def test_the_table_reports_an_endpoint_the_page_opened_as_open(tmp_path: Path) -> None:
+    """The file still has a token in it; nothing is checking against it."""
+    settings = settings_for(tmp_path, '[mcp]\nauth_token = "from-the-file"\n')
+
+    row = token_row(settings, McpAuth(source=FROM_DATABASE))
+
+    assert row.value == TOKEN_UNSET
+    assert row.source == PAGE_SOURCE
+
+
+def test_the_table_reports_the_file_when_nothing_overrode_it(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path, '[mcp]\nauth_token = "from-the-file"\n')
+
+    assert token_row(settings, configured(settings.mcp)).source == FILE_SOURCE
 
 
 def test_no_secret_reaches_the_page(tmp_path: Path) -> None:
@@ -1056,3 +1113,328 @@ def test_no_two_attributes_are_rendered_as_one(tmp_path: Path) -> None:
     assert 'placeholder="1440" ' in str(rendered[1])
     assert "required aria-invalid" in str(rendered[1])
     assert 'data-reveal="g" aria-invalid' in str(rendered[2])
+
+
+# --- the token on /mcp (task 126) ---------------------------------------------
+
+#: Long enough for the page to take. The file's is not, deliberately: what is
+#: edited at a shell has always been allowed to be anything.
+PAGE_TOKEN = "generated-token-of-a-perfectly-good-length"
+
+
+def save_token(http: TestClient, **form: str) -> Any:
+    return http.post(MCP_PATH, data=form, headers=HTML, follow_redirects=False)
+
+
+def stored_rows(settings: Settings) -> dict[str, str]:
+    return in_the_database(settings, repo.all_settings)
+
+
+def test_the_card_is_off_and_offers_no_token_to_replace(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert "MCP endpoint" in body
+    assert MCP_ENABLED_FIELD in body
+    assert "Replace the token" not in body
+
+
+def test_the_card_sits_between_the_admin_login_and_the_refresh_interval(
+    tmp_path: Path,
+) -> None:
+    """The two doors are next to each other, which is the argument for the order.
+
+    A page with the admin login at the top and this below the metrics export
+    would make them look unrelated, and docs/security.md's whole point is that
+    an operator has to think about both.
+    """
+    with client(settings_for(tmp_path)) as http:
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert body.index("Admin login") < body.index("MCP endpoint")
+    assert body.index("MCP endpoint") < body.index("Automatic refresh")
+
+
+def test_saving_a_token_requires_it_on_the_next_request(tmp_path: Path) -> None:
+    """No restart, and no route replaced: the whole point of the card."""
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        saved = save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        auth: McpAuth = http.app.state.mcp_auth
+
+    assert saved.status_code == 303
+    assert auth.stored is True
+    assert auth.accepts(PAGE_TOKEN.encode()) is True
+    assert auth.accepts(b"something else") is False
+
+
+def test_only_a_digest_is_written(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+
+    rows = stored_rows(settings)
+
+    assert rows[MCP_ENABLED_KEY] == "true"
+    assert rows[MCP_DIGEST_KEY] == digest_of(PAGE_TOKEN).hex()
+    assert MCP_SET_AT_KEY in rows
+    assert PAGE_TOKEN not in "".join(rows.values())
+
+
+def test_the_stored_token_overrides_the_configuration_file(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path, '[mcp]\nauth_token = "from-the-file"\n')
+
+    with client(settings) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        auth: McpAuth = http.app.state.mcp_auth
+
+    assert auth.accepts(b"from-the-file") is False
+    assert auth.accepts(PAGE_TOKEN.encode()) is True
+
+
+def test_switching_it_off_opens_the_endpoint_and_keeps_the_token(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        opened = save_token(http)
+        auth: McpAuth = http.app.state.mcp_auth
+
+    assert opened.status_code == 303
+    assert auth.required is False
+    assert stored_rows(settings)[MCP_DIGEST_KEY] == digest_of(PAGE_TOKEN).hex()
+
+
+def test_switching_it_back_on_does_not_ask_for_the_token_again(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        save_token(http)
+        again = save_token(http, **{MCP_ENABLED_FIELD: "true"})
+        auth: McpAuth = http.app.state.mcp_auth
+
+    assert again.status_code == 303
+    assert auth.accepts(PAGE_TOKEN.encode()) is True
+
+
+def test_replacing_the_token_refuses_the_old_one(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    replacement = "a-different-token-of-a-good-length-again"
+
+    with client(settings) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        save_token(
+            http,
+            **{
+                MCP_ENABLED_FIELD: "true",
+                MCP_REPLACE_FIELD: "true",
+                MCP_TOKEN_FIELD: replacement,
+            },
+        )
+        auth: McpAuth = http.app.state.mcp_auth
+
+    assert auth.accepts(replacement.encode()) is True
+    assert auth.accepts(PAGE_TOKEN.encode()) is False
+
+
+def test_asking_to_replace_it_and_leaving_the_box_empty_is_refused(tmp_path: Path) -> None:
+    """A form half filled in, not an instruction to keep what is there."""
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        refused = save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_REPLACE_FIELD: "true"})
+        auth: McpAuth = http.app.state.mcp_auth
+
+    assert refused.status_code == 422
+    assert MCP_TOKEN_REQUIRED in refused.text
+    assert auth.accepts(PAGE_TOKEN.encode()) is True
+
+
+def test_requiring_a_token_without_one_is_refused(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        refused = save_token(http, **{MCP_ENABLED_FIELD: "true"})
+
+    assert refused.status_code == 422
+    assert MCP_TOKEN_REQUIRED in refused.text
+    assert stored_rows(settings) == {}
+
+
+def test_a_short_token_is_refused_with_the_reason_and_nothing_is_written(
+    tmp_path: Path,
+) -> None:
+    settings = settings_for(tmp_path)
+    short = "x" * (MINIMUM_TOKEN_CHARS - 1)
+
+    with client(settings) as http:
+        refused = save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: short})
+        auth: McpAuth = http.app.state.mcp_auth
+
+    assert refused.status_code == 422
+    assert str(MINIMUM_TOKEN_CHARS) in refused.text
+    assert auth.required is False
+    assert stored_rows(settings) == {}
+
+
+def test_a_rejected_token_is_not_put_back_into_the_box(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    short = "s3cret-but-far-too-short"
+
+    with client(settings) as http:
+        refused = save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: short})
+
+    assert short not in refused.text
+
+
+def test_the_token_reaches_no_page_no_log_and_no_cookie(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    settings = settings_for(tmp_path)
+
+    with caplog.at_level(logging.DEBUG), client(settings) as http:
+        saved = save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert PAGE_TOKEN not in body
+    assert PAGE_TOKEN not in caplog.text
+    assert PAGE_TOKEN not in str(saved.headers)
+    # Nor the digest, which is not a secret and is also not a thing anybody can
+    # do anything with — a page printing 64 hex characters invites the reader to
+    # think it is the token.
+    assert digest_of(PAGE_TOKEN).hex() not in body
+
+
+def test_the_card_says_a_token_is_stored_without_showing_it(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert "Replace the token" in body
+    assert "A token is stored" in body
+
+
+def test_the_card_offers_to_generate_one(tmp_path: Path) -> None:
+    """Hidden until forms.js unhides it: a button that fills a box needs a script."""
+    with client(settings_for(tmp_path)) as http:
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert f'data-generate="{MCP_TOKEN_FIELD}"' in body
+    assert "Generate one" in body
+
+
+def test_the_card_names_the_endpoint_it_guards(tmp_path: Path) -> None:
+    """A card that said "the endpoint" would leave the operator to go and check."""
+    settings = settings_for(tmp_path, '[mcp]\npath = "/gw"\n')
+
+    with client(settings) as http:
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert "Require a bearer token on /gw" in body
+
+
+def test_the_card_says_it_is_not_the_admin_login(tmp_path: Path) -> None:
+    """Two login-shaped forms on one page invite exactly that assumption."""
+    with client(settings_for(tmp_path)) as http:
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert "This is not the admin login" in body
+
+
+def test_opening_the_endpoint_warns_in_the_words_the_log_uses(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        opened = save_token(http)
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert opened.status_code == 303
+    assert "requires no token" in body
+    assert "Configuration page" in body
+
+
+def test_opening_it_says_which_of_the_three_things_is_true(tmp_path: Path) -> None:
+    """Only one of them is true at a time, and one of them is a claim.
+
+    Telling an operator the stored token was kept when nothing was stored is a
+    small lie, and a card that tells one is a card nobody reads afterwards.
+    """
+    nothing_anywhere = settings_for(tmp_path / "bare")
+    from_the_file = settings_for(tmp_path / "file", '[mcp]\nauth_token = "from-the-file"\n')
+    path = nothing_anywhere.mcp.path
+
+    with client(nothing_anywhere) as http:
+        save_token(http)
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+    assert MCP_TOKEN_OPENED_PLAIN.format(path=path) in body
+
+    with client(from_the_file) as http:
+        save_token(http)
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+    assert MCP_TOKEN_OPENED_OVER_FILE.format(path=path) in body
+
+    with client(nothing_anywhere) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        save_token(http)
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+    assert MCP_TOKEN_OPENED.format(path=path) in body
+
+
+def test_opening_it_under_the_built_in_server_says_the_stronger_thing(
+    tmp_path: Path,
+) -> None:
+    """An open endpoint means more when the gateway's own tools are on it.
+
+    Whoever can reach the port can then register upstreams here and store
+    credentials in this gateway, which is builtin/seed.py's wording rather than
+    the plain one — said by the switch that opens the endpoint under it, not
+    only by the toggle that enabled it.
+    """
+    settings = settings_for(tmp_path)
+
+    with client(settings) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        http.app.state.builtin = Seeded(server_id=1, enabled=True)
+        save_token(http)
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert "register upstream services" in body
+
+
+def test_opening_it_without_the_built_in_server_says_the_plain_thing(
+    tmp_path: Path,
+) -> None:
+    with client(settings_for(tmp_path)) as http:
+        http.app.state.builtin = Seeded(server_id=1, enabled=False)
+        save_token(http)
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert "requires no token" in body
+    assert "register upstream services" not in body
+
+
+def test_the_card_says_which_of_the_three_states_it_is_in(tmp_path: Path) -> None:
+    """Open, the file's, or this page's. An operator has to be able to tell."""
+    open_gateway = settings_for(tmp_path / "open")
+    from_the_file = settings_for(tmp_path / "file", '[mcp]\nauth_token = "from-the-file"\n')
+
+    with client(open_gateway) as http:
+        assert "Anyone who can reach /mcp" in http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    with client(from_the_file) as http:
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+    assert "[mcp].auth_token from the configuration file" in body
+
+    with client(open_gateway) as http:
+        save_token(http, **{MCP_ENABLED_FIELD: "true", MCP_TOKEN_FIELD: PAGE_TOKEN})
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+    assert "the token set here" in body

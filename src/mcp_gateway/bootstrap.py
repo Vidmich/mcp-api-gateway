@@ -62,7 +62,8 @@ data_dir = {data_dir}
 # password = "changeme"
 
 # /mcp is open until a token is set. While it stays commented out, anyone who
-# can reach the port can call every enabled operation.
+# can reach the port can call every enabled operation. This can also be set from
+# the Configuration page, which does not need a restart and overrides this.
 # [mcp]
 # auth_token = "put-a-long-random-string-here"
 """
@@ -253,23 +254,21 @@ def load_or_create_keys(settings: Settings) -> Keys:
 
 
 def log_startup_notices(settings: Settings, keys: Keys) -> None:
-    """Say out loud what is open and what must not be lost.
+    """Say out loud what must not be lost.
 
     An unauthenticated gateway is a legitimate way to run this, but it has to be
-    an obvious state rather than a quiet one (spec §3.1).
+    an obvious state rather than a quiet one (spec §3.1) — which is said where
+    it can be said accurately, not here.
 
-    Whether the *pages* are open is not decided here. This runs before the
-    database is open, and the admin account may be stored there rather than in
-    the config file (task 104), so that warning belongs to the one thing that
-    knows: :func:`mcp_gateway.web.account.warn_if_open`, at the moment the
-    account is resolved.
+    Neither of the two open doors is decided here, and for one reason: this runs
+    before the database, and either may be stored there rather than in the
+    config file. The admin account has been since task 104, and the MCP token
+    since task 126, so both warnings belong to the things that know —
+    :func:`mcp_gateway.web.account.warn_if_open` and
+    :func:`mcp_gateway.mcpsrv.auth.warn_if_open` — at the moment each is
+    resolved. What is left here is the one notice that is true before anything
+    is open.
     """
-    if not settings.mcp.auth_required:
-        logger.warning(
-            "%s requires no token: anyone who can reach it can call every enabled "
-            "operation. Set [mcp].auth_token to require a bearer token.",
-            settings.mcp.path,
-        )
     if keys.path is not None:
         logger.info(
             "Credential encryption key lives in %s. Back it up: losing it means every "

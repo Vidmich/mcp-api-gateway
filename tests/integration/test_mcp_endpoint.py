@@ -42,6 +42,7 @@ from mcp_gateway.crypto import BearerCredential, CredentialCipher, generate_key
 from mcp_gateway.db import repo
 from mcp_gateway.db.repo import NewServer, OperationInput
 from mcp_gateway.db.session import Database
+from mcp_gateway.mcpsrv.auth import ENDPOINT_OPEN_TO_ANYONE
 from mcp_gateway.mcpsrv.server import SERVER_NAME, app_announcer
 from mcp_gateway.openapi.schema import EXTENSION
 from mcp_gateway.refresh import refresh_server
@@ -58,6 +59,14 @@ DRAINED_STREAM = "ASGI callable returned without completing response."
 #: A deliberate notice about how this test's own gateway is configured, not a
 #: complaint about anything that happened to it.
 OPEN_PAGES = PAGES_OPEN_TO_ANYONE.split("{")[0]
+
+#: The same, for the other door: the gateway saying at startup that ``/mcp``
+#: is open, which is also how this test configured it. Said by
+#: :mod:`mcp_gateway.mcpsrv.auth` once the token in force is known rather
+#: than by ``bootstrap`` before the database is (task 126), which is what
+#: puts it inside the window these tests watch. The sentence begins with the
+#: path, so what is matched is everything after it.
+OPEN_ENDPOINT = ENDPOINT_OPEN_TO_ANYONE.split("}")[1]
 
 
 def free_port() -> int:
@@ -503,12 +512,13 @@ async def test_shutting_down_with_a_live_session_is_clean(
 ) -> None:
     """Nothing is left pending when a connected client is cut off mid-session.
 
-    Three of the voices in the log are not this test's business. ``mcp.client``
+    Four of the voices in the log are not this test's business. ``mcp.client``
     is its own client noticing the server has gone, which is the situation under
     test rather than a defect in it; :data:`DRAINED_STREAM` is uvicorn describing
     the SSE stream that ``sse-starlette`` cut short on the way down; and
-    :data:`OPEN_PAGES` is the gateway saying at startup that it has no admin
-    login, which is how this test configured it.
+    :data:`OPEN_PAGES` and :data:`OPEN_ENDPOINT` are the gateway saying at
+    startup that it has neither an admin login nor a bearer token, which is how
+    this test configured it.
     """
     async with AsyncExitStack() as client:
         gateway_stack = AsyncExitStack()
@@ -534,6 +544,7 @@ async def test_shutting_down_with_a_live_session_is_clean(
         and not record.name.startswith("mcp.client")
         and record.getMessage() != DRAINED_STREAM
         and not record.getMessage().startswith(OPEN_PAGES)
+        and OPEN_ENDPOINT not in record.getMessage()
     ]
     assert complaints == [], [record.getMessage() for record in complaints]
 

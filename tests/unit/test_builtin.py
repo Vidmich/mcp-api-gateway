@@ -59,6 +59,7 @@ from mcp_gateway.db.models import Base
 from mcp_gateway.db.repo import NewServer, OperationInput, ServerPatch
 from mcp_gateway.db.session import Database, open_database
 from mcp_gateway.mcpsrv import proxy, tools
+from mcp_gateway.mcpsrv.auth import FROM_DATABASE, McpAuth, configured, digest_of
 from mcp_gateway.mcpsrv.proxy import GATEWAY_ERROR, CallOutcome, Upstream
 from mcp_gateway.refresh import refresh_server
 from mcp_gateway.web.routes_ui import (
@@ -454,7 +455,7 @@ def test_the_warning_is_said_only_when_it_is_true(
     settings = a_settings(tmp_path, token)
     seeded = seed.Seeded(server_id=1, enabled=enabled_)
 
-    said = warn_if_open(settings, seeded)
+    said = warn_if_open(settings, seeded, configured(settings.mcp))
 
     assert (said is not None) is expected
     if said is not None:
@@ -464,9 +465,33 @@ def test_the_warning_is_said_only_when_it_is_true(
 
 def test_the_warning_reaches_the_log(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING, logger="mcp_gateway.builtin.seed"):
-        warn_if_open(a_settings(tmp_path), seed.Seeded(server_id=1, enabled=True))
+        settings = a_settings(tmp_path)
+        warn_if_open(settings, seed.Seeded(server_id=1, enabled=True), McpAuth())
 
     assert any("register upstream services" in record.message for record in caplog.records)
+
+
+def test_a_token_stored_on_the_page_silences_it(tmp_path: Path) -> None:
+    """The file has no token and the endpoint is guarded anyway (task 126).
+
+    Reading ``settings`` here would warn about a door that is shut.
+    """
+    settings = a_settings(tmp_path)
+    seeded = seed.Seeded(server_id=1, enabled=True)
+
+    stored = McpAuth(digest=digest_of("x" * 32), source=FROM_DATABASE)
+
+    assert warn_if_open(settings, seeded, stored) is None
+
+
+def test_opening_it_from_the_page_brings_the_warning_back(tmp_path: Path) -> None:
+    """And the file has one, which is the other way round (task 126)."""
+    settings = a_settings(tmp_path, "a-long-random-string")
+    seeded = seed.Seeded(server_id=1, enabled=True)
+
+    opened = McpAuth(source=FROM_DATABASE)
+
+    assert warn_if_open(settings, seeded, opened) is not None
 
 
 def test_the_toggle_and_the_banner_say_the_same_sentence() -> None:
