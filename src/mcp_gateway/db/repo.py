@@ -326,6 +326,31 @@ class MetricSlice(BaseModel):
     duration_ms_sum: int = 0
 
 
+class MetricRow(BaseModel):
+    """One stored bucket, at the resolution it was written in (task 125).
+
+    :class:`MetricSlice` is what a chart asks for and is coarser than what is
+    stored; this is what the export asks for and is exactly what is stored. Its
+    ``bucket_start`` is therefore aligned to ``metrics.bucket_seconds`` and not
+    to anything a caller chose, which is what lets a destination be told how
+    long the interval behind each number was.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    bucket_start: dt.datetime
+    #: ``None`` for ``tools_list``, and for a deleted server it is still the id
+    #: it had: these rows outlive the row they point at.
+    server_id: int | None = None
+    kind: MetricKind = "tool_call"
+
+    calls: int = 0
+    errors: int = 0
+    bytes_out: int = 0
+    bytes_in: int = 0
+    duration_ms_sum: int = 0
+
+
 class CallErrorView(BaseModel):
     """One entry of the recent-failures list (spec §4, §7.2).
 
@@ -1487,6 +1512,54 @@ async def metric_slices(
             duration_ms_sum=duration or 0,
         )
         for seconds, server_id, kind, calls, errors, bytes_out, bytes_in, duration in rows
+    ]
+
+
+async def metric_rows_after(
+    session: AsyncSession,
+    *,
+    after: dt.datetime | None,
+    until: dt.datetime,
+    limit: int,
+) -> list[MetricRow]:
+    """Stored buckets in ``(after, until]``, oldest first, as they are on disk.
+
+    The other half of :func:`metric_slices`, and deliberately not the same
+    function. A chart asks "what did the last seven days look like" and wants
+    the answer re-bucketed to something it can draw; the export asks "what has
+    happened since the last thing I sent" and wants the rows themselves, because
+    a destination that is handed a coarser summary can never be joined back to
+    the finer one (task 125).
+
+    Half-open on the left because ``after`` is a bucket start that has already
+    been exported, and inclusive on the right because ``until`` is the newest
+    bucket whose window has closed. ``limit`` bounds a catch-up: a gateway whose
+    destination has been unreachable for a day has a day of rows waiting, and
+    reading all of them into memory to send them is the one way this could cost
+    more than the traffic it is counting.
+    """
+    statement = select(MetricBucket).where(MetricBucket.bucket_start <= until)
+    if after is not None:
+        statement = statement.where(MetricBucket.bucket_start > after)
+    rows = await session.scalars(
+        # By id within a bucket start, so that a limit which lands mid-timestamp
+        # cuts the same way twice and the caller's trimming is repeatable.
+        statement.order_by(MetricBucket.bucket_start, MetricBucket.id).limit(limit)
+    )
+    return [
+        MetricRow(
+            bucket_start=row.bucket_start,
+            server_id=row.server_id,
+            # The column is a plain string; the three values it may hold are the
+            # ones the model names, and are written through :class:`BucketDelta`.
+            kind=cast("MetricKind", row.kind),
+            calls=row.calls,
+            errors=row.errors,
+            bytes_out=row.bytes_out,
+            bytes_in=row.bytes_in,
+            duration_ms_sum=row.duration_ms_sum,
+        )
+        for row in rows
     ]
 
 

@@ -15,7 +15,9 @@ thing that must work when the browser cannot help.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from http.cookies import SimpleCookie
 from pathlib import Path
@@ -27,11 +29,23 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway.app import create_app
+from mcp_gateway.bootstrap import Keys
 from mcp_gateway.cli import main
 from mcp_gateway.config import Settings, load_settings
+from mcp_gateway.crypto import CredentialCipher, generate_key
 from mcp_gateway.db import repo
 from mcp_gateway.db.migrate import upgrade_to_head
 from mcp_gateway.db.session import database_service, open_database
+from mcp_gateway.export import (
+    API_KEY_KEY,
+    DESTINATION_KEY,
+    NEWRELIC,
+    REGION_KEY,
+    SERVICE_NAME_KEY,
+    ExportConfig,
+    Status,
+    export_service,
+)
 from mcp_gateway.scheduler import INTERVAL_KEY
 from mcp_gateway.web import account
 from mcp_gateway.web.account import (
@@ -48,6 +62,22 @@ from mcp_gateway.web.configuration import (
     AUTO_REFRESH_PATH,
     DEFAULT_SOURCE,
     ENABLED_FIELD,
+    EXPORT_DISABLED,
+    EXPORT_ENABLED_FIELD,
+    EXPORT_KEY_FIELD,
+    EXPORT_KEY_FORGOTTEN,
+    EXPORT_KEY_PATH,
+    EXPORT_KEY_REQUIRED,
+    EXPORT_PATH,
+    EXPORT_REGION_FIELD,
+    EXPORT_REGION_UNKNOWN,
+    EXPORT_REPLACE_FIELD,
+    EXPORT_SERVICE_FIELD,
+    EXPORT_STATUS_FAILING,
+    EXPORT_STATUS_SENT,
+    EXPORT_STATUS_STOPPED,
+    EXPORT_STATUS_WAITING,
+    EXPORT_UNENCRYPTABLE,
     FILE_SOURCE,
     INTERVAL_FIELD,
     INTERVAL_INVALID,
@@ -57,6 +87,7 @@ from mcp_gateway.web.configuration import (
     TOKEN_UNSET,
     USERNAME_FIELD,
     USERNAME_REQUIRED,
+    export_status,
     facts,
     how_often,
     interval_words,
@@ -666,3 +697,362 @@ def test_the_reset_flag_does_not_start_the_gateway(tmp_path: Path, serve_calls: 
     assert serve_calls == []
     # Nor does it write a key file on the way past.
     assert not (settings.server.data_dir / "keys.json").exists()
+
+
+# --- the metrics export ------------------------------------------------------
+#
+# Task 125. The card is asserted about from the outside, like the other two, and
+# the one thing that is not visible from there — that the key is ciphertext in
+# the table — is read back through the repository.
+
+
+#: Obvious when it turns up somewhere it should not be.
+LICENCE_KEY = "NRAK-THIS-IS-THE-SECRET"
+
+
+def exporting_client(settings: Settings) -> TestClient:
+    """A gateway with an encryption key, which storing a licence key needs."""
+    app = create_app(
+        settings,
+        Keys(SECRET_KEY, generate_key(), path=None),
+        services=[database_service(settings), admin_service, export_service],
+    )
+    return TestClient(app)
+
+
+def save_export(http: TestClient, **form: str) -> Any:
+    return http.post(EXPORT_PATH, data=form, headers=HTML, follow_redirects=False)
+
+
+def test_the_card_is_off_and_offers_no_key_to_replace(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    with exporting_client(settings) as http:
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert "Metrics export" in body
+    assert EXPORT_ENABLED_FIELD in body
+    assert "Replace the licence key" not in body
+    assert "Forget the stored licence key" not in body
+
+
+def test_saving_a_key_puts_the_export_in_force_without_a_restart(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    with exporting_client(settings) as http:
+        saved = save_export(
+            http,
+            **{
+                EXPORT_ENABLED_FIELD: "true",
+                EXPORT_REGION_FIELD: "eu",
+                EXPORT_SERVICE_FIELD: "gateway-a",
+                EXPORT_KEY_FIELD: LICENCE_KEY,
+            },
+        )
+        assert saved.status_code == 303
+        config: ExportConfig = http.app.state.export
+        assert config.destination == NEWRELIC
+        assert config.region == "eu"
+        assert config.service_name == "gateway-a"
+        assert config.enabled and config.stored
+
+    rows = in_the_database(settings, repo.all_settings)
+    assert rows[DESTINATION_KEY] == NEWRELIC
+    assert rows[REGION_KEY] == "eu"
+    assert rows[SERVICE_NAME_KEY] == "gateway-a"
+    # Stored, and stored encrypted.
+    assert LICENCE_KEY not in rows[API_KEY_KEY]
+    cipher = CredentialCipher(generate_key())
+    del cipher  # a different key would not read it; the app's does, below.
+
+
+def test_the_stored_key_is_the_key_that_was_typed(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    with exporting_client(settings) as http:
+        save_export(
+            http,
+            **{
+                EXPORT_ENABLED_FIELD: "true",
+                EXPORT_REGION_FIELD: "us",
+                EXPORT_SERVICE_FIELD: "gateway-a",
+                EXPORT_KEY_FIELD: LICENCE_KEY,
+            },
+        )
+        cipher: CredentialCipher = http.app.state.cipher
+
+    stored = in_the_database(settings, repo.all_settings)[API_KEY_KEY]
+    assert cipher.decrypt_text(stored) == LICENCE_KEY
+
+
+def test_the_key_is_never_rendered_back(tmp_path: Path) -> None:
+    """Not in the form, not in the read-only table, not anywhere on the page."""
+    settings = settings_for(tmp_path)
+    with exporting_client(settings) as http:
+        save_export(
+            http,
+            **{
+                EXPORT_ENABLED_FIELD: "true",
+                EXPORT_REGION_FIELD: "us",
+                EXPORT_SERVICE_FIELD: "gateway-a",
+                EXPORT_KEY_FIELD: LICENCE_KEY,
+            },
+        )
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert LICENCE_KEY not in body
+    # And the read-only table below says nothing about it either.
+    assert "export.api_key" not in body
+    # What it does say is that there is one, and offers to replace it.
+    assert "Replace the licence key" in body
+    assert EXPORT_REPLACE_FIELD in body
+
+
+def test_a_key_in_the_config_file_never_reaches_the_page(tmp_path: Path) -> None:
+    settings = settings_for(
+        tmp_path,
+        f'[export]\ndestination = "newrelic"\napi_key = "{LICENCE_KEY}"\n',
+    )
+    with exporting_client(settings) as http:
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert LICENCE_KEY not in body
+    assert "export.api_key" not in body
+    # The card says the file's key is in use and that saving here replaces it,
+    # rather than offering to keep a key this page cannot store.
+    assert "configuration file&#39;s key is in use" in body
+
+
+def test_switching_the_export_on_without_a_key_is_refused(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    with exporting_client(settings) as http:
+        refused = save_export(
+            http,
+            **{
+                EXPORT_ENABLED_FIELD: "true",
+                EXPORT_REGION_FIELD: "us",
+                EXPORT_SERVICE_FIELD: "gateway-a",
+                EXPORT_KEY_FIELD: "",
+            },
+        )
+
+    assert refused.status_code == 422
+    assert EXPORT_KEY_REQUIRED in refused.text
+    assert in_the_database(settings, repo.all_settings) == {}
+
+
+def test_switching_it_off_keeps_the_key_and_says_so(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    with exporting_client(settings) as http:
+        save_export(
+            http,
+            **{
+                EXPORT_ENABLED_FIELD: "true",
+                EXPORT_REGION_FIELD: "us",
+                EXPORT_SERVICE_FIELD: "gateway-a",
+                EXPORT_KEY_FIELD: LICENCE_KEY,
+            },
+        )
+        off = save_export(http, **{EXPORT_REGION_FIELD: "us", EXPORT_SERVICE_FIELD: "gateway-a"})
+        assert off.status_code == 303
+        assert not http.app.state.export.enabled
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert EXPORT_DISABLED in body
+    assert API_KEY_KEY in in_the_database(settings, repo.all_settings)
+    # And switching it back on does not ask for the key a second time.
+    with exporting_client(settings) as http:
+        back = save_export(
+            http,
+            **{
+                EXPORT_ENABLED_FIELD: "true",
+                EXPORT_REGION_FIELD: "us",
+                EXPORT_SERVICE_FIELD: "gateway-a",
+            },
+        )
+        assert back.status_code == 303
+        assert http.app.state.export.enabled
+
+
+def test_forgetting_the_key_removes_it(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    with exporting_client(settings) as http:
+        save_export(
+            http,
+            **{
+                EXPORT_ENABLED_FIELD: "true",
+                EXPORT_REGION_FIELD: "us",
+                EXPORT_SERVICE_FIELD: "gateway-a",
+                EXPORT_KEY_FIELD: LICENCE_KEY,
+            },
+        )
+        forgotten = http.post(EXPORT_KEY_PATH, headers=HTML, follow_redirects=True)
+        assert forgotten.status_code == 200
+        assert EXPORT_KEY_FORGOTTEN in forgotten.text
+        assert not http.app.state.export.enabled
+
+    assert API_KEY_KEY not in in_the_database(settings, repo.all_settings)
+
+
+def test_a_gateway_with_no_encryption_key_refuses_to_store_one(tmp_path: Path) -> None:
+    """Storing it in the clear is not the lesser of the two evils."""
+    settings = settings_for(tmp_path)
+    # ``client`` builds an app without keys, so there is no cipher on it.
+    with client(settings) as http:
+        refused = save_export(
+            http,
+            **{
+                EXPORT_ENABLED_FIELD: "true",
+                EXPORT_REGION_FIELD: "us",
+                EXPORT_SERVICE_FIELD: "gateway-a",
+                EXPORT_KEY_FIELD: LICENCE_KEY,
+            },
+        )
+
+    assert refused.status_code == 422
+    assert EXPORT_UNENCRYPTABLE in refused.text
+    assert in_the_database(settings, repo.all_settings) == {}
+
+
+def test_the_page_needs_a_session_for_the_export_too(tmp_path: Path) -> None:
+    settings = locked(tmp_path)
+    with exporting_client(settings) as http:
+        assert http.post(EXPORT_PATH, follow_redirects=False).status_code == 303
+        assert http.post(EXPORT_KEY_PATH, follow_redirects=False).status_code == 303
+
+
+# --- what the card says about itself -----------------------------------------
+
+
+def test_a_gateway_that_has_not_sent_anything_yet_says_so() -> None:
+    assert export_status(Status()) == (EXPORT_STATUS_WAITING, False)
+
+
+def test_a_pass_that_carried_something_is_reported_with_its_size() -> None:
+    at = dt.datetime.now(dt.UTC)
+    sentence, failing = export_status(Status(at=at, points=40, rows=8), now=at)
+    assert sentence == EXPORT_STATUS_SENT.format(points=40, rows=8, ago="just now")
+    assert not failing
+
+
+def test_a_pass_with_nothing_to_send_is_not_reported_as_one_that_sent_nought() -> None:
+    at = dt.datetime.now(dt.UTC)
+    sentence, failing = export_status(Status(at=at), now=at)
+    assert "nothing new to send" in sentence
+    assert not failing
+
+
+def test_a_failure_is_bad_news_and_says_which() -> None:
+    at = dt.datetime.now(dt.UTC)
+    sentence, failing = export_status(Status(failure="HTTP 503 from there", failed_at=at), now=at)
+    assert sentence == EXPORT_STATUS_FAILING.format(ago="just now", failure="HTTP 503 from there")
+    assert failing
+
+
+def test_a_stopped_export_says_how_to_start_it_again() -> None:
+    at = dt.datetime.now(dt.UTC)
+    sentence, failing = export_status(
+        Status(failure="HTTP 403 from there", failed_at=at, stopped=True), now=at
+    )
+    assert sentence == EXPORT_STATUS_STOPPED.format(ago="just now", failure="HTTP 403 from there")
+    assert failing
+
+
+def test_no_export_loop_is_no_sentence_at_all(tmp_path: Path) -> None:
+    """Rather than a reassuring one: an app running no export has nothing to
+    report, and "nothing sent yet" would be a promise it is not keeping."""
+    assert export_status(None) is None
+
+    settings = settings_for(tmp_path)
+    with client(settings) as http:  # no export service on this one
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+    assert EXPORT_STATUS_WAITING not in body
+
+
+def test_the_status_reaches_the_page(tmp_path: Path) -> None:
+    settings = settings_for(tmp_path)
+    with exporting_client(settings) as http:
+        http.app.state.export_service.status = Status(
+            failure="HTTP 403 from metric-api.newrelic.com",
+            failed_at=dt.datetime.now(dt.UTC),
+            stopped=True,
+        )
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    assert "HTTP 403 from metric-api.newrelic.com" in body
+    assert "form__note--warning" in body
+
+
+def test_a_region_that_names_no_endpoint_is_refused(tmp_path: Path) -> None:
+    """The select offers two, so reaching this takes a submission that did not
+    come from the page — and a stored region naming no endpoint is one the
+    background loop could only fail on."""
+    settings = settings_for(tmp_path)
+    with exporting_client(settings) as http:
+        refused = save_export(
+            http,
+            **{
+                EXPORT_ENABLED_FIELD: "true",
+                EXPORT_REGION_FIELD: "mars",
+                EXPORT_SERVICE_FIELD: "gateway-a",
+                EXPORT_KEY_FIELD: LICENCE_KEY,
+            },
+        )
+
+    assert refused.status_code == 422
+    assert EXPORT_REGION_UNKNOWN in refused.text
+    assert in_the_database(settings, repo.all_settings) == {}
+
+
+# --- the attributes the macros render ----------------------------------------
+#
+# Not about this page in particular. The templates render with ``trim_blocks``
+# and ``lstrip_blocks``, so two conditional attributes on consecutive lines come
+# out with nothing between them — ``checkeddata-reveal="..."``, which a browser
+# accepts and silently leaves unticked. Both cards on this page are built out of
+# those macros, and this page is where it was found (task 125).
+
+
+def test_a_switch_that_is_on_renders_checked_as_an_attribute_of_its_own(
+    tmp_path: Path,
+) -> None:
+    settings = locked(tmp_path)
+    store(settings, **{ENABLED_KEY: "true", USERNAME_KEY: "root", PASSWORD_HASH_KEY: CHEAP})
+
+    with exporting_client(settings) as http:
+        sign_in(http, "root", "s3cret")
+        save_export(
+            http,
+            **{
+                EXPORT_ENABLED_FIELD: "true",
+                EXPORT_REGION_FIELD: "us",
+                EXPORT_SERVICE_FIELD: "gateway-a",
+                EXPORT_KEY_FIELD: LICENCE_KEY,
+            },
+        )
+        body = http.get(CONFIGURATION_PATH, headers=HTML).text
+
+    # Both switches on this page are on, and both govern a reveal panel.
+    assert body.count("checked data-reveal=") == 2
+    assert "checkeddata-reveal" not in body
+
+
+def test_no_two_attributes_are_rendered_as_one(tmp_path: Path) -> None:
+    """Every combination the macros offer, rendered through the environment the
+    pages actually use — the whitespace settings are what caused this, and they
+    live on that environment rather than in the templates."""
+    settings = settings_for(tmp_path)
+    environment = app_for(settings).state.shell.templates.env
+    macros = environment.get_template("partials/field.html").module
+
+    rendered = [
+        macros.switch("s", "L", checked=True, reveal="g", error="bad"),
+        macros.field("f", "L", placeholder="1440", required=True, error="bad"),
+        macros.choice("c", "L", [("a", "A")], reveal="g", error="bad"),
+        macros.secret("k", "L", error="bad"),
+    ]
+    for html in rendered:
+        # A valueless attribute followed straight by a named one, which is how
+        # "checked" and "data-reveal" became "checkeddata-reveal".
+        assert not re.search(r"(checked|required|selected)[A-Za-z-]+=", str(html)), html
+    assert "checked data-reveal" in str(rendered[0])
+    assert 'placeholder="1440" ' in str(rendered[1])
+    assert "required aria-invalid" in str(rendered[1])
+    assert 'data-reveal="g" aria-invalid' in str(rendered[2])

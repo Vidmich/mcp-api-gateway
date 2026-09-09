@@ -130,6 +130,38 @@ HTTP.
 Nothing bounds how fast a client may call tools, or how much traffic the gateway
 will generate against an upstream on their behalf.
 
+## What the metrics export sends
+
+Off unless you turn it on, in `[export]` or on the Configuration page. While it
+is off, no service runs and nothing leaves the process.
+
+Switched on, it pushes the same counters the monitoring page draws to a third
+party — today, New Relic — and it is worth reading what that means before
+flipping the switch rather than after. Every push carries:
+
+- the bucket's start time, and how long the bucket covers;
+- the counters in it: calls, errors, bytes sent, bytes received, total duration;
+- what kind of bucket it is: a tool call, a `tools/list`, or a throttled call;
+- the id and **display name** of the server the bucket belongs to;
+- the service name you configured.
+
+It never carries a tool name, a call's arguments, a response, an upstream URL, a
+credential, or anything from the recent-failures list — not even the composed
+error text, which is safe to store here and is still a different question from a
+count. The tables it reads were written to keep request content out of them, and
+this keeps it out of what leaves the machine as well.
+
+The licence key is stored in the `settings` table encrypted with the key from
+`keys.json`, the same one that protects upstream credentials — so everything in
+[gap 3](#3-anyone-holding-keysjson-can-read-every-stored-credential) applies to
+it too. It is never rendered back into the page, never written to a log line,
+and never reported in the read-only table of settings in force. **Forget the
+stored licence key** on the Configuration page deletes it.
+
+The connection is HTTPS to New Relic's own ingest endpoint, chosen by `region`
+rather than by anything a stored value could point at: there is no way to aim
+this at an arbitrary host from the database.
+
 ## Running it somewhere real
 
 **Bind to loopback if you possibly can.** If the only client is an MCP client on

@@ -81,4 +81,5 @@ names its dependencies; none of them is needed for v1 to ship.
 | 122 | [The zero on the Sent total, and the charts Back leaves blank](122-sent-bytes-and-the-charts-back-leaves-blank.md) | 11 · UI polish |
 | 123 | [Charts that do not draw until something else moves](123-charts-that-do-not-draw-until-something-else-moves.md) | 11 · UI polish |
 | 124 | [Keep the canvas, swap the numbers](124-keep-the-canvas-and-swap-the-numbers.md) | 11 · UI polish |
+| 125 | [Sending the numbers on](125-metrics-export-to-new-relic.md) | 14 · Observability |
 

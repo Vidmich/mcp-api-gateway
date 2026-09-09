@@ -70,6 +70,9 @@ ILLUSTRATIVE = frozenset(
         # Carries the running version, so it cannot be pinned here. Checked for
         # its shape instead, below.
         ("http", "user_agent"),
+        # The default is no export at all, and an example of a section nobody
+        # has to write is an example showing what to write in it (task 125).
+        ("export", "destination"),
     }
 )
 

@@ -33,6 +33,8 @@ from mcp_gateway.builtin.seed import builtin_service
 from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db.session import database_service
+from mcp_gateway.export import ExportConfig, export_service
+from mcp_gateway.export import resolve as resolve_export
 from mcp_gateway.health import Watcher, health_service
 from mcp_gateway.limits import Limiter
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
@@ -72,7 +74,13 @@ async def healthz(request: Request) -> Health:
     return health_report(request.app.state.settings, request.app.state.started_at)
 
 
-def startup_banner(settings: Settings, keys: Keys | None = None, *, admin: AdminAuth | None) -> str:
+def startup_banner(
+    settings: Settings,
+    keys: Keys | None = None,
+    *,
+    admin: AdminAuth | None,
+    export: ExportConfig | None = None,
+) -> str:
     """Summarise the resolved configuration for the operator, without secrets.
 
     ``admin`` is passed rather than read off ``settings`` because the account can
@@ -80,6 +88,11 @@ def startup_banner(settings: Settings, keys: Keys | None = None, *, admin: Admin
     file would be telling an operator to change the wrong thing. Keyword-only and
     without a default, so that no caller can leave it out and quietly report an
     open gateway.
+
+    ``export`` has a default, because it can: the state it describes when it is
+    missing is "nothing is being sent anywhere", which is the harmless one. It
+    is here at all because an operator who has turned the export on wants the
+    startup log to agree with them (task 125), and never carries the key.
     """
     stored = None if keys is None else keys.path
     key_file = stored or "none (keys come from the config)"
@@ -93,6 +106,9 @@ def startup_banner(settings: Settings, keys: Keys | None = None, *, admin: Admin
             f"mcp endpoint: {settings.mcp.path}"
             + (" (bearer token required)" if settings.mcp.auth_required else " (open)"),
             "admin login:  " + _admin_line(admin),
+            # "usage" rather than "metrics", so the label fits the column the
+            # five above it line up in. They are the same counts either way.
+            "usage export: " + (export or ExportConfig()).summary,
         ]
     )
 
@@ -166,7 +182,12 @@ def _build_lifespan(
             # what reads the stored admin account (task 104): a banner logged
             # first would describe the config file rather than what is actually
             # in force, which is the one thing it is for.
-            logger.info("%s", startup_banner(app.state.settings, keys, admin=app.state.admin))
+            logger.info(
+                "%s",
+                startup_banner(
+                    app.state.settings, keys, admin=app.state.admin, export=app.state.export
+                ),
+            )
             logger.debug("Startup complete: %d background service(s)", len(services))
             yield
             logger.info("Shutting down")
@@ -230,6 +251,15 @@ def create_app(
     app.state.limits = Limiter()
     #: Set by the retention service; ``None`` in an app that does not run one.
     app.state.retention = None
+    #: Where the usage counters are pushed, if anywhere (task 125). The config
+    #: file's answer to begin with, for the reason ``mount_admin`` puts the
+    #: file's account in place: the table that may override it is not open yet,
+    #: and ``export_service`` reads it over the top of this as the app starts.
+    #: It never holds the licence key — see :mod:`mcp_gateway.export`.
+    app.state.export = resolve_export(settings, None)
+    #: Set by the export service; ``None`` in an app that does not run one, and
+    #: then nothing is sent however the export is configured.
+    app.state.export_service = None
     #: Held by every refresh, whoever started it, so that two of the same server
     #: never overlap (spec §8). Built here rather than by the scheduler service,
     #: because the button on the page needs it in an app that runs no scheduler.
@@ -304,9 +334,10 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     a trip written while nothing could be told about it would leave a client
     holding a listing that has stopped being true.
 
-    The retention purge goes last, which makes it the first thing stopped.
-    Nothing else needs it, deleting rows on the way out would only delay a
-    shutdown, and every row it did not get to is still there for the next start.
+    The metrics export and the retention purge go last, which makes them the
+    first things stopped. Nothing else needs either of them; a window the export
+    did not reach is still in the table for the next start, exactly as a row the
+    purge did not delete is, and a shutdown should wait on neither.
 
     Tests that want an inert app pass their own list instead.
     """
@@ -319,6 +350,7 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
         mcp_service,
         health_service,
         refresh_service,
+        export_service,
         retention_service,
     )
 

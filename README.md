@@ -20,6 +20,9 @@ live on the next `tools/list`.
 - **Configuration page** — the gateway's own settings: how often specs are
   re-read, who has to sign in, and everything else in force with the layer it
   came from.
+- **Optional metrics export** — push the same counters to New Relic, so a
+  gateway going quiet is noticed by whatever notices everything else going
+  quiet. Off unless you turn it on; counts only, never request content.
 - **A built-in server, off by default** — switch it on and an MCP client can
   preview a spec, register an upstream and choose its operations without a
   human opening the UI. It cannot delete a server or read a stored credential.

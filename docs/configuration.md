@@ -116,6 +116,11 @@ This is the layer to reach for when a secret should not sit in a file — see
 | `http.timeout_seconds` | `30.0` | `MCP_API_GATEWAY_HTTP__TIMEOUT_SECONDS` | — |
 | `http.max_response_bytes` | `5242880` | `MCP_API_GATEWAY_HTTP__MAX_RESPONSE_BYTES` | — |
 | `http.user_agent` | `"mcp-api-gateway/<version>"` | `MCP_API_GATEWAY_HTTP__USER_AGENT` | — |
+| `export.destination` | `""` *(no export)* | `MCP_API_GATEWAY_EXPORT__DESTINATION` | — |
+| `export.region` | `"us"` | `MCP_API_GATEWAY_EXPORT__REGION` | — |
+| `export.api_key` | `""` | `MCP_API_GATEWAY_EXPORT__API_KEY` | — |
+| `export.service_name` | `"mcp-api-gateway"` | `MCP_API_GATEWAY_EXPORT__SERVICE_NAME` | — |
+| `export.interval_seconds` | `60` | `MCP_API_GATEWAY_EXPORT__INTERVAL_SECONDS` | — |
 
 Three flags are not settings and so are not in the table: `--config`, which
 chooses the file the other layers are merged onto; `--version`, which prints and
@@ -131,13 +136,21 @@ flag, or the default. It is the quickest answer to "why is this not what my file
 says", and nothing secret appears on it: the bearer token is reported as *set* or
 *not set*, and the two keys in `[security]` are not reported at all.
 
-Two of those values can also be *changed* there, without a restart, because both
-are stored in the database and read where they are used:
+Three of those values can also be *changed* there, without a restart, because
+each is stored in the database and read where it is used:
 
 | Setting | Stored as | What the file's value becomes |
 |---|---|---|
 | The auto-refresh interval | `refresh.auto_refresh_interval_minutes` | the value in force again once the box is emptied |
 | The admin account | `admin.enabled`, `admin.username`, `admin.password_hash` | ignored entirely while an account is saved |
+| The metrics export | `export.destination`, `export.region`, `export.service_name`, `export.api_key` | ignored entirely while an export is saved |
+
+The licence key is the one of those that is a secret, and it is treated as one:
+stored encrypted with the same key that protects upstream credentials, never
+rendered back — the card says *set* or *not set*, with a **Replace** box — and
+absent from the read-only table. Switching the export off leaves the key where
+it is, so switching it back on does not mean going to find it again; a **Forget
+the stored licence key** button deletes it.
 
 Nothing else on the page is a form. A setting that could not take effect until
 the next restart is shown and not offered, because a box that quietly does
@@ -309,6 +322,40 @@ it does not change what the charts look like at 30 days.
 keeps. The failure list under the charts is bounded separately, by count rather
 than age: the newest 500 rows, however old they are.
 
+### `[export]`
+
+```toml
+[export]
+destination = "newrelic"   # empty, the default, means no export at all
+region = "us"              # or "eu" — which New Relic ingest endpoint
+api_key = ""               # New Relic calls this an ingest licence key
+service_name = "mcp-api-gateway"
+interval_seconds = 60
+```
+
+Optional. With `destination` empty — the default — no export service runs, no
+request is made, and this section may as well not be there.
+
+Set it, and the same buckets the monitoring page draws are pushed to New Relic's
+Metric API every `interval_seconds`: call and error counts, bytes in and out,
+total duration and the metric kind, attributed to `service_name` and labelled
+with each server's name and id. Nothing else leaves the process — see
+[security.md](security.md#what-the-metrics-export-sends).
+
+`region` chooses the endpoint the licence key belongs to (`metric-api.newrelic.com`
+or `metric-api.eu.newrelic.com`); it cannot be worked out from the key.
+`service_name` is what the points are attributed to, so one New Relic account can
+hold two gateways without their lines being added together.
+
+The export remembers how far it has got in the database, so a restart resumes
+rather than resending, and a destination that is unreachable for a while catches
+up when it comes back — up to `metrics.retention_days`, beyond which the rows it
+missed have been purged. It starts from the moment it is switched on: buckets
+already in the table when you turn it on are not backfilled.
+
+`interval_seconds` is the one field of this section the Configuration page does
+not offer, so it always comes from here.
+
 ### `[health]`
 
 ```toml
@@ -383,6 +430,7 @@ cannot take the gateway down with it.
 | Whether agents may configure this gateway over MCP | the database, the built-in Gateway server's toggle on the server list |
 | The auto-refresh interval, once changed in the UI | the database, overriding `refresh.auto_refresh_interval_minutes` |
 | The admin account, once saved in the UI | the database, overriding `[admin]`; cleared with `--reset-admin` |
+| The metrics export, once saved in the UI | the database, overriding `[export]`; the key is stored encrypted |
 | Whether a server is enabled, including after the gateway disabled it | the database, toggled at `/ui/servers` |
 
 There is no reload: the file is read once, at startup, so changing it means

@@ -9,7 +9,7 @@
    With no script the panel is simply visible and the form submits the same
    fields — see static/js/forms.js. #}
 {% extends "base.html" %}
-{% from "partials/field.html" import field, secret, switch %}
+{% from "partials/field.html" import choice, field, secret, switch %}
 
 {% block title %}Configuration · mcp-api-gateway{% endblock %}
 
@@ -47,6 +47,51 @@
     <button class="button" type="submit">Save</button>
   </div>
 </form>
+
+{# The metrics export (task 125). Two nested reveal panels: the switch governs
+   the whole thing, and inside it "Replace the licence key" governs the box
+   holding one — which is only offered when there is a key to replace. With no
+   script both panels are simply visible and the form submits the same fields. #}
+<form class="card card--below form form--wide" method="post" action="{{ export.path }}">
+  <h2 class="card__title">Metrics export</h2>
+  <p class="form__lead">{{ export.lead }}</p>
+  {{ switch(export.enabled_field, "Send the usage counters to New Relic",
+            checked=export.enabled, reveal=export.group) }}
+  <div class="reveal" data-reveal-for="{{ export.group }}" data-reveal-when="on">
+    {{ choice(export.region_field, "Region", export.regions, export.region,
+              error=export.errors.get(export.region_field)) }}
+    {{ field(export.service_field, "Service name", value=export.service_name,
+             hint=export.service_hint,
+             error=export.errors.get(export.service_field)) }}
+    {% if export.has_key %}
+    {{ switch(export.replace_field, "Replace the licence key", reveal=export.key_group,
+              hint=export.key_hint) }}
+    <div class="reveal" data-reveal-for="{{ export.key_group }}" data-reveal-when="on">
+      {{ secret(export.key_field, "Licence key",
+                error=export.errors.get(export.key_field)) }}
+    </div>
+    {% else %}
+    {{ secret(export.key_field, "Licence key", hint=export.key_hint,
+              error=export.errors.get(export.key_field)) }}
+    {% endif %}
+    <p class="form__note">{{ export.what_is_sent }}</p>
+  </div>
+  {% if export.status %}
+  <p class="form__note{% if export.failing %} form__note--warning{% endif %}">{{ export.status }}</p>
+  {% endif %}
+  <div class="form-actions">
+    <button class="button" type="submit">Save</button>
+  </div>
+</form>
+
+{# Its own form, because it is its own decision: everywhere else on this page an
+   empty box means "leave this alone", so taking a secret away has to be asked
+   for rather than done by clearing a field. #}
+{% if export.has_key %}
+<form class="card-aside" method="post" action="{{ export.key_path }}">
+  <button class="button button--quiet" type="submit">Forget the stored licence key</button>
+</form>
+{% endif %}
 
 <section class="card card--below">
   <h2 class="card__title">Everything else in force</h2>

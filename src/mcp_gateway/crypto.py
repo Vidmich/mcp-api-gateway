@@ -195,6 +195,23 @@ def credential_state(auth_type: str, blob: bytes | None) -> CredentialState:
     return "stored" if has_credential(blob) else "missing"
 
 
+class SecretUnreadable(Exception):  # noqa: N818
+    """A stored secret that is not a credential could not be decrypted.
+
+    The sibling of :class:`CredentialUnreadable` for the one value that has no
+    server to point at (task 125). Its own class rather than that one with
+    ``server_id=None``, because the sentence an operator needs is different:
+    there is no row to re-enter a credential against, only a setting to set
+    again on the page that set it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "The stored secret cannot be read: it was encrypted with a different key, "
+            "or has been altered. Enter it again to replace it."
+        )
+
+
 class CredentialCipher:
     """Encrypts and decrypts credential payloads with one Fernet key.
 
@@ -251,3 +268,27 @@ class CredentialCipher:
             return parse_credential(payload)
         except CredentialInvalid as exc:
             raise CredentialUnreadable(server_id=server_id, reason=str(exc)) from None
+
+    def encrypt_text(self, value: str) -> str:
+        """Protect one opaque secret that is not an upstream credential.
+
+        The metrics export's licence key (task 125). It has no payload shape to
+        validate — it is a string somebody pasted out of another product's UI —
+        so it goes through Fernet without passing through the credential models,
+        and comes back as text because the row it is stored in is a
+        ``settings`` value rather than a blob column. Fernet's output is already
+        url-safe base64, so there is nothing to encode on top of it.
+        """
+        return self._fernet.encrypt(value.encode("utf-8")).decode("ascii")
+
+    def decrypt_text(self, blob: str) -> str:
+        """Read one back, or say it cannot be read.
+
+        Every way it can fail — the wrong key, a damaged value, a row edited by
+        hand — arrives as :class:`SecretUnreadable`, so a caller has one thing
+        to catch and one thing to tell the operator.
+        """
+        try:
+            return self._fernet.decrypt(blob.encode("ascii")).decode("utf-8")
+        except (InvalidToken, TypeError, ValueError, UnicodeError) as exc:
+            raise SecretUnreadable() from exc

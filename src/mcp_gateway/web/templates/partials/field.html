@@ -10,6 +10,16 @@
      {{ field("name", "Display name", value=fields.name, hint="Defaults to the spec's title.") }}
      {{ secret("token", "Token", error=errors.get("token")) }}
      {{ choice("auth_type", "Authentication", auth_options, fields.auth_type) }}
+
+   **Every conditional attribute below starts with a space, and has to.** The
+   environment renders with ``trim_blocks`` and ``lstrip_blocks`` (web/shell.py),
+   which take the newline after a block tag and the indentation before one — so
+   two conditional attributes on consecutive lines are emitted with nothing
+   between them. ``checked`` beside ``data-reveal`` came out as one attribute
+   called ``checkeddata-reveal``, which a browser accepts and silently leaves the
+   box unticked; ``placeholder`` beside ``aria-invalid`` did the same to a
+   rejected number field. The space inside the block is what separates them, and
+   an extra one where the attribute is absent costs nothing (task 125).
 #}
 
 {% macro _messages(name, hint, error) -%}
@@ -27,11 +37,11 @@
     name="{{ name }}"
     value="{{ value }}"
     {# What the box means when it is left empty, said where it is left empty. #}
-    {% if placeholder is not none %}placeholder="{{ placeholder }}"{% endif %}
+    {% if placeholder is not none %} placeholder="{{ placeholder }}"{% endif %}
     autocomplete="off"
     spellcheck="false"
-    {% if required %}required{% endif %}
-    {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+    {% if required %} required{% endif %}
+    {% if error %} aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
   />
   {{ _messages(name, hint, error) }}
 </label>
@@ -48,7 +58,7 @@
     name="{{ name }}"
     autocomplete="new-password"
     spellcheck="false"
-    {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+    {% if error %} aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
   />
   {{ _messages(name, hint, error) }}
 </label>
@@ -64,7 +74,7 @@
     rows="{{ rows }}"
     autocomplete="off"
     spellcheck="false"
-    {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+    {% if error %} aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
   ></textarea>
   {{ _messages(name, hint, error) }}
 </label>
@@ -81,9 +91,9 @@
     type="checkbox"
     name="{{ name }}"
     value="true"
-    {% if checked %}checked{% endif %}
-    {% if reveal %}data-reveal="{{ reveal }}"{% endif %}
-    {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+    {% if checked %} checked{% endif %}
+    {% if reveal %} data-reveal="{{ reveal }}"{% endif %}
+    {% if error %} aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
   />
   <span class="switch__label">{{ label }}</span>
   {{ _messages(name, hint, error) }}
@@ -98,8 +108,8 @@
   <select
     class="field__select"
     name="{{ name }}"
-    {% if reveal %}data-reveal="{{ reveal }}"{% endif %}
-    {% if error %}aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+    {% if reveal %} data-reveal="{{ reveal }}"{% endif %}
+    {% if error %} aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
   >
     {% for option, text in options %}
     <option value="{{ option }}"{% if option == value %} selected{% endif %}>{{ text }}</option>

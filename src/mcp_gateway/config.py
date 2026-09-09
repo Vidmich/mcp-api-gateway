@@ -172,6 +172,40 @@ class HttpSettings(_Section):
     user_agent: str = f"mcp-api-gateway/{__version__}"
 
 
+class ExportSettings(_Section):
+    """``[export]`` — an optional push of the usage counters to a monitoring
+    service (task 125).
+
+    Named for what it does rather than for who receives it, and holding one
+    destination's fields because there is one destination. It splits when there
+    are two; guessing at that shape now would only be guessing.
+
+    An empty ``destination`` is the default and means no export: nothing is
+    started, nothing is sent, and this section may as well not be there.
+    """
+
+    #: Where the counters go. Spelled as a closed set so that a typo is a
+    #: startup error naming the values that exist, rather than a gateway that
+    #: quietly exports nothing.
+    destination: Literal["", "newrelic"] = ""
+    #: Which of New Relic's two ingest endpoints the account belongs to.
+    region: Literal["us", "eu"] = "us"
+    #: New Relic calls this an ingest licence key. Kept out of the read-only
+    #: table on the Configuration page, and out of every log line.
+    api_key: str = ""
+    #: What the points are attributed to, so one account can hold two gateways
+    #: without their lines being added together.
+    service_name: str = "mcp-api-gateway"
+    #: How often a pass runs. Floored well above the flush interval: a pass that
+    #: ran faster than the counters are written would mostly find nothing.
+    interval_seconds: int = Field(default=60, ge=10)
+
+    @property
+    def configured(self) -> bool:
+        """Whether the file alone would export anything."""
+        return bool(self.destination and self.api_key)
+
+
 SECTION_MODELS: dict[str, type[_Section]] = {
     "server": ServerSettings,
     "admin": AdminSettings,
@@ -181,6 +215,7 @@ SECTION_MODELS: dict[str, type[_Section]] = {
     "metrics": MetricsSettings,
     "health": HealthSettings,
     "http": HttpSettings,
+    "export": ExportSettings,
 }
 
 
@@ -197,6 +232,7 @@ class Settings(BaseModel):
     metrics: MetricsSettings = Field(default_factory=MetricsSettings)
     health: HealthSettings = Field(default_factory=HealthSettings)
     http: HttpSettings = Field(default_factory=HttpSettings)
+    export: ExportSettings = Field(default_factory=ExportSettings)
 
     #: The config file that was actually read, or ``None`` when none existed.
     config_path: Path | None = None

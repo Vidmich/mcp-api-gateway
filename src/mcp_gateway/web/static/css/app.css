@@ -285,6 +285,22 @@ pre {
   color: var(--ink-soft);
 }
 
+/* A note that is bad news: the metrics export failing, and nothing else so far
+ * (task 125). The sentence says what went wrong on its own — this is the
+ * colour beside the words, never instead of them. */
+.form__note--warning {
+  color: var(--bad);
+}
+
+/* A second, smaller action belonging to the card above it. It cannot live
+ * inside that card because HTML has no nested forms and forgetting a stored
+ * secret is its own submission; the indent lines it up with the card's fields
+ * so it reads as part of it anyway. */
+.card-aside {
+  margin: 0.5rem 0 0;
+  padding-left: 1.5rem;
+}
+
 .fieldset {
   margin: 1.5rem 0 0;
   padding: 1rem 1rem 0.25rem;
