@@ -111,7 +111,15 @@ class Upstream:
     initialize_params: dict[str, Any] | None = None
 
     def app(self) -> Starlette:
-        return Starlette(routes=[Route("/mcp", self.answer, methods=["POST", "GET", "DELETE"])])
+        methods = ["POST", "GET", "DELETE"]
+        return Starlette(
+            routes=[
+                Route("/mcp", self.answer, methods=methods),
+                # Where ``redirect-within`` sends the client: the same server,
+                # one path over.
+                Route("/mcp/moved", self.answer, methods=methods),
+            ]
+        )
 
     def transport(self) -> httpx2.ASGITransport:
         return httpx2.ASGITransport(app=self.app())
@@ -134,7 +142,10 @@ class Upstream:
             case "status":
                 return PlainTextResponse("nothing here", status_code=self.refuse_with)
             case "redirect":
-                return RedirectResponse("http://files.example/elsewhere", status_code=307)
+                # Another host: off the endpoint's origin.
+                return RedirectResponse("http://elsewhere.example/mcp", status_code=307)
+            case "redirect-within" if request.url.path == "/mcp":
+                return RedirectResponse("http://files.example/mcp/moved", status_code=307)
             case "html":
                 return PlainTextResponse("<html>a login page</html>", media_type="text/html")
             case "json-but-not-jsonrpc":
@@ -377,7 +388,7 @@ async def test_something_that_is_not_an_mcp_server_is_said_to_be(mode: str) -> N
     assert len(str(error)) < 200
 
 
-async def test_a_redirect_is_not_followed_and_the_credential_goes_nowhere() -> None:
+async def test_a_redirect_off_the_origin_is_not_followed_and_the_credential_goes_nowhere() -> None:
     upstream = Upstream(mode="redirect")
 
     error = await failure(upstream, credential=BEARER)
@@ -387,6 +398,20 @@ async def test_a_redirect_is_not_followed_and_the_credential_goes_nowhere() -> N
     # One request, to the URL the operator gave; nothing was asked of
     # wherever the redirect pointed.
     assert len(upstream.seen) == 1
+
+
+async def test_a_redirect_within_the_origin_is_followed_with_the_credential() -> None:
+    # The SDK's rule (2.2+), and the one the spec fetch has always had for
+    # keeping a credential: same scheme, host and port is the same server,
+    # so a 307 one path over is the trailing-slash case, not an exfiltration.
+    upstream = Upstream(mode="redirect-within", demands=PRESENTED["bearer"])
+
+    found = await preview(upstream, credential=BEARER)
+
+    assert found.name == "files"
+    assert [method for method, _ in upstream.seen[:2]] == ["initialize", "initialize"]
+    header, value = PRESENTED["bearer"]
+    assert all(headers[header] == value for _, headers in upstream.seen)
 
 
 async def test_a_listing_that_fails_is_reported_in_the_upstream_s_words() -> None:

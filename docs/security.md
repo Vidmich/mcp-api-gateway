@@ -247,8 +247,9 @@ Not gaps, and worth knowing so they are not re-litigated:
   type. There is no response body anywhere that can carry one.
 - **Credentials are stripped on cross-origin redirects.** A spec URL that
   redirects to another host does not take the `Authorization` header with it.
-  An MCP endpoint is not followed anywhere: a redirect from one is a failure to
-  connect, reported as such.
+  An MCP endpoint is followed only within its own origin (a trailing slash, an
+  `https` upgrade), and only when the request keeps its method; any other
+  redirect is left where it is and reported as a failure to connect.
 - **Session cookies are `HttpOnly`, `SameSite=Lax`, and signed.**
 - **Every outbound call has a timeout and a response cap** (`http.timeout_seconds`,
   `http.max_response_bytes`), so a hostile or broken upstream cannot hold a

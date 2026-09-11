@@ -94,8 +94,9 @@ class EndpointStatusError(EndpointError):
 class EndpointProtocolError(EndpointError):
     """Something answered, and it was not an MCP server.
 
-    An HTML page at the URL, a JSON API that is not JSON-RPC, a redirect, a
-    server that speaks the protocol but refused the handshake: all reachable,
+    An HTML page at the URL, a JSON API that is not JSON-RPC, a redirect off
+    the endpoint's origin, a server that speaks the protocol but refused the
+    handshake: all reachable,
     all wrong, and the operator's move is the same — look at what is actually
     at that address.
     """
@@ -212,9 +213,13 @@ async def open_session(
         transport=watched,
         headers={"User-Agent": limits.user_agent, **credential_headers(credential)},
         timeout=httpx2.Timeout(limits.timeout_seconds),
-        # Off, for the reason outbound_client() gives: an ``api_key`` or
-        # ``headers`` credential sits in a header httpx cannot know is a
-        # secret, and would be forwarded wherever a redirect points.
+        # The SDK (2.2+) does not consult this: it follows a redirect itself,
+        # and only one that keeps the method and stays on the endpoint's
+        # origin — a trailing slash, an ``https`` upgrade — which is where
+        # the credential was configured to go anyway. Anything else is left
+        # unfollowed and comes back as the redirect it was. Off here so that
+        # the client is never the one to send an ``api_key`` or ``headers``
+        # credential somewhere httpx cannot know is a different place.
         follow_redirects=False,
     )
     try:
