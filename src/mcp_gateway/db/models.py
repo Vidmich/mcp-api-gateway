@@ -44,7 +44,15 @@ from sqlalchemy.types import TypeDecorator
 
 from mcp_gateway.crypto import CredentialType
 
-#: Where the spec came from and which dialect it is written in.
+#: What kind of thing a server row stands for (task 130). ``openapi`` is an
+#: API described by a document; ``mcp`` is an endpoint that already speaks MCP;
+#: ``gateway`` is the one row the gateway provides itself, which ``builtin``
+#: also marks -- see :class:`Server` on why both are kept.
+ServerKind = Literal["openapi", "mcp", "gateway"]
+#: Where the spec came from and which dialect it is written in. An ``mcp``
+#: server writes the protocol version it negotiated here instead, as
+#: ``mcp-<version>`` (task 130); that is what ``spec_format`` means for a row
+#: whose tool list is an endpoint rather than a document.
 SpecFormat = Literal["openapi-3.1", "openapi-3.0", "swagger-2.0"]
 #: What ``auth_type`` holds. Every value but ``none`` names a stored credential,
 #: so the shapes are defined once, next to the code that encrypts them.
@@ -122,7 +130,16 @@ class Base(DeclarativeBase):
 
 
 class Server(Base):
-    """An upstream OpenAPI/Swagger service the gateway exposes over MCP."""
+    """An upstream the gateway exposes over MCP, of one of the kinds in ``kind``.
+
+    Registered from an OpenAPI/Swagger document, or from an endpoint that
+    already speaks MCP (task 130). The columns were named for the first kind
+    and are read for both: for an MCP server, ``spec_url`` is where the tool
+    list is read from and ``base_url`` where calls go -- the same endpoint,
+    written to both -- and ``spec_format`` holds the negotiated protocol
+    version. No columns are added for the second kind, because none of the
+    questions the columns answer changes; only the words for them do.
+    """
 
     __tablename__ = "servers"
     # Never reuse an id: see the module docstring on metrics outliving servers.
@@ -135,9 +152,20 @@ class Server(Base):
     #: ``name`` when the server is registered, and editable afterwards.
     tool_prefix: Mapped[str] = mapped_column(String(100), unique=True)
 
+    #: One of :data:`ServerKind`. Deliberately without a default: every path
+    #: that writes a row says which kind it is making, because a default here
+    #: is the kind of silence that would let an MCP server get an OpenAPI
+    #: refresh. The built-in row carries ``gateway`` here *and* ``builtin``
+    #: below; the flag is what thirty call sites test, and this column is the
+    #: honest value for the row rather than a second switch. Folding the two
+    #: together is housekeeping for later (task 130).
+    kind: Mapped[str] = mapped_column(String(20))
+
+    #: Where the document is fetched from; for an MCP server, the endpoint.
     spec_url: Mapped[str] = mapped_column(Text)
     spec_format: Mapped[str] = mapped_column(String(20))
-    #: Resolved from the spec, overridable from the UI.
+    #: Resolved from the spec, overridable from the UI. For an MCP server, the
+    #: same endpoint as ``spec_url``: a call and a listing go to one place.
     base_url: Mapped[str] = mapped_column(Text)
 
     #: A disabled server contributes no tools and is never refreshed.
@@ -166,6 +194,8 @@ class Server(Base):
     #: Fernet blob holding JSON; null while ``auth_type`` is ``none``.
     auth_config_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
 
+    #: Held to ``same_as_api`` on an MCP server, which is one thing with one
+    #: credential; the two columns below it stay null there (task 130).
     spec_auth_mode: Mapped[str] = mapped_column(String(20), default="none")
     spec_auth_type: Mapped[str | None] = mapped_column(String(20), default=None)
     #: Null unless ``spec_auth_mode`` is ``custom``.

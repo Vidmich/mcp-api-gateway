@@ -9,6 +9,18 @@ change that caused it. So it is written once, here.
 
 Nothing in this module logs or renders a credential. It turns one into headers,
 which go straight to httpx and nowhere else.
+
+**There are two HTTP client libraries in this process, and this is why.** The
+spec fetch and the tool-call proxy share the ``httpx`` 0.x client built here.
+The third outbound caller, the session an upstream MCP server is read through
+(:mod:`mcp_gateway.mcpclient`, task 130), cannot use it: the ``mcp`` SDK's
+client transport takes an ``httpx2.AsyncClient`` — the 2.x line of httpx,
+published under its own name so that the two can be installed side by side —
+and nothing else. So that session builds an ``httpx2`` client of its own, per
+connection, and applies the same credential headers from
+:func:`credential_headers` and the same timeout from ``[http]`` to it. The
+rule above still holds: what a credential means is decided once, here, and
+both clients are handed the result. Nothing about the OpenAPI path changed.
 """
 
 from __future__ import annotations

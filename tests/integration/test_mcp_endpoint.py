@@ -42,6 +42,7 @@ from mcp_gateway.crypto import BearerCredential, CredentialCipher, generate_key
 from mcp_gateway.db import repo
 from mcp_gateway.db.repo import NewServer, OperationInput
 from mcp_gateway.db.session import Database
+from mcp_gateway.mcpclient import EndpointStatusError, preview_endpoint
 from mcp_gateway.mcpsrv.auth import ENDPOINT_OPEN_TO_ANYONE
 from mcp_gateway.mcpsrv.server import SERVER_NAME, app_announcer
 from mcp_gateway.openapi.schema import EXTENSION
@@ -236,6 +237,7 @@ async def register(
     server = await repo.create_server(
         session,
         NewServer(
+            kind="openapi",
             name=prefix.title(),
             tool_prefix=prefix,
             spec_url=spec_url or f"https://{prefix}.example/openapi.json",
@@ -583,3 +585,41 @@ async def test_a_client_with_no_token_never_reaches_the_protocol(tmp_path: Path)
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
     assert "mcp-session-id" not in response.headers
+
+
+# --- the gateway as somebody else's upstream ---------------------------------
+
+
+async def test_the_gateway_can_read_an_mcp_server_over_a_real_socket(tmp_path: Path) -> None:
+    """:func:`preview_endpoint` against the one MCP server every test has: this one.
+
+    The unit tests put the reader over an ASGI transport; this is the same
+    reader over TCP, against a server that answers in event streams, hands
+    out a session id and takes a ``DELETE`` on close (task 130).
+    """
+    async with running_gateway(tmp_path) as gateway:
+        async with gateway.session() as db:
+            await register(db, "petstore", ("GET /pets", "List pets"), selected=["GET /pets"])
+
+        found = await preview_endpoint(gateway.url)
+
+    assert found.name == SERVER_NAME
+    assert found.version == mcp_gateway.__version__
+    assert found.spec_format.startswith("mcp-20")
+    assert [tool.name for tool in found.tools] == ["petstore__get_pets"]
+    assert found.tools[0].description == "List pets\n\n(HTTP GET /pets on Petstore)"
+
+
+async def test_reading_a_token_protected_mcp_server_takes_the_token(tmp_path: Path) -> None:
+    token = "a-long-random-string"
+    async with running_gateway(tmp_path, token) as gateway:
+        with pytest.raises(EndpointStatusError) as refused:
+            await preview_endpoint(gateway.url)
+
+        found = await preview_endpoint(gateway.url, credential=BearerCredential(token=token))  # type: ignore[arg-type]
+
+    # The gateway's own 401 is the same news the reader reports for any
+    # upstream's: the credential, and nothing else, is what is wrong.
+    assert (refused.value.status_code, refused.value.needs_credentials) == (401, True)
+    assert token not in str(refused.value)
+    assert found.name == SERVER_NAME

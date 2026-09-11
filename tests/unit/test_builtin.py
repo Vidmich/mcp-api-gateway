@@ -151,6 +151,7 @@ async def a_server(session: AsyncSession, cipher: CredentialCipher, prefix: str 
     server = await repo.create_server(
         session,
         NewServer(
+            kind="openapi",
             name=prefix.title(),
             tool_prefix=prefix,
             spec_url=f"https://{prefix}.example/openapi.json",
@@ -270,6 +271,10 @@ async def test_a_fresh_database_gets_one_built_in_server_disabled(
     server = await repo.builtin_server(session)
     assert server is not None
     assert (server.name, server.tool_prefix) == (NAME, PREFIX)
+    # Both: the flag is what the code tests, and the kind is the honest value
+    # for the column on the one row that is neither a document nor an
+    # endpoint (task 130).
+    assert (server.builtin, server.kind) == (True, "gateway")
     assert (server.spec_url, server.base_url, server.spec_format) == ("", "", FORMAT)
     assert server.auth_type == "none"
     assert server.auto_refresh is False

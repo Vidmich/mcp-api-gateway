@@ -12,6 +12,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.runtime.migration import MigrationContext
 from fastapi.testclient import TestClient
@@ -134,16 +135,17 @@ async def test_an_existing_database_keeps_its_rows_across_a_migration(tmp_path: 
     with closing(sqlite3.connect(database)) as connection:
         rows = connection.execute(
             "SELECT name, enabled, attention_reason, disabled_at, "
-            "rate_limit_calls, rate_limit_seconds, builtin FROM servers"
+            "rate_limit_calls, rate_limit_seconds, builtin, kind FROM servers"
         ).fetchall()
         schema = connection.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'servers'"
         ).fetchone()[0]
 
-    # Null — or, for the one flag that cannot be, false — in every column a
-    # later revision added, which is what makes an upgrade change nothing about
-    # how an already-registered server behaves.
-    assert rows == [("Petstore", 1, None, None, None, None, 0)]
+    # Null — or, for the one flag that cannot be, false, and for the kind that
+    # every row written before there were kinds is, ``openapi`` — in every
+    # column a later revision added, which is what makes an upgrade change
+    # nothing about how an already-registered server behaves.
+    assert rows == [("Petstore", 1, None, None, None, None, 0, "openapi")]
     assert "AUTOINCREMENT" in schema
 
 
@@ -582,9 +584,9 @@ def test_dropping_it_keeps_every_row_and_every_server_id(tmp_path: Path) -> None
             INSERT INTO servers (
                 name, tool_prefix, spec_url, spec_format, base_url, enabled,
                 needs_attention, auth_type, spec_auth_mode, auto_refresh, builtin,
-                created_at, updated_at
+                kind, created_at, updated_at
             ) VALUES ('Zoo', 'zoo', '', 'openapi-3.1', '', 1, 0, 'none', 'none', 0, 0,
-                      '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')
+                      'openapi', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')
             """
         )
         next_id = connection.execute("SELECT id FROM servers WHERE name = 'Zoo'").fetchone()[0]
@@ -637,3 +639,113 @@ def test_a_downgraded_row_whose_name_slugifies_to_nothing_still_gets_one(
         rows = connection.execute("SELECT slug FROM servers ORDER BY id").fetchall()
 
     assert rows == [("server",), ("server-2",)]
+
+
+# --------------------------------------------------------------------------- #
+# 0007: which kind of thing each server is
+# --------------------------------------------------------------------------- #
+
+#: An operator's server and the built-in row, with a hole between their ids.
+BEFORE_0007 = ((4, "Petstore", "petstore", 0), (7, "Gateway", "gateway", 1))
+
+
+def a_database_written_before_there_were_kinds(tmp_path: Path) -> Path:
+    """A gateway at revision 0006, told apart by ``builtin`` alone."""
+    database = tmp_path / "gateway.db"
+    assert run_alembic(database_url(database), "upgrade", "0006_drop_slug").returncode == 0
+
+    with closing(sqlite3.connect(database)) as connection:
+        for server_id, name, prefix, builtin in BEFORE_0007:
+            connection.execute(
+                """
+                INSERT INTO servers (
+                    id, name, tool_prefix, spec_url, spec_format, base_url,
+                    enabled, needs_attention, auth_type, spec_auth_mode, auto_refresh,
+                    builtin, created_at, updated_at
+                ) VALUES (?, ?, ?, 'https://x.example/openapi.json', 'openapi-3.1',
+                          'https://x.example/api', 1, 0, 'none', 'none', 0, ?,
+                          '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')
+                """,
+                (server_id, name, prefix, builtin),
+            )
+        connection.commit()
+    return database
+
+
+def test_every_row_is_given_the_kind_it_already_was(tmp_path: Path) -> None:
+    """``openapi`` for what an operator registered, ``gateway`` for the built-in row.
+
+    Across a rebuild of the table, so the two things revision 0006 established
+    are asserted again: every row and every id survive, and so does
+    ``AUTOINCREMENT``, which is what keeps a deleted server's id away from its
+    replacement (spec §4).
+    """
+    database = a_database_written_before_there_were_kinds(tmp_path)
+
+    upgrade = run_alembic(database_url(database), "upgrade", "head")
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    with closing(sqlite3.connect(database)) as connection:
+        rows = connection.execute("SELECT id, name, kind FROM servers ORDER BY id").fetchall()
+        connection.execute(
+            """
+            INSERT INTO servers (
+                name, tool_prefix, spec_url, spec_format, base_url, enabled,
+                needs_attention, auth_type, spec_auth_mode, auto_refresh, builtin,
+                kind, created_at, updated_at
+            ) VALUES ('Zoo', 'zoo', '', 'openapi-3.1', '', 1, 0, 'none', 'none', 0, 0,
+                      'openapi', '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')
+            """
+        )
+        next_id = connection.execute("SELECT id FROM servers WHERE name = 'Zoo'").fetchone()[0]
+
+    assert rows == [(4, "Petstore", "openapi"), (7, "Gateway", "gateway")]
+    assert next_id == 8
+    assert "AUTOINCREMENT" in servers_schema(database)
+
+
+def test_the_kind_column_has_nothing_to_fall_back_on(tmp_path: Path) -> None:
+    """NOT NULL and no default, which is the point of the rebuild.
+
+    A database default would have filled the column in for free and then
+    stayed behind, where a path that forgot to name a kind would get
+    ``openapi`` written for it in silence -- and an MCP server an OpenAPI
+    refresh. The migration filled the rows in by hand so that the schema
+    could refuse instead.
+    """
+    database = a_database_written_before_there_were_kinds(tmp_path)
+    assert run_alembic(database_url(database), "upgrade", "head").returncode == 0
+
+    with (
+        closing(sqlite3.connect(database)) as connection,
+        pytest.raises(sqlite3.IntegrityError, match=r"NOT NULL.*kind"),
+    ):
+        connection.execute(
+            """
+            INSERT INTO servers (
+                name, tool_prefix, spec_url, spec_format, base_url, enabled,
+                needs_attention, auth_type, spec_auth_mode, auto_refresh, builtin,
+                created_at, updated_at
+            ) VALUES ('Zoo', 'zoo', '', 'openapi-3.1', '', 1, 0, 'none', 'none', 0, 0,
+                      '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')
+            """
+        )
+    kind_column = servers_schema(database).split("kind", 1)[1].split(",", 1)[0]
+    assert "DEFAULT" not in kind_column
+
+
+def test_downgrading_forgets_the_kinds_and_keeps_the_rows(tmp_path: Path) -> None:
+    database = a_database_written_before_there_were_kinds(tmp_path)
+    assert run_alembic(database_url(database), "upgrade", "head").returncode == 0
+
+    down = run_alembic(database_url(database), "downgrade", "0006_drop_slug")
+    assert down.returncode == 0, down.stderr
+
+    with closing(sqlite3.connect(database)) as connection:
+        rows = connection.execute("SELECT id, builtin FROM servers ORDER BY id").fetchall()
+
+    # An older gateway tells the rows apart the way it always did.
+    assert rows == [(4, 0), (7, 1)]
+    schema = servers_schema(database)
+    assert "kind" not in schema
+    assert "AUTOINCREMENT" in schema

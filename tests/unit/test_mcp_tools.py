@@ -136,6 +136,7 @@ async def a_server(session: Any, prefix: str, *op_keys: str, selected: bool = Tr
     server = await repo.create_server(
         session,
         NewServer(
+            kind="openapi",
             name=prefix.title(),
             tool_prefix=prefix,
             spec_url=f"https://{prefix}.example/openapi.json",

@@ -91,6 +91,7 @@ def a_server(
 ) -> Server:
     """A server row as the repository would have written it, without a database."""
     return Server(
+        kind="openapi",
         id=1,
         name="Petstore",
         tool_prefix="petstore",

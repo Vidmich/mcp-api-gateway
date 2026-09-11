@@ -187,6 +187,7 @@ async def register(
     values: dict[str, Any] = {
         "name": prefix.title(),
         "tool_prefix": prefix,
+        "kind": "openapi",
         "spec_url": f"https://{prefix}.example/openapi.json",
         "spec_format": "openapi-3.1",
         "base_url": f"https://{prefix}.example/api",
@@ -442,6 +443,7 @@ def a_server(**overrides: Any) -> Server:
     """A stored row, for the parsing tests. Never flushed, so its column
     defaults are written out here rather than left to the database."""
     server = Server(
+        kind="openapi",
         name="Petstore",
         tool_prefix="petstore",
         spec_url="https://petstore.example/openapi.json",

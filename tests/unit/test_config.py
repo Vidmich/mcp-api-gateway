@@ -331,7 +331,13 @@ def restore_logging() -> Iterator[None]:
     asked for the debug format would otherwise leave it on the root logger for
     every test that runs after it.
     """
-    watched = ["", "sqlalchemy.engine", "sqlalchemy.pool", "aiosqlite"]
+    watched = [
+        "",
+        "sqlalchemy.engine",
+        "sqlalchemy.pool",
+        "aiosqlite",
+        "mcp.client.streamable_http",
+    ]
     before = {name: logging.getLogger(name).level for name in watched}
     handlers = logging.getLogger().handlers[:]
     try:
@@ -370,6 +376,17 @@ def test_a_quieter_level_still_quiets_the_noisy_loggers(restore_logging: None) -
     configure_logging("error")
 
     assert logging.getLogger("sqlalchemy.engine").level == logging.ERROR
+
+
+def test_the_sdk_s_client_transport_is_quiet_even_about_its_errors(
+    restore_logging: None,
+) -> None:
+    # Every failure it logs, it also raises, and the gateway reports that one
+    # in the operator's words (task 130); the log line would be the same news
+    # with a stack trace under it.
+    configure_logging("debug")
+
+    assert logging.getLogger("mcp.client.streamable_http").level == logging.CRITICAL
 
 
 def test_no_line_carries_the_logger_that_wrote_it(restore_logging: None) -> None:

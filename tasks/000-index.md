@@ -86,4 +86,9 @@ names its dependencies; none of them is needed for v1 to ship.
 | 127 | [The line that says INFO and error at once](127-the-line-that-says-info-and-error-at-once.md) | 13 · Housekeeping |
 | 128 | [Sign in with what you just set](128-sign-in-with-what-you-just-set.md) | 15 · Access control |
 | 129 | [The form that fell to the bottom half of the page](129-the-form-that-fell-to-the-bottom-half.md) | 11 · UI polish |
+| 130 | [A second kind of upstream](130-a-second-kind-of-upstream.md) | 16 · Upstream MCP servers |
+| 131 | [An MCP server's tools, as operations](131-an-mcp-servers-tools-as-operations.md) | 16 · Upstream MCP servers |
+| 132 | [Calling through to an MCP server](132-calling-through-to-an-mcp-server.md) | 16 · Upstream MCP servers |
+| 133 | [The MCP Servers page](133-the-mcp-servers-page.md) | 16 · Upstream MCP servers |
+| 134 | [The same server from the API, from the built-in tools, and in the docs](134-the-same-server-from-the-api-and-the-docs.md) | 16 · Upstream MCP servers |
 

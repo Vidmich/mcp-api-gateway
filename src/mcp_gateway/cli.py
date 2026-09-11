@@ -133,14 +133,23 @@ class _LevelPrefixFormatter(logging.Formatter):
         return super().formatMessage(record)
 
 
-#: Loggers that must not follow the root level down.
+#: Loggers that must not follow the root level down, and how far each may.
 #:
 #: ``--log-level debug`` is a request to see what the gateway is doing, not to
 #: turn on SQLAlchemy's statement echo: that logs every statement *and its bound
 #: parameters* — thousands of lines a minute, with upstream credentials among
-#: them. A developer who does want it can raise these by name.
-_NOISY_LOGGERS = ("sqlalchemy.engine", "sqlalchemy.pool", "aiosqlite")
-_NOISY_FLOOR = logging.WARNING
+#: them. The SDK's client transport, which the gateway uses to read upstream
+#: MCP servers (task 130), announces every session id at INFO and logs a
+#: traceback at ERROR when an endpoint turns out to serve HTML — a failure it
+#: also raises, and which the gateway then reports in the operator's words, so
+#: the log line would say the same thing twice, once with a stack. A developer
+#: who does want any of it can raise these by name.
+_NOISY_LOGGERS = {
+    "sqlalchemy.engine": logging.WARNING,
+    "sqlalchemy.pool": logging.WARNING,
+    "aiosqlite": logging.WARNING,
+    "mcp.client.streamable_http": logging.CRITICAL,
+}
 
 
 def configure_logging(level: str = "info") -> None:
@@ -153,8 +162,8 @@ def configure_logging(level: str = "info") -> None:
     # ``handlers=`` rather than ``format=``: the format above names a field no
     # stock formatter knows how to fill in.
     logging.basicConfig(level=resolved, handlers=[handler], force=True)
-    for name in _NOISY_LOGGERS:
-        logging.getLogger(name).setLevel(max(resolved, _NOISY_FLOOR))
+    for name, floor in _NOISY_LOGGERS.items():
+        logging.getLogger(name).setLevel(max(resolved, floor))
 
 
 def reset_admin(settings: Settings) -> int:

@@ -166,6 +166,7 @@ async def seeded(
     server = await repo.create_server(
         session,
         NewServer(
+            kind="openapi",
             name=prefix.title(),
             tool_prefix=prefix,
             spec_url=SPEC_URL,

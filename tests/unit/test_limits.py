@@ -424,6 +424,7 @@ async def register(
     server = await repo.create_server(
         upstream.session,
         NewServer(
+            kind="openapi",
             name=name,
             tool_prefix=prefix,
             spec_url=f"https://{prefix}.example/openapi.json",
@@ -805,6 +806,7 @@ async def test_no_credential_reaches_a_refusal_or_its_log_line(
     server = await repo.create_server(
         upstream.session,
         NewServer(
+            kind="openapi",
             name="Petstore",
             tool_prefix="petstore",
             spec_url="https://petstore.example/openapi.json",

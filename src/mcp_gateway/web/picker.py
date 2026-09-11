@@ -476,6 +476,7 @@ async def register(
         repo.NewServer(
             name=pending.name,
             tool_prefix=prefix,
+            kind=repo.KIND_OPENAPI,
             spec_url=pending.form.spec_url,
             spec_format=preview.spec_format,
             base_url=base_url,

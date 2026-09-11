@@ -32,9 +32,9 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, Final, cast
+from typing import Any, Final, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import ColumnElement, CursorResult, Integer, Select, case, delete, func, select
 from sqlalchemy.dialects.sqlite import Insert as SQLiteInsert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -73,6 +73,19 @@ from mcp_gateway.limits import (
 CANNOT_BE_DELETED: Final = "cannot be deleted"
 CANNOT_BE_REFRESHED: Final = "has no document to re-read"
 ONLY_ENABLED: Final = "can only be switched on and off"
+
+#: The kinds a server row can be (:data:`~mcp_gateway.db.models.ServerKind`,
+#: task 130). The built-in row's is written by :func:`create_builtin_server`
+#: and nobody else.
+KIND_OPENAPI: Final = "openapi"
+KIND_MCP: Final = "mcp"
+KIND_GATEWAY: Final = "gateway"
+
+#: Why an MCP server takes no spec credential of its own (spec §4, task 130).
+ONE_CREDENTIAL: Final = (
+    "An MCP server is one endpoint with one credential; spec_auth_mode is always "
+    "same_as_api for it and it takes no spec_credential."
+)
 
 #: The one field of a patch the built-in row accepts.
 ENABLED_FIELD: Final = "enabled"
@@ -386,8 +399,16 @@ class NewServer(BaseModel):
 
     name: str = Field(min_length=1, max_length=200)
     tool_prefix: str = Field(min_length=1, max_length=100)
+    #: Which kind of upstream this is, and no default: the caller says. Only
+    #: ``openapi`` and ``mcp`` are registered this way; the built-in row is
+    #: written by :func:`create_builtin_server`.
+    kind: Literal["openapi", "mcp"]
+    #: The spec URL, or for an MCP server the endpoint -- which is also its
+    #: ``base_url``, and the caller writes it to both.
     spec_url: str = Field(min_length=1)
-    spec_format: SpecFormat
+    #: For an MCP server, ``mcp-<protocol version>`` rather than a document
+    #: dialect; the column is a string and the model's alias is for documents.
+    spec_format: SpecFormat | str
     base_url: str = Field(min_length=1)
 
     enabled: bool = True
@@ -404,6 +425,20 @@ class NewServer(BaseModel):
     #: what registering means; a caller with the exact moment of its own fetch
     #: can say so instead.
     downloaded_at: dt.datetime | None = None
+
+    @model_validator(mode="after")
+    def _one_credential_for_an_endpoint(self) -> NewServer:
+        """An MCP server has nothing for the spec-auth columns to distinguish.
+
+        Refused rather than quietly dropped: a caller that stored a second
+        credential for an endpoint believed it would be used, and the place to
+        find out otherwise is here, not on the first ``401``.
+        """
+        if self.kind == KIND_MCP and (
+            self.spec_auth_mode == "custom" or self.spec_credential is not None
+        ):
+            raise ValueError(ONE_CREDENTIAL)
+        return self
 
 
 class ServerPatch(BaseModel):
@@ -698,6 +733,7 @@ async def create_builtin_server(
     server = Server(
         name=name,
         tool_prefix=tool_prefix,
+        kind=KIND_GATEWAY,
         spec_url="",
         spec_format=spec_format,
         base_url="",
@@ -719,16 +755,23 @@ async def create_server(
     moment ago. Leaving them empty would show "never downloaded" against a
     server whose every operation arrived that way (task 103), and would tell a
     restarted scheduler it had never had a successful read of this upstream.
+
+    An MCP server's ``spec_auth_mode`` is written as ``same_as_api`` whatever
+    the caller passed: its listing and its calls go to one endpoint under one
+    credential, and a mode that said otherwise would describe a distinction
+    the protocol does not have (task 130). :class:`NewServer` has already
+    refused the one value that would carry a second credential.
     """
     server = Server(
         name=new.name,
         tool_prefix=new.tool_prefix,
+        kind=new.kind,
         spec_url=new.spec_url,
         spec_format=new.spec_format,
         base_url=new.base_url,
         enabled=new.enabled,
         auto_refresh=new.auto_refresh,
-        spec_auth_mode=new.spec_auth_mode,
+        spec_auth_mode="same_as_api" if new.kind == KIND_MCP else new.spec_auth_mode,
         spec_hash=new.spec_hash,
         spec_snapshot=new.spec_snapshot,
         last_refresh_at=new.downloaded_at or utcnow(),
@@ -1673,6 +1716,10 @@ async def trim_call_errors(session: AsyncSession, *, keep: int = KEPT_ERRORS) ->
 
 __all__ = [
     "KEPT_ERRORS",
+    "KIND_GATEWAY",
+    "KIND_MCP",
+    "KIND_OPENAPI",
+    "ONE_CREDENTIAL",
     "RECENT_ERRORS",
     "BucketDelta",
     "BuiltinServer",

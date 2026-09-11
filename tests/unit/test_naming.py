@@ -75,6 +75,7 @@ def a_server(prefix: str = "petstore", **overrides: Any) -> NewServer:
     values: dict[str, Any] = {
         "name": prefix.title(),
         "tool_prefix": prefix,
+        "kind": "openapi",
         "spec_url": f"https://{prefix}.example/openapi.json",
         "spec_format": "openapi-3.1",
         "base_url": f"https://{prefix}.example/api",

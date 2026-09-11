@@ -68,6 +68,7 @@ def a_server(prefix: str = "petstore", **overrides: Any) -> NewServer:
     values: dict[str, Any] = {
         "name": prefix.title(),
         "tool_prefix": prefix,
+        "kind": "openapi",
         "spec_url": f"https://{prefix}.example/openapi.json",
         "spec_format": "openapi-3.1",
         "base_url": f"https://{prefix}.example/api",
@@ -198,6 +199,48 @@ async def test_each_spec_auth_mode_resolves_to_its_own_credential(
     credential = repo.spec_credential_for(server, cipher)
 
     assert (None if credential is None else json.loads(credential.model_dump_json())) == expected
+
+
+async def test_a_server_is_the_kind_it_was_registered_as(
+    session: Any, cipher: CredentialCipher
+) -> None:
+    api = await repo.create_server(session, a_server("petstore"), cipher=cipher)
+    endpoint = await repo.create_server(
+        session,
+        a_server(
+            "files",
+            kind="mcp",
+            spec_url="https://files.example/mcp",
+            base_url="https://files.example/mcp",
+            spec_format="mcp-2025-06-18",
+            credential=BEARER,
+        ),
+        cipher=cipher,
+    )
+
+    assert (api.kind, endpoint.kind) == ("openapi", "mcp")
+    # One endpoint, one credential: the listing is made with the same one the
+    # calls are, whatever the caller left the mode at (spec §4, task 130).
+    assert api.spec_auth_mode == "none"
+    assert endpoint.spec_auth_mode == "same_as_api"
+    assert (endpoint.spec_auth_type, endpoint.spec_auth_config_encrypted) == (None, None)
+    assert repo.spec_credential_for(endpoint, cipher) == repo.credential_for(endpoint, cipher)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"spec_auth_mode": "custom", "spec_credential": SPEC_BEARER},
+        {"spec_auth_mode": "custom"},
+        {"spec_credential": SPEC_BEARER},
+    ],
+    ids=["custom-with-credential", "custom-mode", "credential-alone"],
+)
+def test_an_mcp_server_takes_no_second_credential(overrides: dict[str, Any]) -> None:
+    # Refused where it is offered, not dropped on the way to the row: a caller
+    # that supplied one believed it would be used.
+    with pytest.raises(ValueError, match="one credential"):
+        a_server("files", kind="mcp", **overrides)
 
 
 async def test_custom_spec_auth_without_a_credential_is_refused(

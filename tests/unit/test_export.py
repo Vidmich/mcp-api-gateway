@@ -215,6 +215,7 @@ async def seed(
 
 async def add_server(session: AsyncSession, name: str = "Petstore") -> Server:
     server = Server(
+        kind="openapi",
         name=name,
         tool_prefix="pet",
         spec_url="https://example.test/openapi.json",

@@ -23,6 +23,7 @@ def a_server(prefix: str = "petstore", **overrides: object) -> Server:
     values: dict[str, object] = {
         "name": prefix.title(),
         "tool_prefix": prefix,
+        "kind": "openapi",
         "spec_url": f"https://{prefix}.example/openapi.json",
         "spec_format": "openapi-3.1",
         "base_url": f"https://{prefix}.example/api",
@@ -87,6 +88,15 @@ async def test_a_server_round_trips_with_only_its_required_fields(
     assert (stored.auth_type, stored.spec_auth_mode) == ("none", "none")
     assert stored.auto_refresh is False
     assert stored.created_at.tzinfo is not None
+
+
+async def test_a_server_row_has_to_say_which_kind_it_is(session: AsyncSession) -> None:
+    # No default, in the model or the schema: a path that forgot to name a
+    # kind fails here rather than quietly writing a document-shaped row for
+    # an endpoint (task 130).
+    message = await expect_integrity_error(session, a_server(kind=None))
+
+    assert "NOT NULL" in message and "kind" in message
 
 
 async def test_two_servers_cannot_share_a_tool_prefix(session: AsyncSession) -> None:

@@ -684,6 +684,7 @@ async def register(upstream: Upstream, *, schema: Any = None, auth: Any = None) 
     server = await repo.create_server(
         upstream.session,
         NewServer(
+            kind="openapi",
             name="Petstore",
             tool_prefix="petstore",
             spec_url="https://petstore.example/openapi.json",

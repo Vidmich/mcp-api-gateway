@@ -30,6 +30,7 @@ Calling a tool on `/mcp` causes the gateway to make a live HTTP request to the c
 | Spec versions | OpenAPI 3.0, OpenAPI 3.1, and Swagger 2.0 — fetched by URL. |
 | Spec fetch auth | Optional, per server: `none` (default), reuse the server's API credentials, or a separate credential just for the spec URL. |
 | Server toggle | Per-server enable/disable in v1. |
+| Upstream kinds | OpenAPI documents and MCP servers over Streamable HTTP (task 130). An *API server* is a spec URL whose operations become tools and whose calls become HTTP requests; an *MCP server* is an endpoint whose `tools/list` becomes tools and whose calls are forwarded as `tools/call`. One `/mcp`, one token, one tool list, one Monitoring page, whichever kind is behind each name. Described in that order everywhere — the product is a gateway that puts APIs behind MCP, *and can also* put MCP servers behind one `/mcp` — and the order is fixed here so no page or paragraph has to decide it again. |
 
 **Names.** The distribution on PyPI, the console script, the MCP server name, the user agent and the per-user directory are all `mcp-api-gateway`. The import package is `mcp_gateway`, and is the only one spelled differently: it is the one name that appears nowhere a user of the gateway can see it, and renaming it would rewrite every module cross-reference in the source for nobody's benefit. Environment variables are prefixed `MCP_API_GATEWAY_`; the vendor extension carried in every published input schema is `x-mcp-api-gateway`.
 
@@ -47,12 +48,15 @@ Explicitly out of scope, listed so they don't creep in:
 - Rate limiting, quotas, per-client policy.
 - TLS termination. Run behind a reverse proxy for HTTPS.
 - Raw per-call request/response log viewer. Only aggregate metrics plus a small error log (§7.3) are kept.
+- Upstream MCP servers over **stdio**. The gateway is a service, and spawning a process named in a form on a web page is a different security posture from opening a URL. Streamable HTTP only, as for the gateway's own endpoint.
+- Upstream MCP servers over **legacy SSE**. The same decision the gateway made for its own transport, applied to the ones it reads.
+- **OAuth against an upstream MCP server.** A static credential, entered per server and stored by the app, as for every API server. An upstream that insists on an authorization flow is registered with the token that flow produced.
 
 ### Known gaps carried into v1 deliberately
 
 1. **No SSRF protection.** The gateway will fetch any spec URL and call any upstream base URL an admin configures, including `127.0.0.1` and private ranges. Combined with an unauthenticated `/mcp`, that makes the gateway an open proxy into its own network. Mitigations shipped: default bind is `127.0.0.1`, and the risk is documented in the README. A real guard is a v2 item.
 
-Basic hygiene that is *not* a feature and is included regardless: every outbound HTTP call has a timeout (default 30s, `http.timeout_seconds`), and responses larger than 5 MiB are truncated with a note appended to the tool result — an HTTP client without these is simply broken.
+Basic hygiene that is *not* a feature and is included regardless: every outbound HTTP call has a timeout (default 30s, `http.timeout_seconds`), and responses larger than 5 MiB are truncated with a note appended to the tool result — an HTTP client without these is simply broken. The session an upstream MCP server is read through is bound by the same two rules: `http.timeout_seconds` on every request it makes and on waiting for an answer, and `http.max_response_bytes` on every response — a JSON-RPC message cannot be truncated and still be one, so a response over the cap is abandoned where it crosses the limit and reported as such (§5b).
 
 ---
 
@@ -153,9 +157,10 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 | `id` | pk |
 | `name` | display name, user-editable |
 | `tool_prefix` | url-safe, unique across servers, user-editable, default derived from `name` |
-| `spec_url` | where the spec is fetched from |
-| `spec_format` | `openapi-3.1` / `openapi-3.0` / `swagger-2.0` (detected) |
-| `base_url` | resolved from the spec's `servers` or `host`+`basePath`, user-overridable |
+| `kind` | `openapi` / `mcp` / `gateway` — what kind of thing the row stands for (task 130). No default: every path that writes a row names one |
+| `spec_url` | where the spec is fetched from; for an MCP server, the endpoint |
+| `spec_format` | `openapi-3.1` / `openapi-3.0` / `swagger-2.0` (detected); for an MCP server, `mcp-<protocol version>` as negotiated, e.g. `mcp-2025-06-18` |
+| `base_url` | resolved from the spec's `servers` or `host`+`basePath`, user-overridable; for an MCP server, the endpoint again — a listing and a call go to one place |
 | `enabled` | per-server on/off; disabled servers contribute no tools |
 | `builtin` | true for the one server the gateway provides itself; false for everything registered from a document |
 | `needs_attention` | set by a refresh that found changes, or by auto-disable |
@@ -163,7 +168,7 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 | `disabled_at` | when auto-disable took the server out of service; null when a person turned it off |
 | `auth_type` | `none` / `bearer` / `api_key` / `basic` / `headers` |
 | `auth_config_encrypted` | Fernet blob; JSON inside (token, header name+value, user+pass, or header map) |
-| `spec_auth_mode` | `none` (default) / `same_as_api` / `custom` — how the spec URL itself is authenticated |
+| `spec_auth_mode` | `none` (default) / `same_as_api` / `custom` — how the spec URL itself is authenticated; held to `same_as_api` on an MCP server |
 | `spec_auth_type` | `bearer` / `api_key` / `basic` / `headers`; only meaningful when `spec_auth_mode = custom` |
 | `spec_auth_config_encrypted` | Fernet blob, same shape as `auth_config_encrypted`; null unless `spec_auth_mode = custom` |
 | `rate_limit_calls` | how many `tools/call`s this server will take in the window below; null for no limit |
@@ -192,6 +197,8 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 | `first_seen_at`, `last_seen_at` | |
 
 **Auto-disable.** The outcome of every `tools/call` is watched per server, off the same in-memory counters the metrics writer drains, so the call path takes no extra query and no extra write. A server is taken out of the tool list on either of two triggers: `health.auth_failures_before_disable` consecutive `401`/`403` answers (or credentials that would not decrypt), which a successful call resets; or, over `health.failure_window_minutes`, a window holding at least `health.failure_minimum_calls` of which at least `health.failure_threshold` were `5xx` or never reached the upstream. A `400`, `404`, `409`, `422` or an argument-validation failure counts toward neither, and is not in the window at all. Tripping sets `enabled = false` and `needs_attention = true`, writes `attention_reason` and `disabled_at`, records one `call_errors` row, logs one warning naming the server, the trigger and the counts — never the credential — and emits `notifications/tools/list_changed`. Nothing comes back on its own: the operator fixes the cause and re-enables the server, which is what clears `attention_reason`. `health.auto_disable = false` keeps all of that except `enabled = false`.
+
+**Kinds.** `kind` says what a row is, and the columns named for a document are read for both kinds rather than doubled: for an MCP server, `spec_url` is where the tool list is read from and `base_url` where calls go — the same endpoint, written to both at registration — `spec_format` holds the negotiated protocol version, and `spec_hash` and `spec_snapshot` hold the tool list as the endpoint sent it, for the next refresh to compare against. `spec_auth_mode` is held to `same_as_api` and `spec_auth_type` / `spec_auth_config_encrypted` stay null: an endpoint is one thing with one credential, and a mode that offered to authenticate the listing differently from the calls would describe a distinction the protocol does not have. `auth_type` and the credential shapes apply unchanged — MCP over Streamable HTTP is HTTP, and a bearer token, an API key, a basic pair or a header map are all things the upstream sees as request headers. The built-in row's `kind` is `gateway` *and* it carries `builtin`: the flag is what the code tests, and the column is the honest value for the row rather than a second switch. The redundancy is known; folding the two together is housekeeping for after this milestone.
 
 **The built-in server.** Exactly one row carries `builtin`, seeded at startup and never deleted. It has no `spec_url`, no `base_url` and no credentials, because its tools dispatch in process rather than over HTTP: they are the gateway's own management API, and what they do is described in §6. Its `tool_prefix` is `gateway`, reserved from this version on — a database that predates the reservation and already holds the word keeps it, and the built-in row takes the next free one rather than refusing to start. It arrives **disabled**: the endpoint its tools answer on has no authentication unless `mcp.auth_token` is set, so enabling it is the operator accepting that, and nobody acquires it by upgrading. `enabled` is the only column on it that may be changed; a delete, a refresh or any other patch is refused by the repository, so the pages and the JSON API meet the rule identically. Its operations are reconciled against the code on every start: a tool this version adds arrives *selected*, since the set is curated by the gateway rather than by an upstream, and a tool it drops goes `removed` like any other.
 
@@ -267,6 +274,33 @@ Triggered by the per-server **Refresh Spec** button, or by the scheduler for ser
 4. Emit `notifications/tools/list_changed` if the effective tool list changed.
 
 The operator clears **Needs Attention** by reviewing the server: `New` rows can be selected or dismissed, `Changed` rows acknowledged, `Removed` rows deleted. Acknowledging is what resets the flag — never a refresh on its own.
+
+---
+
+## 5b. MCP ingestion
+
+The counterpart of §5 for the second kind of upstream (task 130): an endpoint speaking MCP over Streamable HTTP, read with the official SDK's client, and nothing written until the operator decides.
+
+### 5b.1 Connect and preview
+
+`mcp_gateway/mcpclient/` sits beside `openapi/` because it is the same layer — the thing that reads an upstream and says what it found. `connect.py` opens a session; `preview.py` produces the MCP counterpart of a spec preview: the endpoint's name, title and version from `initialize`, the protocol version negotiated, and its tools from `tools/list`, every page of it. `preview_endpoint(url, credential, http)` connects, initialises, lists, closes, and returns that without writing a row — the exact shape of `preview_spec()`, so the wizard and `POST /api/v1/preview` can be one piece of code with a branch on kind.
+
+**The client is the gateway's, not the SDK's default.** The SDK's transport takes an `httpx2.AsyncClient` — the 2.x line of httpx, published under its own name — which is not the `httpx` 0.x client the spec fetch and the proxy share, so the process carries two HTTP client libraries and `outbound.py` says so. The gateway builds that client per connection with the same three things every outbound call has: the stored credential as headers, from the one function that decides what a credential means; `http.timeout_seconds` on every request and on waiting for an answer; and `http.max_response_bytes` on every response, checked against `Content-Length` first and then as the bytes arrive. Redirects are not followed, for the reason §5.1 gives: a credential in a header of the upstream's choosing would be forwarded to wherever the redirect points. The session introduces itself as `mcp-api-gateway` with the gateway's version, as its user agent does.
+
+**Failures come back in an operator's words**, sorted the way spec-fetch failures are, because they are the same four things to act on:
+
+| what happened | reported as | the operator's move |
+|---|---|---|
+| DNS, TLS, connection, timeout, or a URL that is not `http(s)://` | *could not reach* | the address, the network |
+| an HTTP `401` / `403` | *returned HTTP 401* — flagged as the credential problem, as a `401` on a spec URL is | the credential |
+| any other HTTP status | *returned HTTP 404* and the like | the URL |
+| something answered and it was not MCP — an HTML page, JSON that is not JSON-RPC, a redirect, a handshake refused | *did not answer as an MCP server* | look at what is actually at that address |
+| MCP, but no `tools` capability | *offers no tools* | nothing here to publish |
+| a response over the size cap | *larger than the limit* | `http.max_response_bytes`, or the upstream |
+
+The SDK's transport folds an HTTP status into a JSON-RPC error that no longer says which status it was; the gateway watches the transport it hands the SDK, remembers the status of the last response, and reports that. The SDK's own log lines for these failures — a session id at INFO on every connect, a stack trace at ERROR when the endpoint serves HTML — are quieted, because every one of them is also raised, and the gateway reports the raised one.
+
+The mapping of an upstream's tools onto `operations`, the naming, the refresh and the diff are §5b.2 (task 131); forwarding a call is §6 (task 132). Upstream `resources` and `prompts` are out, as §2 says for the gateway's own endpoint, and so is listening for an upstream's `list_changed`: the gateway learns that an endpoint's tools changed the way it learns that a document did, by a refresh, manual or scheduled.
 
 ---
 
@@ -365,6 +399,7 @@ src/mcp_gateway/
   crypto.py  outbound.py  naming.py  metrics.py  scheduler.py
   db/            models.py  session.py  repo.py  migrate.py  migrations/
   openapi/       diagnostics.py  fetch.py  normalize.py  swagger2.py  refs.py  schema.py  diff.py
+  mcpclient/     connect.py  preview.py
   mcpsrv/        server.py  tools.py  proxy.py  auth.py
   builtin/       catalog.py  tools.py  seed.py
   web/           routes_ui.py  routes_api.py  auth.py  templates/  static/
@@ -374,7 +409,7 @@ docs/            install.md  service-setup.md  configuration.md  security.md
 
 `outbound.py` and `openapi/diagnostics.py` are shared vocabulary rather than stages of anything: the first turns a stored credential into request headers for both the spec fetch (§5.1) and the tool-call proxy (§6), so those two cannot disagree about what a credential means; the second holds the warning and error types every ingestion stage reports through, so the UI has one shape to render and one root to catch. `naming.py` is the third: it decides what an operation is called, and the wizard, the settings page and the refresh all name operations, so the rule that a collision is reported rather than resolved lives in one place.
 
-**Dependencies:** `fastapi`, `uvicorn[standard]`, `jinja2`, `httpx`, `pydantic` v2, `sqlalchemy[asyncio]`, `aiosqlite`, `alembic`, `mcp`, `pyyaml`, `jsonschema`, `cryptography`, `itsdangerous`, `python-multipart`. Dev: `pytest`, `pytest-asyncio`, `respx`, `ruff`, `mypy`.
+**Dependencies:** `fastapi`, `uvicorn[standard]`, `jinja2`, `httpx`, `httpx2` (the client the `mcp` SDK's transport speaks; see `outbound.py`), `pydantic` v2, `sqlalchemy[asyncio]`, `aiosqlite`, `alembic`, `mcp` 2.x, `pyyaml`, `jsonschema`, `cryptography`, `itsdangerous`, `python-multipart`. Dev: `pytest`, `pytest-asyncio`, `respx`, `ruff`, `mypy`.
 
 **Supported Python:** 3.11+ (stdlib `tomllib`). Linux, macOS, Windows.
 
@@ -382,7 +417,7 @@ docs/            install.md  service-setup.md  configuration.md  security.md
 
 ## 10. Testing
 
-- **Unit** — Swagger 2.0 conversion, `$ref` resolution including cycles, schema generation, tool-name generation and collision handling, the refresh diff (all four transitions), credential encryption round-trip, config precedence, and spec-fetch auth: each of the three modes sends the right headers, and a cross-origin redirect strips them.
+- **Unit** — Swagger 2.0 conversion, `$ref` resolution including cycles, schema generation, tool-name generation and collision handling, the refresh diff (all four transitions), credential encryption round-trip, config precedence, and spec-fetch auth: each of the three modes sends the right headers, and a cross-origin redirect strips them. Reading an MCP endpoint (§5b) against a fake upstream behind an ASGI transport: the preview, each credential type arriving on every request, and each failure class reported as itself; then the same reader over a real socket against the gateway's own `/mcp`, with and without its bearer token.
 - **Integration** — a stub upstream served by `respx`: register a spec, select operations, list tools over `/mcp`, call one, assert the outbound request shape and the recorded metrics. Then mutate the spec, refresh, and assert `new` operations arrive unselected with the server flagged. A second pass covers a spec URL that `401`s without credentials and succeeds with them, including on a later auto-refresh.
 - **Fixtures** — specs checked into `tests/fixtures/specs/`: a Swagger 2.0 spec, a 3.0 spec with deep `$ref`s, a 3.1 spec, and one deliberately malformed spec.
 
