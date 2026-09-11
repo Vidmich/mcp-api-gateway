@@ -1,8 +1,9 @@
 """The tool set the gateway provides itself, written by hand (task 102).
 
 Six tools, defined here and nowhere else: list the servers, show one, read a
-spec URL without saving it, add a server from one, change which of a server's
-operations are exposed, and refresh a server's document.
+spec URL or an MCP endpoint without saving it, add a server from one, change
+which of a server's operations are exposed, and refresh a server's document or
+tool list.
 
 **Written out rather than derived.** The gateway has an OpenAPI document of its
 own and this could have been ingested from it like any third-party spec. It is
@@ -30,7 +31,13 @@ has been called has already been given a body of the right shape.
 **A tool's name is stable.** It is stored as an ``op_key`` and as an effective
 tool name, and renaming one here would retire the old tool and add a new one —
 which is exactly what should happen if a tool's meaning changes, and exactly
-what should not happen because a better word came to mind.
+what should not happen because a better word came to mind. So ``preview_spec``
+kept its name when it learned to read an endpoint as well (task 134): its name
+is in every agent's tool cache that has used it, and a tool named for a
+document that can also read an endpoint is a smaller wrong than a tool that
+vanished. Its description says what it reads now. A tool whose *input schema*
+changes keeps its row too: the startup reconciliation reports it ``changed``,
+and it stays selected, because the set is the gateway's own.
 """
 
 from __future__ import annotations
@@ -41,7 +48,7 @@ from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from mcp_gateway.web.api import ServerCreate, SpecPreviewIn
+from mcp_gateway.web.api import PreviewIn, ServerCreate
 
 #: The tool prefix of the row, reserved. Every tool below is published as
 #: ``gateway_<name>``, which is what a prefix means everywhere else
@@ -151,10 +158,11 @@ LIST_SERVERS: Final = BuiltinTool(
     name="list_servers",
     summary="List the upstream services this gateway exposes.",
     description=(
-        "Every registered server with its id, name, tool prefix, base URL, whether it is "
-        "enabled, how many of its operations are exposed as tools, and when it was last "
-        "refreshed. Credentials are never included: a server reports only whether one is "
-        "stored, never its value."
+        "Every registered server with its id, name, kind — openapi for an API described "
+        "by a document, mcp for a server that already speaks MCP — tool prefix, base URL "
+        "or endpoint, whether it is enabled, how many of its operations are exposed as "
+        "tools, and when it was last refreshed. Credentials are never included: a server "
+        "reports only whether one is stored, never its value."
     ),
     arguments=NoArguments,
 )
@@ -164,35 +172,40 @@ GET_SERVER: Final = BuiltinTool(
     summary="Show one server and all of its operations.",
     description=(
         "The same fields as gateway_list_servers, plus every operation the server's "
-        "document declared: its key, method, path, summary, the tool name it would be "
-        "published under, and whether it is currently selected. Use it to find the "
-        "operation keys gateway_select_operations takes."
+        "document declared — or, for an MCP server, every tool it listed: its key, "
+        "method, path, summary, the tool name it would be published under, and whether "
+        "it is currently selected. Use it to find the operation keys "
+        "gateway_select_operations takes."
     ),
     arguments=ServerId,
 )
 
 PREVIEW_SPEC: Final = BuiltinTool(
     name="preview_spec",
-    summary="Read an OpenAPI or Swagger document without saving anything.",
+    summary="Read an OpenAPI or Swagger document, or an MCP endpoint, without saving.",
     description=(
         "Fetches and parses the document at spec_url and reports what it contains: the "
         "format, the base URL it resolves to, every operation with its key, and any "
-        "warnings. Nothing is written and no credential is stored — the ones passed here "
-        "are used for this one request. Call it before gateway_add_server to find out "
-        "which operation keys the document has."
+        "warnings. With kind set to mcp it connects to endpoint instead and reports what "
+        "the server said it is and every tool it lists, each with its key. Nothing is "
+        "written and no credential is stored — the ones passed here are used for this "
+        "one request. Call it before gateway_add_server to find out which keys the "
+        "upstream has."
     ),
-    arguments=SpecPreviewIn,
+    arguments=PreviewIn,
 )
 
 ADD_SERVER: Final = BuiltinTool(
     name="add_server",
-    summary="Register a new upstream service from its OpenAPI or Swagger document.",
+    summary="Register a new upstream: an OpenAPI or Swagger document, or an MCP server.",
     description=(
-        "Fetches the document, then registers the server, its operations and its snapshot "
-        "in one transaction. Pass selected to expose only some of the operations; leaving "
-        "it out exposes all of them. Credentials given here are encrypted before they are "
-        "stored and can never be read back. The new server arrives enabled, and its tools "
-        "appear on the next tools/list."
+        "Fetches the document — or, with kind set to mcp, connects to endpoint and lists "
+        "its tools — then registers the server, its operations and its snapshot in one "
+        "transaction. Pass selected to expose only some of the operations; leaving it out "
+        "exposes all of them. An MCP server takes one credential for everything and no "
+        "base_url or spec_auth fields. Credentials given here are encrypted before they "
+        "are stored and can never be read back. The new server arrives enabled, and its "
+        "tools appear on the next tools/list."
     ),
     arguments=ServerCreate,
     writes=True,
@@ -212,11 +225,12 @@ SELECT_OPERATIONS: Final = BuiltinTool(
 
 REFRESH_SERVER: Final = BuiltinTool(
     name="refresh_server",
-    summary="Read a server's document again and reconcile it.",
+    summary="Read a server's document or tool list again and reconcile it.",
     description=(
-        "Fetches the server's spec URL again and reports what changed: operations that "
-        "are new, changed or gone. New operations are never exposed automatically — that "
-        "is a decision for gateway_select_operations or for an operator."
+        "Fetches the server's spec URL again — or lists an MCP server's tools again — and "
+        "reports what changed: operations that are new, changed or gone. New operations "
+        "are never exposed automatically — that is a decision for "
+        "gateway_select_operations or for an operator."
     ),
     arguments=ServerId,
     writes=True,

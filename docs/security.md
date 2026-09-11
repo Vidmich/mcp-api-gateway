@@ -36,10 +36,12 @@ you can configure today.
 ### 1. No SSRF protection
 
 The gateway fetches any spec URL and calls any base URL an admin configures.
-There is no allow-list, no deny-list, and no filtering of loopback or private
-address ranges. `http://169.254.169.254/`, `http://127.0.0.1:6379/`, and the
-admin interface of every box on the same subnet are all valid upstreams as far
-as it is concerned.
+An MCP server's endpoint is such a URL too: the gateway connects to it, lists
+its tools and forwards calls to it, with the same absence of checks. There is
+no allow-list, no deny-list, and no filtering of loopback or private address
+ranges. `http://169.254.169.254/`, `http://127.0.0.1:6379/`, and the admin
+interface of every box on the same subnet are all valid upstreams as far as it
+is concerned, whichever kind they are registered as.
 
 Combined with an unauthenticated `/mcp`, that is an open proxy into the
 gateway's own network — the reachability of everything the *host* can reach,
@@ -72,8 +74,8 @@ one token, shared by every client: this is a door, not an identity, and nothing
 here tells one caller from another.
 
 This is why the built-in **Gateway** server is disabled until you switch it on.
-Its tools register upstreams and store their credentials in this gateway, and
-they arrive on the endpoint above — so with no token set, enabling it means
+Its tools register upstreams — API and MCP servers alike — and store their
+credentials in this gateway, and they arrive on the endpoint above — so with no token set, enabling it means
 anyone who can reach the port can configure the gateway. The startup log says
 so, and so does the toggle at the moment you flip it. Enabling it and setting a
 token is a reasonable thing to do; enabling it without one is a decision to make
@@ -221,8 +223,9 @@ offers. New operations found by a refresh are never enabled by themselves — th
 arrive flagged `New` with the server marked **Needs Attention**, waiting for
 somebody to look — but the initial selection is yours, and "select all" on a
 spec you have not read is how a `DELETE /users/{id}` ends up one model
-hallucination away from being called. Disabling a server (the toggle on the list
-page) takes all of its tools out of `tools/list` at once.
+hallucination away from being called. The same holds for an MCP server's tool
+list, which is another program's word for what its tools do. Disabling a server
+(the toggle on its list page) takes all of its tools out of `tools/list` at once.
 
 ## What is already handled
 
@@ -244,6 +247,8 @@ Not gaps, and worth knowing so they are not re-litigated:
   type. There is no response body anywhere that can carry one.
 - **Credentials are stripped on cross-origin redirects.** A spec URL that
   redirects to another host does not take the `Authorization` header with it.
+  An MCP endpoint is not followed anywhere: a redirect from one is a failure to
+  connect, reported as such.
 - **Session cookies are `HttpOnly`, `SameSite=Lax`, and signed.**
 - **Every outbound call has a timeout and a response cap** (`http.timeout_seconds`,
   `http.max_response_bytes`), so a hostile or broken upstream cannot hold a

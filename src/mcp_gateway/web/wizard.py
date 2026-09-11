@@ -113,8 +113,9 @@ SPEC_AUTH_HINT: Final = "The spec URL needs credentials of its own to be downloa
 
 ENDPOINT_REQUIRED: Final = "Enter the URL of the MCP endpoint."
 #: Added to the message when the endpoint refused the connection, beside the
-#: one selector on the form that can fix it (task 133).
-ENDPOINT_AUTH_HINT: Final = "This server needs a credential the form did not give it."
+#: one selector on the form that can fix it (task 133). Said by the JSON API
+#: and by a tool result too (task 134), so it names no form.
+ENDPOINT_AUTH_HINT: Final = "This server needs a credential it was not given."
 
 #: Said beside a display name the operator did not type. Step 1 promised the
 #: document would supply one, and step 2 is where that promise is kept or not,

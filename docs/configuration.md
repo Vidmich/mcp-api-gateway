@@ -329,7 +329,8 @@ auto_refresh_interval_minutes = 1440
 ```
 
 How long a server with auto-refresh switched on may go between re-reads of its
-spec. It is a floor rather than a schedule: the scheduler wakes once a minute
+spec — or, for an MCP server, between listings of its tools. It is a floor
+rather than a schedule: the scheduler wakes once a minute
 and refreshes whatever is due, and a server whose refresh keeps failing backs
 off — a minute, then doubling, up to six hours — instead of being retried every
 tick.
@@ -452,8 +453,8 @@ max_response_bytes = 5242880
 user_agent = "mcp-api-gateway/0.1.0"
 ```
 
-These apply to every outbound call the gateway makes — fetching a spec and
-proxying a tool call alike.
+These apply to every outbound call the gateway makes — fetching a spec,
+connecting to an MCP endpoint and proxying a tool call alike.
 
 `timeout_seconds` covers the whole request. `max_response_bytes` is the point at
 which a response is truncated, with a note appended to the tool result, rather

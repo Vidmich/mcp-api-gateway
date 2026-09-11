@@ -25,6 +25,19 @@ convenience; for a credential it is the whole design, and it is the same one the
 detail page's Replace checkbox makes — a credential nobody mentioned is a
 credential nobody read, let alone overwrote.
 
+**One resource, two kinds.** A server is a server whether a document or an
+endpoint is behind it (spec §4): ``GET /servers`` lists both kinds, every
+representation says which in ``kind``, and a create or a preview takes ``kind``
+too — ``openapi`` unless said otherwise, so that no caller written before there
+were two has to change. An MCP server's ``spec_url`` and ``base_url`` are one
+value, and it is offered a third time as ``endpoint``, which is what it is; the
+fields that describe a *document* — a base URL override, a spec-auth mode, a
+spec credential — are refused on an MCP server by name, because a request that
+sets them is a request that misunderstands what it is registering, and a 422
+that says so is worth more than a row that ignores half of what it was sent
+(task 134). A second resource for the second kind was considered and rejected:
+a client that lists "every server" should get every server.
+
 **Every list is an object.** ``{"servers": [...]}`` rather than a bare array,
 because a top-level JSON array is the one shape that cannot gain a field later
 without breaking every caller, and both of these lists will want one.
@@ -40,7 +53,7 @@ from __future__ import annotations
 
 import datetime as dt
 import time
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
@@ -51,22 +64,35 @@ from mcp_gateway.config import HttpSettings, Settings
 from mcp_gateway.crypto import Credential, CredentialCipher
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import Server, SpecAuthMode
+from mcp_gateway.db.repo import KIND_MCP, KIND_OPENAPI
 from mcp_gateway.limits import MAX_RATE_CALLS, MAX_WINDOW_SECONDS
+from mcp_gateway.mcpclient.connect import EndpointError, EndpointStatusError
+from mcp_gateway.mcpclient.preview import EndpointPreview, UpstreamTool, preview_endpoint
 from mcp_gateway.naming import sanitize, server_slug
 from mcp_gateway.openapi.diagnostics import SpecWarning
 from mcp_gateway.openapi.ingest import SpecPreview, preview_spec
+from mcp_gateway.openapi.schema import NormalizedOperation
 from mcp_gateway.refresh import OperationChange, RefreshReport
 from mcp_gateway.web.detail import SettingsInvalid
 from mcp_gateway.web.picker import FALLBACK_SLUG, NO_BASE_URL, register
+from mcp_gateway.web.sections import ENDPOINT_REQUIRED as ENDPOINT_NEEDED
 from mcp_gateway.web.wizard import (
     BASE_URL_SCHEME,
+    ENDPOINT_FIELD,
+    ENDPOINT_REQUIRED,
     NOTHING_TO_REUSE,
     SCHEMES,
     URL_REQUIRED,
     URL_SCHEME,
     PendingServer,
     WizardForm,
+    endpoint_failure_message,
 )
+
+#: The two kinds a caller can register. The third value of
+#: :data:`~mcp_gateway.db.models.ServerKind` is the gateway's own row, which
+#: nobody creates.
+UpstreamKind = Literal["openapi", "mcp"]
 
 #: What a ``custom`` spec-auth mode is refused for. The detail page says the
 #: same thing in the same words; there is one rule, stated once.
@@ -80,6 +106,32 @@ CUSTOM_NEEDS_CREDENTIAL: Final = (
 UNKNOWN_SELECTION: Final = (
     "This document has no operation with the key {keys}. "
     "Ask POST /api/v1/specs/preview for the keys it does have."
+)
+#: The same refusal for an MCP server, whose keys are ``TOOL <name>``.
+UNKNOWN_TOOLS: Final = (
+    "This server has no tool with the key {keys}. "
+    "Ask POST /api/v1/specs/preview for the keys it does have."
+)
+
+#: Why a field that describes a document is refused on an MCP server (task
+#: 134). Each names the field, so a caller reads it beside the one to take
+#: out, and says what the endpoint is instead, so they know why.
+NO_BASE_URL_FOR_MCP: Final = (
+    "base_url does not apply to an MCP server: its tools are listed and called "
+    "at its endpoint, which is the one URL it has."
+)
+NO_SPEC_AUTH_FOR_MCP: Final = (
+    "{field} does not apply to an MCP server: one credential is used both to "
+    "list its tools and to call them."
+)
+#: And the other way round: an API server is reached through its document.
+NO_ENDPOINT_FOR_API: Final = (
+    "endpoint does not apply to an API server: give its spec_url, and base_url "
+    "if the document does not say where its API lives."
+)
+#: A create that gave the endpoint under both of its names, and they disagree.
+ENDPOINT_TWICE: Final = (
+    "spec_url is another name for endpoint on an MCP server; the two have to agree."
 )
 
 #: How many unknown keys are named before the message gives up listing them.
@@ -125,7 +177,7 @@ def health_report(settings: Settings, started_at: float | None) -> Health:
 
 
 class ServerList(BaseModel):
-    """``GET /servers``."""
+    """``GET /servers``, every kind unless ``?kind=`` narrowed it."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -173,7 +225,7 @@ class PreviewedOperation(BaseModel):
 
 
 class SpecPreviewOut(BaseModel):
-    """``POST /specs/preview``: everything a document turned out to contain.
+    """``POST /specs/preview`` of a document: everything it turned out to contain.
 
     Deliberately not the document itself. The normalised spec is stored as a
     server's snapshot when one is created, and handing back a megabyte of JSON
@@ -182,6 +234,7 @@ class SpecPreviewOut(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+    kind: Literal["openapi"] = KIND_OPENAPI
     requested_url: str
     fetched_url: str
     redirected: bool
@@ -198,8 +251,72 @@ class SpecPreviewOut(BaseModel):
     warnings: tuple[WarningOut, ...] = ()
 
 
-def previewed(preview: SpecPreview) -> SpecPreviewOut:
-    """Dress a :class:`~mcp_gateway.openapi.ingest.SpecPreview` for the wire."""
+class PreviewedTool(BaseModel):
+    """One tool an endpoint listed, before anything is stored.
+
+    ``op_key`` is what ``selected`` on a create is written in, as it is for
+    an operation; ``name`` is what the upstream calls the tool, which is what
+    the row's ``path`` will hold. The input schema is left out for the reason
+    :class:`PreviewedOperation` leaves it out.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    op_key: str
+    name: str
+    title: str | None
+    description: str | None
+    input_schema_hash: str = ""
+
+
+class EndpointPreviewOut(BaseModel):
+    """``POST /specs/preview`` of an endpoint: what it said it is and offers.
+
+    The same fields as :class:`SpecPreviewOut` wherever the two things have
+    the same fact — ``kind``, ``title``, ``version``, ``spec_format``,
+    ``spec_hash`` — and different ones where they differ: an endpoint has no
+    fetched URL to report a redirect of and no base URL apart from itself, and
+    what it lists are tools, each with a name rather than a method and a path.
+    ``spec_format`` is the protocol version the row will store, as
+    ``mcp-<version>``, which is what that column means for this kind (spec §4).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["mcp"] = KIND_MCP
+    endpoint: str
+    #: ``serverInfo.name``: the programmatic name, beside the display one.
+    name: str | None
+    title: str | None
+    version: str | None
+    protocol_version: str
+    spec_format: str
+    spec_hash: str
+    tool_count: int
+    tools: tuple[PreviewedTool, ...] = ()
+
+
+#: What ``POST /specs/preview`` answers with: one shape per kind.
+PreviewOut = SpecPreviewOut | EndpointPreviewOut
+
+
+def previewed(preview: SpecPreview | EndpointPreview) -> PreviewOut:
+    """Dress either kind of preview for the wire."""
+    if isinstance(preview, EndpointPreview):
+        return EndpointPreviewOut(
+            endpoint=preview.url,
+            name=preview.name,
+            title=preview.title,
+            version=preview.version,
+            protocol_version=preview.protocol_version,
+            spec_format=preview.spec_format,
+            spec_hash=preview.spec_hash,
+            tool_count=preview.tool_count,
+            tools=tuple(
+                _previewed_tool(tool, operation)
+                for tool, operation in zip(preview.tools, preview.operations, strict=True)
+            ),
+        )
     return SpecPreviewOut(
         requested_url=preview.requested_url,
         fetched_url=preview.fetched_url,
@@ -229,6 +346,17 @@ def previewed(preview: SpecPreview) -> SpecPreviewOut:
 
 def _warning(warning: SpecWarning) -> WarningOut:
     return WarningOut(code=warning.code, message=warning.message, location=warning.location)
+
+
+def _previewed_tool(tool: UpstreamTool, operation: NormalizedOperation) -> PreviewedTool:
+    """One listed tool beside the operation row it would become."""
+    return PreviewedTool(
+        op_key=operation.op_key,
+        name=tool.name,
+        title=tool.title,
+        description=tool.description,
+        input_schema_hash=operation.input_schema_hash,
+    )
 
 
 class ChangedOperation(BaseModel):
@@ -312,11 +440,20 @@ def _changed(change: OperationChange) -> ChangedOperation:
 # --------------------------------------------------------------------------- #
 
 
-class _SpecRequest(BaseModel):
-    """The half of a request that describes a document and how to fetch it.
+class _UpstreamRequest(BaseModel):
+    """The half of a request that says what to read and how to reach it.
 
     Shared by the create and by the preview, because they are the same question
     asked twice: the preview is the create up to the point where it would write.
+
+    ``kind`` decides which fields mean anything (task 134). For a document —
+    the default, so a body written before there were two kinds still reads as
+    it did — ``spec_url`` is required and the rest describe how to fetch it.
+    For an endpoint, ``endpoint`` is required and is the whole address:
+    ``spec_url`` is taken as another name for it, since that is the name a
+    ``GET`` reports it under, and ``base_url``, ``spec_auth_mode`` and
+    ``spec_credential`` are refused by name rather than ignored. It is declared
+    first so every validator below can read it off ``info.data``.
 
     A credential arrives as the object it is — ``{"type": "bearer", "token":
     "..."}`` — rather than as a type beside a bag of fields, so an API key with
@@ -327,7 +464,12 @@ class _SpecRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    spec_url: str
+    kind: UpstreamKind = KIND_OPENAPI
+    #: Where the document is, for an API server. Validated when left out,
+    #: because left out is the fault worth naming for that kind.
+    spec_url: str = Field(default="", validate_default=True)
+    #: Where the MCP server is, for one of those: listed from and called at.
+    endpoint: str = Field(default="", validate_default=True)
     #: An override for where tool calls go. Empty means "whatever the document
     #: says", which is a document that has to say something.
     base_url: str = ""
@@ -341,17 +483,40 @@ class _SpecRequest(BaseModel):
 
     @field_validator("spec_url")
     @classmethod
-    def _usable_url(cls, value: str) -> str:
+    def _usable_url(cls, value: str, info: ValidationInfo) -> str:
         url = value.strip()
         if not url:
+            if _is_mcp(info):
+                return url
             raise ValueError(URL_REQUIRED)
         if not url.lower().startswith(SCHEMES):
             raise ValueError(URL_SCHEME)
         return url
 
+    @field_validator("endpoint")
+    @classmethod
+    def _usable_endpoint(cls, value: str, info: ValidationInfo) -> str:
+        url = value.strip()
+        if not _is_mcp(info):
+            if url:
+                raise ValueError(NO_ENDPOINT_FOR_API)
+            return url
+        # ``spec_url`` is validated first, so a usable one is in ``info.data``
+        # by now and an unusable one has already been faulted by name.
+        alias = str(info.data.get("spec_url", ""))
+        if not url and not alias:
+            raise ValueError(ENDPOINT_REQUIRED)
+        if url and not url.lower().startswith(SCHEMES):
+            raise ValueError(URL_SCHEME)
+        if url and alias and url != alias:
+            raise ValueError(ENDPOINT_TWICE)
+        return url or alias
+
     @field_validator("base_url")
     @classmethod
-    def _usable_base_url(cls, value: str) -> str:
+    def _usable_base_url(cls, value: str, info: ValidationInfo) -> str:
+        if _is_mcp(info):
+            raise ValueError(NO_BASE_URL_FOR_MCP)
         url = value.strip()
         if url and not url.lower().startswith(SCHEMES):
             raise ValueError(BASE_URL_SCHEME)
@@ -360,6 +525,8 @@ class _SpecRequest(BaseModel):
     @field_validator("spec_auth_mode")
     @classmethod
     def _reuse_needs_something_to_reuse(cls, value: str, info: ValidationInfo) -> str:
+        if _is_mcp(info):
+            raise ValueError(NO_SPEC_AUTH_FOR_MCP.format(field="spec_auth_mode"))
         # ``credential`` is declared above this field, so it has already been
         # validated and is in ``info.data`` — which is what lets this fault land
         # on the mode rather than on the request as a whole.
@@ -370,20 +537,43 @@ class _SpecRequest(BaseModel):
     @field_validator("spec_credential")
     @classmethod
     def _custom_needs_one(cls, value: Credential | None, info: ValidationInfo) -> Credential | None:
+        if _is_mcp(info):
+            # Runs on the default too — ``validate_default`` above — so the
+            # refusal is kept for a credential the body actually carried.
+            if value is not None:
+                raise ValueError(NO_SPEC_AUTH_FOR_MCP.format(field="spec_credential"))
+            return None
         if info.data.get("spec_auth_mode") == "custom" and value is None:
             raise ValueError(CUSTOM_NEEDS_CREDENTIAL)
         return value
 
-    def as_form(self, *, name: str = "") -> WizardForm:
-        """The same object step 1 of the wizard produces.
+    @property
+    def url(self) -> str:
+        """The one URL the upstream is read from: the document's, or the endpoint."""
+        return self.endpoint if self.kind == KIND_MCP else self.spec_url
 
-        Which is the point: from here on the two paths are one path.
+    def as_form(self, *, name: str = "") -> WizardForm:
+        """The same object step 1 of the wizard produces, for either section.
+
+        Which is the point: from here on the two paths are one path. The MCP
+        form is the one :func:`~mcp_gateway.web.wizard.parse_mcp_form` builds:
+        the endpoint in ``spec_url``, no base URL, the one credential reused
+        for everything.
         """
+        auth_type = "none" if self.credential is None else self.credential.type
+        if self.kind == KIND_MCP:
+            return WizardForm(
+                spec_url=self.endpoint,
+                name=name,
+                auth_type=auth_type,
+                spec_auth_mode="same_as_api",
+                credential=self.credential,
+            )
         return WizardForm(
             spec_url=self.spec_url,
             name=name,
             base_url=self.base_url,
-            auth_type="none" if self.credential is None else self.credential.type,
+            auth_type=auth_type,
             spec_auth_mode=self.spec_auth_mode,
             spec_auth_type=(
                 self.spec_credential.type if self.spec_credential is not None else "bearer"
@@ -393,12 +583,22 @@ class _SpecRequest(BaseModel):
         )
 
 
-class SpecPreviewIn(_SpecRequest):
-    """``POST /specs/preview``. Fetches and parses; writes nothing at all."""
+def _is_mcp(info: ValidationInfo) -> bool:
+    """Whether the body being validated registers an endpoint.
+
+    Read off ``info.data``, where ``kind`` already is because it is declared
+    first; absent — a ``kind`` that failed its own validation — the document
+    rules apply, and the fault on ``kind`` is the one the caller reads.
+    """
+    return info.data.get("kind") == KIND_MCP
 
 
-class ServerCreate(_SpecRequest):
-    """``POST /servers``: fetch the document, then register what it describes.
+class PreviewIn(_UpstreamRequest):
+    """``POST /specs/preview``. Reads and reports; writes nothing at all."""
+
+
+class ServerCreate(_UpstreamRequest):
+    """``POST /servers``: read the upstream, then register what it describes.
 
     One call rather than the wizard's two, because a script has no step 2 to
     spend time on. What it gives up is the chance to look before choosing, and
@@ -410,15 +610,17 @@ class ServerCreate(_SpecRequest):
     saving a round trip.
     """
 
-    #: What the server is called. Empty takes the document's title, and failing
-    #: that the host of the spec URL — the same fallback step 1 offers.
+    #: What the server is called. Empty takes the document's title — or, for
+    #: an endpoint, the name ``initialize`` reported — and failing that the
+    #: host of the URL: the same fallback step 1 offers.
     name: str = ""
     #: What leads every tool name from this server. Empty derives one from the
     #: display name, which is what the wizard fills its box with.
     tool_prefix: str = ""
-    #: The operations to expose, by ``op_key``. ``null`` — the default — means
-    #: all of them, which is what the picker arrives showing. An empty list
-    #: means none, which is a legal thing to want.
+    #: The operations to expose, by ``op_key`` — ``TOOL <name>`` for an MCP
+    #: server's tools. ``null`` — the default — means all of them, which is
+    #: what the picker arrives showing. An empty list means none, which is a
+    #: legal thing to want.
     selected: list[str] | None = None
 
     def prefix_for(self, pending: PendingServer) -> str:
@@ -432,7 +634,7 @@ class ServerCreate(_SpecRequest):
 
     def selection(self, pending: PendingServer) -> list[str]:
         """Which operations to expose. Raises :class:`ValueError` on a key the
-        document does not have."""
+        upstream does not have."""
         available = {operation.op_key for operation in pending.operations}
         if self.selected is None:
             return sorted(available)
@@ -441,11 +643,59 @@ class ServerCreate(_SpecRequest):
             shown = ", ".join(repr(key) for key in unknown[:MAX_UNKNOWN_SHOWN])
             if len(unknown) > MAX_UNKNOWN_SHOWN:
                 shown += f", and {len(unknown) - MAX_UNKNOWN_SHOWN} more"
-            raise ValueError(UNKNOWN_SELECTION.format(keys=shown))
+            refusal = UNKNOWN_TOOLS if pending.kind == KIND_MCP else UNKNOWN_SELECTION
+            raise ValueError(refusal.format(keys=shown))
         return list(self.selected)
 
 
-async def create_from_spec(
+async def read_upstream(
+    body: _UpstreamRequest,
+    *,
+    http: HttpSettings,
+    client: httpx.AsyncClient | None = None,
+) -> SpecPreview | EndpointPreview:
+    """Read what ``body`` names — a document or an endpoint — storing nothing.
+
+    The one place the API's two kinds meet their two readers:
+    :func:`~mcp_gateway.openapi.ingest.preview_spec` for a document,
+    :func:`~mcp_gateway.mcpclient.preview.preview_endpoint` for an endpoint,
+    each with the credentials the form carries for it. The preview route, the
+    create and the built-in tools all read through here, so a kind that one of
+    them can read is a kind all of them can.
+
+    Raises :class:`~mcp_gateway.openapi.diagnostics.SpecError` or
+    :class:`~mcp_gateway.mcpclient.connect.EndpointError`, by kind.
+    """
+    form = body.as_form()
+    if body.kind == KIND_MCP:
+        # The MCP client has a pool of its own (spec §6); ``client`` is the
+        # HTTP pool, which an endpoint is not read through.
+        return await preview_endpoint(form.spec_url, credential=form.credential, http=http)
+    return await preview_spec(
+        form.spec_url,
+        spec_credential=form.fetch_credential,
+        api_credential=form.credential,
+        http=http,
+        # Whatever pool the process shares (spec §2); ``None`` where there is
+        # none, and a client is made for the call.
+        client=client,
+    )
+
+
+def endpoint_fault(failure: EndpointError) -> dict[str, str]:
+    """The field a failed connection is reported against, and the sentence.
+
+    The API's version of :func:`~mcp_gateway.web.wizard.endpoint_failure_field`:
+    a ``401`` or a ``403`` from the endpoint belongs beside ``credential``,
+    which is the field a script can fix, where the form puts it beside its
+    authentication selector; everything else is about the endpoint.
+    """
+    needs_credentials = isinstance(failure, EndpointStatusError) and failure.needs_credentials
+    field = "credential" if needs_credentials else ENDPOINT_FIELD
+    return {field: endpoint_failure_message(failure)}
+
+
+async def create_server(
     session: AsyncSession,
     body: ServerCreate,
     *,
@@ -453,13 +703,13 @@ async def create_from_spec(
     http: HttpSettings,
     client: httpx.AsyncClient | None = None,
 ) -> Server:
-    """Fetch the document ``body`` names, then register what it describes.
+    """Read the upstream ``body`` names, then register what it describes.
 
     The wizard's two steps in one call, running through the wizard's own
-    functions: the fetch is
-    :func:`~mcp_gateway.openapi.ingest.preview_spec` and the write is
+    functions: the reading is :func:`read_upstream` and the write is
     :func:`~mcp_gateway.web.picker.register`, which is what makes the row this
-    leaves behind the row step 2 would have left.
+    leaves behind the row step 2 would have left — of either section, since
+    ``kind`` chose the reader and the row is written from what was read.
 
     It lives here, beside the model it reads, because it has two callers:
     ``POST /api/v1/servers`` and the built-in server's ``add_server`` tool
@@ -470,21 +720,14 @@ async def create_from_spec(
     The two refusals it raises itself are :class:`SettingsInvalid`, keyed by
     the field that can fix them: a document that never said where its API
     lives and nobody supplied a base URL, and a selection naming operations
-    the document does not have. Everything else comes from underneath —
+    the upstream does not have. Everything else comes from underneath —
     :class:`~mcp_gateway.openapi.diagnostics.SpecError` for a document that
-    could not be read, :class:`~mcp_gateway.naming.NamesTaken` for a tool name
-    another server publishes.
+    could not be read, :class:`~mcp_gateway.mcpclient.connect.EndpointError`
+    for an endpoint that could not be, :class:`~mcp_gateway.naming.NamesTaken`
+    for a tool name another server publishes.
     """
     form = body.as_form(name=body.name.strip())
-    preview = await preview_spec(
-        form.spec_url,
-        spec_credential=form.fetch_credential,
-        api_credential=form.credential,
-        http=http,
-        # Whatever pool the process shares (spec §2); ``None`` where there is
-        # none, and a client is made for the call.
-        client=client,
-    )
+    preview = await read_upstream(body, http=http, client=client)
     pending = PendingServer(form=form, preview=preview)
     if not pending.base_url:
         # A document that never said where its API lives, and a caller who did
@@ -536,6 +779,14 @@ class ServerUpdate(BaseModel):
     ``spec_url`` is not editable. A server *is* its document; pointing an
     existing row at a different one would keep every stored operation, override
     and tool name while changing what they describe. Delete and create instead.
+    An MCP server's ``endpoint`` is, as it is on its detail page (task 133):
+    the same tools listed from a server that moved are the same tools, and the
+    session the gateway held to the old address is closed with the save.
+
+    Which fields apply is the row's kind to say, not the body's, so the two
+    refusals that depend on it — ``base_url``, ``spec_auth_mode`` or
+    ``spec_credential`` on an MCP server, ``endpoint`` on an API one — are made
+    by the route once it has the row (:func:`kind_is_coherent`).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -543,6 +794,10 @@ class ServerUpdate(BaseModel):
     name: str | None = None
     tool_prefix: str | None = None
     base_url: str | None = None
+    #: Where an MCP server is listed from and called (task 134). Written to
+    #: both URL columns, since for that kind they are one value; ``null`` is
+    #: refused, because a server with nowhere to connect is not a server.
+    endpoint: str | None = None
     enabled: bool | None = None
     auto_refresh: bool | None = None
 
@@ -566,22 +821,66 @@ class ServerUpdate(BaseModel):
             raise ValueError(BASE_URL_SCHEME)
         return url
 
+    @field_validator("endpoint")
+    @classmethod
+    def _usable_endpoint(cls, value: str | None) -> str | None:
+        url = (value or "").strip()
+        if not url:
+            raise ValueError(ENDPOINT_NEEDED)
+        if not url.lower().startswith(SCHEMES):
+            raise ValueError(URL_SCHEME)
+        return url
+
     @property
     def given(self) -> set[str]:
         """The fields this body actually carried, ``null`` ones included."""
         return set(self.model_fields_set)
 
     def as_patch(self) -> repo.ServerPatch:
-        """The repository's patch, carrying exactly the keys that were sent."""
+        """The repository's patch, carrying exactly the keys that were sent.
+
+        An ``endpoint`` goes out as ``base_url``: that is the column the
+        settings form writes it to, and the repository keeps an MCP server's
+        two URL columns equal from there (task 133).
+        """
         values: dict[str, Any] = {
             name: getattr(self, name) for name in self.model_fields_set if name in _PATCHABLE
         }
+        if "endpoint" in self.model_fields_set:
+            values["base_url"] = self.endpoint
         # The prefix is derived from a name the same way the detail page
         # derives it, so an API caller and an operator typing into the form
         # get the same prefix out of the same words.
         if "tool_prefix" in values and values["tool_prefix"] is not None:
             values["tool_prefix"] = sanitize(str(values["tool_prefix"]))
         return repo.ServerPatch(**values)
+
+
+#: The fields of a patch that describe a document, refused on an MCP server.
+_DOCUMENT_FIELDS: Final = ("base_url", "spec_auth_mode", "spec_credential")
+
+
+def kind_is_coherent(body: ServerUpdate, server: Server) -> None:
+    """Refuse the fields of a patch that do not apply to this row's kind.
+
+    Every fault at once, keyed by field, as the request validators report
+    theirs: a caller that sent two document fields to an MCP server hears
+    about both in one round trip (task 134).
+    """
+    errors: dict[str, str] = {}
+    given = body.given
+    if server.kind == KIND_MCP:
+        for name in _DOCUMENT_FIELDS:
+            if name in given:
+                errors[name] = (
+                    NO_BASE_URL_FOR_MCP
+                    if name == "base_url"
+                    else NO_SPEC_AUTH_FOR_MCP.format(field=name)
+                )
+    elif "endpoint" in given:
+        errors["endpoint"] = NO_ENDPOINT_FOR_API
+    if errors:
+        raise SettingsInvalid(errors)
 
 
 class OperationUpdate(BaseModel):
@@ -606,22 +905,34 @@ class OperationUpdate(BaseModel):
 
 __all__ = [
     "CUSTOM_NEEDS_CREDENTIAL",
+    "ENDPOINT_TWICE",
     "MAX_UNKNOWN_SHOWN",
+    "NO_BASE_URL_FOR_MCP",
+    "NO_ENDPOINT_FOR_API",
+    "NO_SPEC_AUTH_FOR_MCP",
     "UNKNOWN_SELECTION",
+    "UNKNOWN_TOOLS",
     "ChangedOperation",
+    "EndpointPreviewOut",
     "Health",
     "OperationList",
     "OperationUpdate",
+    "PreviewIn",
+    "PreviewOut",
     "PreviewedOperation",
+    "PreviewedTool",
     "RefreshOut",
     "ServerCreate",
     "ServerList",
     "ServerUpdate",
-    "SpecPreviewIn",
     "SpecPreviewOut",
+    "UpstreamKind",
     "WarningOut",
-    "create_from_spec",
+    "create_server",
+    "endpoint_fault",
     "health_report",
+    "kind_is_coherent",
     "previewed",
+    "read_upstream",
     "refreshed",
 ]

@@ -1,10 +1,11 @@
 """Running the gateway's own tools, in process (task 102).
 
 A tool of the built-in server is not an HTTP request. It goes straight to the
-service layer the JSON API goes to — :func:`~mcp_gateway.web.api.create_from_spec`
-for an add, :func:`~mcp_gateway.openapi.ingest.preview_spec` for a preview,
+service layer the JSON API goes to — :func:`~mcp_gateway.web.api.create_server`
+for an add, :func:`~mcp_gateway.web.api.read_upstream` for a preview,
 :func:`~mcp_gateway.refresh.refresh_server` for a refresh — so there is one
-implementation of each of those and not two. Looping back over the socket
+implementation of each of those and not two, and a kind of upstream the API can
+register is a kind an agent can (task 134). Looping back over the socket
 instead would mean the gateway authenticating to itself, and would make every
 management call depend on the listener it is being asked to reconfigure.
 
@@ -15,10 +16,10 @@ leaves nothing behind, exactly as a request that fails does.
 
 **Failure is a result, not an exception.** :class:`ToolFailed` carries a
 sentence a model can act on, and the proxy turns it into ``isError: true`` the
-same way it turns an upstream's ``500`` into one. The three things underneath
-that can refuse — a spec that could not be read, a tool name another server
-publishes, a field that does not make sense — already say why in words meant for
-a person, so those words are what comes back.
+same way it turns an upstream's ``500`` into one. The things underneath that can
+refuse — a spec that could not be read, an endpoint that could not be reached,
+a tool name another server publishes, a field that does not make sense —
+already say why in words meant for a person, so those words are what comes back.
 
 **Reads are logged at debug and writes at info.** This is the one server whose
 tools change the gateway's own configuration, and an operator has to be able to
@@ -58,20 +59,21 @@ from mcp_gateway.builtin.catalog import (
 from mcp_gateway.config import HttpSettings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
+from mcp_gateway.mcpclient.connect import EndpointError
 from mcp_gateway.naming import NamesTaken
 from mcp_gateway.openapi.diagnostics import SpecError
-from mcp_gateway.openapi.ingest import preview_spec
 from mcp_gateway.refresh import Announce, RefreshLocks, refresh_server
 from mcp_gateway.web.api import (
+    PreviewIn,
     ServerCreate,
     ServerList,
-    SpecPreviewIn,
-    create_from_spec,
+    create_server,
     previewed,
+    read_upstream,
     refreshed,
 )
 from mcp_gateway.web.detail import SettingsInvalid
-from mcp_gateway.web.wizard import failure_message
+from mcp_gateway.web.wizard import endpoint_failure_message, failure_message
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +183,10 @@ def _first_problem(invalid: ValidationError) -> str:
     """
     first = invalid.errors()[0]
     where = ".".join(str(part) for part in first["loc"])
-    detail = first["msg"]
+    # Without pydantic's "Value error, " in front: the sentence after it was
+    # written to be read on its own, as :func:`~mcp_gateway.web.errors.field_faults`
+    # also assumes.
+    detail = str(first["msg"]).removeprefix("Value error, ")
     return f"{where}: {detail}" if where else detail
 
 
@@ -207,27 +212,17 @@ async def get_server(console: Console, arguments: Mapping[str, Any]) -> str:
 
 
 async def preview(console: Console, arguments: Mapping[str, Any]) -> str:
-    """Read a document and report what is in it, storing nothing.
+    """Read a document or an endpoint and report what is in it, storing nothing.
 
     The credentials arrive inline and are used for this one request. Nothing is
     written, which this says in the plainest way available: it is the only
     handler here that never touches the session.
     """
-    body = _read(SpecPreviewIn, arguments)
-    form = body.as_form()
+    body = _read(PreviewIn, arguments)
     with _translated():
-        report = previewed(
-            await preview_spec(
-                form.spec_url,
-                spec_credential=form.fetch_credential,
-                api_credential=form.credential,
-                http=console.http,
-                client=console.client,
-            )
-        )
-    logger.debug(
-        "gateway_preview_spec %s -> %d operation(s)", form.spec_url, len(report.operations)
-    )
+        found = await read_upstream(body, http=console.http, client=console.client)
+    report = previewed(found)
+    logger.debug("gateway_preview_spec %s -> %d operation(s)", body.url, found.operation_count)
     return _json(report.model_dump(mode="json"))
 
 
@@ -237,10 +232,10 @@ async def preview(console: Console, arguments: Mapping[str, Any]) -> str:
 
 
 async def add_server(console: Console, arguments: Mapping[str, Any]) -> str:
-    """Register a server from its document — the same call ``POST /servers`` makes."""
+    """Register a server of either kind — the same call ``POST /servers`` makes."""
     body = _read(ServerCreate, arguments)
     with _translated():
-        server = await create_from_spec(
+        server = await create_server(
             console.session,
             body,
             cipher=console.cipher,
@@ -249,9 +244,10 @@ async def add_server(console: Console, arguments: Mapping[str, Any]) -> str:
         )
     detail = await _detail(console, server.id)
     logger.info(
-        "gateway_add_server registered %r (id %d) from %s: %d of %d operations exposed",
+        "gateway_add_server registered %r (id %d, %s) from %s: %d of %d operations exposed",
         detail.name,
         detail.id,
+        detail.kind,
         detail.spec_url,
         detail.counts.selected,
         detail.counts.total,
@@ -373,13 +369,14 @@ def handler_for(tool: BuiltinTool) -> Handler:
 def _translated() -> Iterator[None]:
     """Say why, in the words the refusal already used.
 
-    The four things a management call can be refused for, and what each becomes:
-    a document that could not be fetched or parsed, a field that does not make
-    sense, a tool name another server publishes, and something asked of the
-    built-in row that it does not do. Every one of them already carries a
-    sentence written for a person to read, so translating means passing it on
-    rather than rewording it — the same job :func:`answered` does for the JSON
-    API, with a tool result at the end instead of a status code.
+    The five things a management call can be refused for, and what each becomes:
+    a document that could not be fetched or parsed, an endpoint that could not
+    be connected to or was not an MCP server, a field that does not make sense,
+    a tool name another server publishes, and something asked of the built-in
+    row that it does not do. Every one of them already carries a sentence
+    written for a person to read, so translating means passing it on rather
+    than rewording it — the same job :func:`answered` does for the JSON API,
+    with a tool result at the end instead of a status code.
 
     A context manager rather than a decorator, so a handler wraps only the
     fallible call and keeps its own logging outside it.
@@ -388,6 +385,8 @@ def _translated() -> Iterator[None]:
         yield
     except SpecError as unreadable:
         raise ToolFailed(failure_message(unreadable)) from None
+    except EndpointError as unreachable:
+        raise ToolFailed(endpoint_failure_message(unreachable)) from None
     except (SettingsInvalid, NamesTaken, repo.BuiltinServer) as refused:
         raise ToolFailed(str(refused)) from None
 

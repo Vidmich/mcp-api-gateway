@@ -2,19 +2,25 @@
 
 [![CI](https://github.com/Vidmich/mcp-api-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/Vidmich/mcp-api-gateway/actions/workflows/ci.yml)
 
-Turn any number of OpenAPI or Swagger services into a single MCP server.
+Turn any number of OpenAPI or Swagger services into a single MCP server — and
+put the MCP servers you already have behind the same `/mcp`.
 
 Register a service by pointing the gateway at its spec URL, tick the operations
 worth exposing, and they become tools on one `/mcp` endpoint. When a model calls
 one, the gateway makes the corresponding HTTP request — with the credentials you
-stored for that service — and hands back the response. It is a proxy: nothing is
-generated ahead of time, nothing is cached, and a change you make in the UI is
-live on the next `tools/list`.
+stored for that service — and hands back the response. Register an MCP server by
+its endpoint and its tools join the same list, forwarded as `tools/call` with the
+credential you stored for it. It is a proxy: nothing is generated ahead of time,
+nothing is cached, and a change you make in the UI is live on the next
+`tools/list`.
 
 - **`/mcp`** — one MCP endpoint (streamable HTTP) for every registered service.
+- **Two kinds of upstream** — an API described by an OpenAPI or Swagger document,
+  or a server that already speaks MCP over streamable HTTP. One tool list, one
+  token, one Monitoring page, whichever kind is behind each name.
 - **Configuration pages** — register and edit upstreams, choose operations, name
-  tools, cap how fast each upstream may be called, refresh specs and review what
-  changed.
+  tools, cap how fast each upstream may be called, refresh specs and tool lists
+  and review what changed.
 - **Monitoring page** — calls, bytes in and out, failures and throttled calls
   over time, total and per server.
 - **Configuration page** — the gateway's own settings: how often specs are
@@ -28,9 +34,11 @@ live on the next `tools/list`.
   gateway going quiet is noticed by whatever notices everything else going
   quiet. Off unless you turn it on; counts only, never request content.
 - **A built-in server, off by default** — switch it on and an MCP client can
-  preview a spec, register an upstream and choose its operations without a
-  human opening the UI. It cannot delete a server or read a stored credential.
-- **`/api/v1`** — the same configuration actions as JSON, for scripts.
+  preview a spec or an endpoint, register an upstream of either kind and choose
+  its operations without a human opening the UI. It cannot delete a server or
+  read a stored credential.
+- **`/api/v1`** — the same configuration actions as JSON, for scripts, with
+  `kind` on every server and in every create.
 
 Self-hosted, single process, SQLite. No Node build step, no external services.
 
@@ -209,29 +217,69 @@ Now `/ui` asks for a login and `/mcp` requires `Authorization: Bearer …`. See
 gap in particular — and [docs/configuration.md](docs/configuration.md) for
 storing the password as a hash and the token in the environment instead.
 
+## Putting an MCP server behind it
+
+An upstream that already speaks MCP is registered by its endpoint rather than by
+a document. The one MCP server every reader has is this gateway's own: switch
+on the built-in **Gateway** server on the API Servers list — its tools configure
+the gateway, so do step 5 first — and its `/mcp` is an MCP server like any
+other.
+
+Open <http://127.0.0.1:8080/ui/mcp-servers> and press **Add an MCP server**.
+Paste the endpoint:
+
+```
+http://127.0.0.1:8080/mcp
+```
+
+Choose the authentication the endpoint needs — for this one, the bearer token
+you set, or none if you have not yet — and press **Connect and list tools**.
+Nothing is saved: the gateway connects, asks the server what it is and what it
+offers, and shows the tools it listed. The picker is the same one as for an API,
+with the tool's own name where the method and path would be. Set the prefix,
+untick what you would not want called, and press **Save the server**.
+
+The same thing by script is `POST /api/v1/servers` — behind the same login as
+the pages — with the body it takes for a document, except that `kind` says
+which and `endpoint` stands where `spec_url` would:
+
+```json
+{"kind": "mcp", "endpoint": "http://127.0.0.1:8080/mcp", "tool_prefix": "mirror"}
+```
+
+From then on the server is refreshed, monitored, throttled and disabled by the
+same rules as an API — **Refresh tools** re-lists them, and a tool that appears
+after the first listing waits for somebody to tick it. The gateway holds one
+session open to each MCP server and reconnects when the endpoint or the
+credential is changed.
+
 ## How it works
 
 **Registering.** The spec is fetched (OpenAPI 3.0, 3.1, or Swagger 2.0 — the
 last is converted), `$ref`s are resolved, every operation becomes a tool with a
 JSON Schema built from its parameters and request body, and the document is
-stored alongside them.
+stored alongside them. For an MCP server the gateway connects to the endpoint
+instead, runs `initialize` and `tools/list`, and stores each tool with the input
+schema the server published.
 
-**Naming.** A tool is `<prefix>__<operationId>` by default. The prefix is what
-keeps two services that both publish `getUser` apart, and both halves are
-editable per server and per operation. A collision is reported, never silently
-resolved.
+**Naming.** A tool is `<prefix>__<operationId>` by default — or
+`<prefix>__<tool name>` for an MCP server's tool. The prefix is what keeps two
+services that both publish `getUser` apart, and both halves are editable per
+server and per operation. A collision is reported, never silently resolved.
 
 **Calling.** Arguments are validated against the stored schema before anything
 leaves the process, path and query parameters are substituted, the server's
 stored credential is applied, and the request goes out through a shared client
 with a timeout and a response cap. Errors come back as `isError: true` with the
 upstream's status and body, because that is usually what a model needs in order
-to correct itself.
+to correct itself. A call to an MCP server's tool is forwarded as `tools/call`
+on a session the gateway keeps open to it, and its result — `isError` included —
+comes back as the upstream sent it.
 
-**Refreshing.** Manually per server, or automatically on a global interval.
-Operations that changed are flagged, and **new operations are never enabled by
-themselves** — the server is marked *Needs Attention* and waits for somebody to
-decide.
+**Refreshing.** Manually per server, or automatically on a global interval; for
+an MCP server a refresh is a fresh `tools/list`. Operations that changed are
+flagged, and **new operations are never enabled by themselves** — the server is
+marked *Needs Attention* and waits for somebody to decide.
 
 **Credentials.** Stored encrypted with a key in `data/keys.json`, never rendered
 back into a page or an API response — only `set` / `not set` and the auth type.

@@ -22,6 +22,14 @@ read an HTML page as its result and see a success where there was none.
 **Reads have no adapter.** The repository's own DTOs go out as they are; they
 cannot carry a credential, so neither can a response. See
 :mod:`mcp_gateway.web.api`.
+
+**Two kinds, one set of routes** (task 134). The pages give MCP servers a
+section of their own because the words on a screen differ; a field name does
+not, so here a server of either kind is the same resource, and ``kind`` on a
+body or in a query string is what tells them apart. Nothing below branches on
+it: the models read it, :func:`~mcp_gateway.web.api.read_upstream` chooses the
+reader, the repository writes the row, and the one place a route asks is the
+patch, where which fields apply is the *row's* kind to say.
 """
 
 from __future__ import annotations
@@ -39,14 +47,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mcp_gateway.config import Settings
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
-from mcp_gateway.db.models import Operation, OperationStatus, Server
+from mcp_gateway.db.models import Operation, OperationStatus, Server, ServerKind
 from mcp_gateway.db.session import CommittingRoute, request_session
 from mcp_gateway.limits import HALF_A_LIMIT, half_a_limit
+from mcp_gateway.mcpclient.connect import EndpointError
 from mcp_gateway.mcpclient.pool import drop_session
 from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken
 from mcp_gateway.openapi.diagnostics import SpecError
-from mcp_gateway.openapi.ingest import preview_spec
 from mcp_gateway.refresh import RefreshLocks, refresh_server
 from mcp_gateway.usage import (
     DEFAULT_GROUP_BY,
@@ -61,21 +69,25 @@ from mcp_gateway.web.api import (
     Health,
     OperationList,
     OperationUpdate,
+    PreviewIn,
+    PreviewOut,
     RefreshOut,
     ServerCreate,
     ServerList,
     ServerUpdate,
-    SpecPreviewIn,
-    SpecPreviewOut,
-    create_from_spec,
+    create_server,
+    endpoint_fault,
     health_report,
+    kind_is_coherent,
     previewed,
+    read_upstream,
     refreshed,
 )
 from mcp_gateway.web.auth import API_PREFIX, require_session
 from mcp_gateway.web.detail import SettingsInvalid, apply_operation, apply_patch
 from mcp_gateway.web.errors import (
     BUILTIN_SERVER,
+    ENDPOINT_UNREADABLE,
     INVALID_REQUEST,
     NAME_TAKEN,
     NOT_FOUND,
@@ -88,6 +100,7 @@ from mcp_gateway.web.routes_ui import NO_CIPHER
 from mcp_gateway.web.shell import under
 from mcp_gateway.web.wizard import (
     NOTHING_TO_REUSE,
+    endpoint_failure_message,
     failure_field,
     failure_message,
 )
@@ -112,7 +125,7 @@ HEALTH_PATH: Final = f"{API_PREFIX}/health"
 def answered() -> Iterator[None]:
     """Turn what the rules raise into the envelope a caller reads.
 
-    The five things any write here can raise, and the status each one means:
+    The six things any write here can raise, and the status each one means:
 
     * a row that is not there — 404, because the URL named nothing;
     * something asked of the built-in server that it does not do — 409, since
@@ -124,7 +137,10 @@ def answered() -> Iterator[None]:
       and it is the world it would land in that says no (spec §5.3);
     * a document that could not be fetched or parsed — 422, beside the field
       that can fix it, which for a ``401`` from the spec URL is the spec-auth
-      mode rather than the URL (spec §5.1).
+      mode rather than the URL (spec §5.1);
+    * an endpoint that could not be connected to, or answered as something
+      other than an MCP server — the same 422, beside ``endpoint``, or beside
+      ``credential`` when it was a ``401`` or a ``403`` (task 134).
     """
     try:
         yield
@@ -146,6 +162,13 @@ def answered() -> Iterator[None]:
             SPEC_UNREADABLE,
             failure_message(failure),
             fields={failure_field(failure): failure_message(failure)},
+        ) from None
+    except EndpointError as failure:
+        raise ApiFault(
+            422,
+            ENDPOINT_UNREADABLE,
+            endpoint_failure_message(failure),
+            fields=endpoint_fault(failure),
         ) from None
 
 
@@ -198,16 +221,25 @@ def api_router() -> APIRouter:
         return health_report(request.app.state.settings, request.app.state.started_at)
 
     @router.get(SERVERS_PATH, summary="Every registered server")
-    async def list_servers(session: Session) -> ServerList:
-        return ServerList(servers=tuple(await repo.list_servers(session)))
+    async def list_servers(
+        session: Session, kind: Annotated[ServerKind | None, Query()] = None
+    ) -> ServerList:
+        """Every server, or those of one kind (task 134).
 
-    @router.post(SERVERS_PATH, status_code=201, summary="Register a server from its spec")
-    async def create_server(
+        An enumeration rather than free text, for the reason ``GET /metrics``
+        gives: a kind this gateway does not have is a 422, not an empty list a
+        caller would read as "none registered".
+        """
+        kinds = None if kind is None else (kind,)
+        return ServerList(servers=tuple(await repo.list_servers(session, kinds=kinds)))
+
+    @router.post(SERVERS_PATH, status_code=201, summary="Register a server")
+    async def create(
         request: Request, body: ServerCreate, session: Session, response: Response
     ) -> repo.ServerDetail:
-        """Fetch the document, then register what it describes — or none of it.
+        """Read the upstream, then register what it describes — or none of it.
 
-        Every part of that is :func:`~mcp_gateway.web.api.create_from_spec`,
+        Every part of that is :func:`~mcp_gateway.web.api.create_server`,
         which the built-in server's ``add_server`` tool also calls (task 102).
         What is left here is the two things only HTTP has an opinion about: the
         status code and where the new row can be read.
@@ -215,7 +247,7 @@ def api_router() -> APIRouter:
         cipher = _cipher(request)
         settings: Settings = request.app.state.settings
         with answered():
-            server = await create_from_spec(
+            server = await create_server(
                 session,
                 body,
                 cipher=cipher,
@@ -236,25 +268,30 @@ def api_router() -> APIRouter:
     ) -> repo.ServerDetail:
         """Apply the fields the body carried, all of them or none.
 
-        The two refusals happen before anything is written — an identifier
-        another server holds, and a prefix whose names another server already
-        publishes — so a caller that gets one back is describing the server as
-        it still is.
+        The refusals happen before anything is written — a field the row's
+        kind has no use for, an identifier another server holds, a prefix
+        whose names another server already publishes — so a caller that gets
+        one back is describing the server as it still is.
         """
         cipher = _cipher(request)
         with answered():
             server = await repo.require_server(session, server_id)
-            _spec_auth_is_coherent(body, server)
+            kind_is_coherent(body, server)
+            if server.kind != repo.KIND_MCP:
+                # An MCP server's spec-auth columns are fixed at ``same_as_api``
+                # and never read; the rule below is about a document's fetch.
+                _spec_auth_is_coherent(body, server)
             _rate_limit_is_coherent(body, server)
-            await apply_patch(session, server, body.as_patch(), cipher=cipher)
+            saved = await apply_patch(session, server, body.as_patch(), cipher=cipher)
             detail = await repo.server_detail(session, server_id)
         # A patch can move the tool list in three ways — enabling a server,
         # disabling one, renaming a prefix — so a client holding a listing is
         # told, as it is when the page's own toggle does the same thing.
         await app_announcer(request.app)()
-        if not detail.enabled:
+        if not detail.enabled or saved.reconnects:
             # And a server left out of service holds no session to its
-            # upstream (task 132), as the page's toggle sees to.
+            # upstream (task 132), as the page's toggle sees to — nor does one
+            # whose endpoint or credential just changed (task 133).
             await drop_session(request.app, server_id)
         return detail
 
@@ -387,9 +424,9 @@ def api_router() -> APIRouter:
             group_by=group_by,
         )
 
-    @router.post(PREVIEW_PATH, summary="Read a spec URL without saving anything")
-    async def preview(request: Request, body: SpecPreviewIn) -> SpecPreviewOut:
-        """Fetch and parse a document, storing nothing (spec §5.1).
+    @router.post(PREVIEW_PATH, summary="Read a spec URL or an endpoint without saving")
+    async def preview(request: Request, body: PreviewIn) -> PreviewOut:
+        """Read a document or an endpoint, storing nothing (spec §5.1, §5b).
 
         Takes its credentials inline, because the whole point is the unsaved
         case: there is no server yet to have stored any. They are used for this
@@ -397,20 +434,17 @@ def api_router() -> APIRouter:
         preview store the wizard uses, which exists only because a browser has
         to come back for step 2.
 
+        The answer is one of two shapes, by ``kind``: a document's format and
+        operations, or an endpoint's name, version, protocol and tools
+        (task 134). Both say which in ``kind``.
+
         This route takes no database session. That is the plainest way to say a
         preview writes nothing: there is nothing for it to write with.
         """
         settings: Settings = request.app.state.settings
-        form = body.as_form()
         with answered():
             return previewed(
-                await preview_spec(
-                    form.spec_url,
-                    spec_credential=form.fetch_credential,
-                    api_credential=form.credential,
-                    http=settings.http,
-                    client=request.app.state.http_client,
-                )
+                await read_upstream(body, http=settings.http, client=request.app.state.http_client)
             )
 
     return router

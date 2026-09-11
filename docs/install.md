@@ -9,7 +9,8 @@
 - **Nothing else.** The database is SQLite, in a file the app creates. There is
   no Node build step, no Redis, no external service. Every asset the pages need
   — HTMX, Chart.js — is vendored, so the UI works with no internet access at
-  all. (Reading an upstream's spec obviously needs to reach that upstream.)
+  all. (Reading an upstream's spec, or listing an MCP server's tools, obviously
+  needs to reach that upstream.)
 
 Every commit is tested on CPython 3.11, 3.12, 3.13 and 3.14, on Linux, macOS and
 Windows. Each release is additionally installed from its own wheel on all three

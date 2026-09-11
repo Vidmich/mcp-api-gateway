@@ -81,18 +81,18 @@ which currently describes a gateway with one kind of upstream, has to describe o
 
 ## Acceptance
 
-- [ ] `GET /api/v1/servers` returns `kind` on every server and filters by it; an MCP server's
+- [x] `GET /api/v1/servers` returns `kind` on every server and filters by it; an MCP server's
       representation carries `endpoint`.
-- [ ] `POST /api/v1/servers` with `kind: "mcp"` registers an MCP server; the fields that do not
+- [x] `POST /api/v1/servers` with `kind: "mcp"` registers an MCP server; the fields that do not
       apply are refused with a `422` that names them; the OpenAPI path is byte-for-byte unchanged
       for a request that omits `kind`.
-- [ ] `POST /api/v1/preview` handles both kinds and the published OpenAPI document describes both
+- [x] `POST /api/v1/preview` handles both kinds and the published OpenAPI document describes both
       shapes; the schema tests pass.
-- [ ] `gateway_add_server` and `gateway_preview_spec` accept `kind`; the list and get tools return
+- [x] `gateway_add_server` and `gateway_preview_spec` accept `kind`; the list and get tools return
       it; a startup against a database from the previous version reconciles the changed schemas
       as `changed`, selected.
-- [ ] README describes the two kinds in the fixed order and walks through registering an MCP
+- [x] README describes the two kinds in the fixed order and walks through registering an MCP
       server after the API quickstart; `docs/security.md` says the SSRF gap covers endpoints.
-- [ ] SPEC §6 and §7.3 are current.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] SPEC §6 and §7.3 are current.
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where this task made them wrong.

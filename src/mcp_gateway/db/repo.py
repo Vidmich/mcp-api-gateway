@@ -190,6 +190,11 @@ class ServerSummary(BaseModel):
     spec_url: str
     spec_format: str
     base_url: str
+    #: For an MCP server, the one URL it has, under the name that says what it
+    #: is: ``spec_url`` and ``base_url`` both hold it too (spec §4), and a
+    #: client reading either would be right. ``None`` for a server reached
+    #: through a document, which has no endpoint (task 134).
+    endpoint: str | None = None
     enabled: bool
     #: True for the one server the gateway provides itself (task 102). A
     #: client reading this knows why the row offers no delete and no
@@ -1022,6 +1027,7 @@ def _summary_fields(server: Server, counts: OperationCounts) -> dict[str, Any]:
         "spec_url": server.spec_url,
         "spec_format": server.spec_format,
         "base_url": server.base_url,
+        "endpoint": server.base_url if server.kind == KIND_MCP else None,
         "enabled": server.enabled,
         "builtin": server.builtin,
         "needs_attention": server.needs_attention,
