@@ -42,7 +42,7 @@ from mcp_gateway.crypto import BearerCredential, CredentialCipher, generate_key
 from mcp_gateway.db import repo
 from mcp_gateway.db.repo import NewServer, OperationInput
 from mcp_gateway.db.session import Database
-from mcp_gateway.mcpclient import EndpointStatusError, preview_endpoint
+from mcp_gateway.mcpclient import EndpointStatusError, SessionPool, preview_endpoint
 from mcp_gateway.mcpsrv.auth import ENDPOINT_OPEN_TO_ANYONE
 from mcp_gateway.mcpsrv.server import SERVER_NAME, app_announcer
 from mcp_gateway.openapi.schema import EXTENSION
@@ -682,3 +682,60 @@ async def test_an_mcp_server_s_tools_become_operations_and_refresh_over_a_real_s
         "tool petstore__get_pets": ("active", False, "TOOL"),
         "tool petstore__post_pets": ("new", False, "TOOL"),
     }
+
+
+async def test_a_call_on_a_mirrored_tool_goes_through_the_gateway_twice(tmp_path: Path) -> None:
+    """Task 132 end to end, with the gateway as its own upstream.
+
+    The gateway's ``/mcp`` is registered as an MCP server in its own database
+    and one of its tools is ticked. A real client calls the mirrored name; the
+    gateway forwards it as a ``tools/call`` over TCP to itself, which makes
+    the HTTP request to the real petstore, and the pet comes back through
+    both. A second call rides the same session, and stopping the gateway
+    closes it.
+    """
+    token = "SENTINEL-INTEGRATION-TOKEN"
+    async with running_upstream(tmp_path, token) as base_url, running_gateway(tmp_path) as gateway:
+        async with gateway.session() as db:
+            petstore = await register(
+                db,
+                "petstore",
+                selected=[],
+                base_url=base_url,
+                credential=BearerCredential(token=token),  # type: ignore[arg-type]
+                cipher=gateway.app.state.cipher,
+            )
+            await repo.upsert_operations(db, petstore, [a_pet_lookup("petstore")])
+            await repo.set_selected(db, petstore, ["GET /pets/{petId}"])
+
+        found = await preview_endpoint(gateway.url)
+        async with gateway.session() as db:
+            mirror = await picker.register(
+                db,
+                PendingServer(form=WizardForm(spec_url=gateway.url, name="Mirror"), preview=found),
+                prefix="mirror",
+                selection=["tool petstore__get_pet"],
+                cipher=gateway.app.state.cipher,
+            )
+            mirror_id = mirror.id
+
+        async with connected(gateway.url) as session:
+            await session.initialize()
+            first = await session.call_tool(
+                "mirror__petstore__get_pet", {"petId": "42", "verbose": True}
+            )
+            second = await session.call_tool("mirror__petstore__get_pet", {"petId": "7"})
+        pool: SessionPool = gateway.app.state.mcp_sessions
+        assert pool.held == {mirror_id}
+        assert pool.opened == 1
+
+    assert first.is_error is False  # type: ignore[union-attr]
+    assert json.loads(first.content[0].text) == {  # type: ignore[union-attr,index]
+        "id": "42",
+        "name": "Rex",
+        "verbose": True,
+    }
+    assert json.loads(second.content[0].text)["id"] == "7"  # type: ignore[union-attr,index]
+    # Closed on the way down, through the lifespan that closes the client.
+    assert pool.held == frozenset()
+    assert gateway.app.state.mcp_sessions is None

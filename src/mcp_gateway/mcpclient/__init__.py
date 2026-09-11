@@ -7,13 +7,15 @@ Neither writes a row — a :class:`~mcp_gateway.mcpclient.preview.EndpointPrevie
 is a value, as a ``SpecPreview`` is, and storing one is a decision the caller
 makes later.
 
-Three modules. :mod:`~mcp_gateway.mcpclient.connect` opens a session with the
+Four modules. :mod:`~mcp_gateway.mcpclient.connect` opens a session with the
 gateway's own limits and credential on it, and turns the ways that fails into
 errors an operator can act on. :mod:`~mcp_gateway.mcpclient.preview` runs
 ``initialize`` and ``tools/list`` over such a session and returns the answer.
 :mod:`~mcp_gateway.mcpclient.operations` says what each tool in that answer is
 as an ``operations`` row — the same record the OpenAPI path produces, which is
 what lets everything downstream of ingestion take either kind (spec §5b.2).
+:mod:`~mcp_gateway.mcpclient.pool` keeps one session per server open between
+tool calls, which is what the proxy forwards a call over (spec §6).
 """
 
 from mcp_gateway.mcpclient.connect import (
@@ -32,6 +34,7 @@ from mcp_gateway.mcpclient.operations import (
     operation_of,
     operations_of,
 )
+from mcp_gateway.mcpclient.pool import SessionPool, drop_session, session_pool_service
 from mcp_gateway.mcpclient.preview import (
     EndpointNoToolsError,
     EndpointPreview,
@@ -49,11 +52,14 @@ __all__ = [
     "EndpointProtocolError",
     "EndpointStatusError",
     "EndpointTooLargeError",
+    "SessionPool",
     "UpstreamTool",
+    "drop_session",
     "is_tool",
     "op_key_of",
     "open_session",
     "operation_of",
     "operations_of",
     "preview_endpoint",
+    "session_pool_service",
 ]

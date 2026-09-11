@@ -32,6 +32,26 @@ resolved and validated here exactly as any other is, and then handed to
 URL to build, no credential to apply, and no upstream quota to spend. It is
 still counted as a call, because it is one.
 
+**A tool of an MCP server is forwarded, not rebuilt.** The third branch
+(task 132): a tool whose schema's extension says ``kind: mcp`` was an upstream
+tool to begin with, so there is no URL to build, no body to serialise and no
+parameter to place — the validated arguments *are* the message, and the call
+goes out as a ``tools/call`` on a session the process keeps open to that server
+(:mod:`mcp_gateway.mcpclient.pool`). Everything around the branch is shared
+with the HTTP one: the lookup, the validation, the credential and its
+accounting, the rate limit, the metrics, and the health watch. What the branch
+has to restate is what comes back and what counts as a failure. The result is
+rendered to text the way a response body is — text as text, an image or a
+sound described rather than dumped, ``structuredContent`` appended pretty —
+with the upstream's own ``isError`` kept, and the cap applied to the rendered
+text. And the three layers an MCP call can fail at are read as the two kinds
+of HTTP failure the auto-disable rules already know: a ``401``/``403`` from
+the endpoint is an authentication failure; a connection that could not be
+made, a ``5xx``, a timeout, a session that broke mid-call, or a JSON-RPC error
+is a fault; a result with ``isError: true`` is the upstream's ``4xx`` — an
+error for the metrics and nothing for auto-disable, since a working server
+answered and refused the call on its merits.
+
 **Two kinds of failure, and they are not the same kind.** A name that is not a
 live tool is a protocol error — the client asked for something that does not
 exist, and :class:`~mcp.shared.exceptions.MCPError` is how JSON-RPC says so.
@@ -63,13 +83,16 @@ import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any, Final, assert_never
 from urllib.parse import quote, urlencode
 
 import httpx
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, UnknownType, best_match
 from mcp import types
+from mcp.shared.exceptions import MCPError
+from mcp_types import CONNECTION_CLOSED, REQUEST_TIMEOUT
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway.builtin.tools import Console, ToolFailed, announce_nothing
@@ -80,6 +103,9 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.models import Server
 from mcp_gateway.db.repo import ToolRow
 from mcp_gateway.limits import Limit, Limiter, Refusal, RefusalRecorder, record_refusal
+from mcp_gateway.mcpclient.connect import EndpointError, EndpointNetworkError, EndpointStatusError
+from mcp_gateway.mcpclient.operations import EXTENSION_KIND
+from mcp_gateway.mcpclient.pool import Link, SessionPool
 from mcp_gateway.openapi.schema import BODY_ARGUMENT, EXTENSION, JSON_MEDIA_TYPE
 from mcp_gateway.outbound import credential_headers
 from mcp_gateway.refresh import Announce, RefreshLocks
@@ -92,6 +118,9 @@ PARAGRAPH: Final = "\n\n"
 #: What a 204 — or any other empty answer — reads as. Something has to be in the
 #: content list, and "nothing came back" is a better answer than "".
 NO_BODY: Final = "(no response body)"
+
+#: The same, for an MCP tool that answered with an empty content list.
+NO_CONTENT: Final = "(no content)"
 
 #: One CRLF, and the blank line that ends a header block is a second. Named
 #: because the arithmetic in :func:`request_size` *is* the definition of what
@@ -142,6 +171,23 @@ HTTP_ERROR: Final = "http_error"
 #: happened and an operator reading the failure list should not be sent looking
 #: for an upstream that was never called.
 GATEWAY_ERROR: Final = "gateway_error"
+#: An MCP upstream answered the call, and the answer was not a result: a
+#: JSON-RPC error, a message that was not one, an answer over the size cap
+#: (task 132). The upstream is there and is not working, which is what the
+#: health watch reads it as.
+PROTOCOL_ERROR: Final = "protocol_error"
+#: An MCP upstream's tool answered with ``isError: true``. A call that reached
+#: a working server and was refused on its merits — the upstream's ``4xx`` —
+#: so it is an error on the monitoring page and nothing to auto-disable over.
+TOOL_ERROR: Final = "tool_error"
+
+#: The HTTP statuses an MCP upstream can answer a ``tools/call`` with that
+#: outrank whatever JSON-RPC error the SDK made of them: the ones the
+#: auto-disable rules are written in, and the one throttling is (spec §4). A
+#: ``5xx`` joins them by rule. Any other status under a JSON-RPC error is the
+#: error's own business, since the protocol allows an error to travel at 400.
+STATUS_FIRST: Final = frozenset({401, 403, 429})
+SERVER_ERROR_FLOOR: Final = 500
 
 #: What a call refused by the gateway's own rate limit is answered with. Not
 #: one of the failures above, because it is not one: no request was made, so
@@ -239,6 +285,10 @@ class Upstream:
     #: The default tells nobody, which is what an app with no MCP endpoint would
     #: do anyway.
     announce: Announce = announce_nothing
+    #: The sessions the process holds on upstream MCP servers (task 132).
+    #: ``None`` — a proxy exercised on its own, with nobody to close a pool
+    #: for it — opens a session for the one call and closes it after.
+    sessions: SessionPool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,6 +443,13 @@ async def _attempt(upstream: Upstream, row: ToolRow, arguments: dict[str, Any]) 
     if refusal is not None:
         return _Attempt(error_result(throttled_text(refusal)), refusal=refusal)
 
+    tool = mcp_tool_of(row.input_schema)
+    if tool is not None:
+        # After the credential and the limiter, because it has both: the
+        # session to the upstream carries the stored credential, and a call
+        # on it spends the server's budget as a request would (task 132).
+        return await _forward(upstream, row, tool, arguments, credential=credential)
+
     outbound = build_request(row, arguments, credential=credential)
     # What a call that never connected reports is what the gateway assembled and
     # tried to send, which is today's rule kept deliberately: the alternative
@@ -446,6 +503,195 @@ async def _in_process(upstream: Upstream, row: ToolRow, arguments: dict[str, Any
     except ToolFailed as refused:
         return _Attempt(error_result(str(refused)), failure=GATEWAY_ERROR)
     return _Attempt(_result(answer))
+
+
+async def _forward(
+    upstream: Upstream,
+    row: ToolRow,
+    tool: str,
+    arguments: dict[str, Any],
+    *,
+    credential: Credential | None,
+) -> _Attempt:
+    """Send one validated call on to the MCP server the tool came from (spec §6).
+
+    The session is the pool's, opened on the first call and kept; a proxy
+    given no pool opens one for this call and closes it after, which costs
+    the two round trips the pool exists to save and is honest about having
+    nobody to hold one for.
+    """
+    own = upstream.sessions is None
+    pool = SessionPool() if upstream.sessions is None else upstream.sessions
+    try:
+        return await _call_upstream(pool, row, tool, arguments, credential, upstream.http)
+    finally:
+        if own:
+            await pool.close()
+
+
+async def _call_upstream(
+    pool: SessionPool,
+    row: ToolRow,
+    tool: str,
+    arguments: dict[str, Any],
+    credential: Credential | None,
+    http: HttpSettings,
+) -> _Attempt:
+    """The ``tools/call``, and what each way it can go is recorded as.
+
+    The request is sent through :meth:`~mcp.ClientSession.send_request`
+    rather than ``call_tool`` on purpose: the SDK's helper re-lists the
+    upstream's tools on the first call of every session to fetch output
+    schemas, and then raises on a result that does not match one. The gateway
+    republishes no output schema (spec §5b.2), so it neither pays the round
+    trip nor holds the upstream to a promise it never passed on.
+    """
+    sent = json_size(arguments)
+    try:
+        async with pool.lease(
+            row.server_id, url=row.base_url, credential=credential, http=http
+        ) as link:
+            try:
+                result = await link.session.send_request(
+                    types.CallToolRequest(
+                        params=types.CallToolRequestParams(name=tool, arguments=arguments)
+                    ),
+                    types.CallToolResult,
+                )
+            except MCPError as failed:
+                return _upstream_failed(link, failed, sent=sent, http=http)
+            except ValidationError as malformed:
+                # Answered, with something that is not a tool result. The
+                # session may be fine; the answer is not, and that is the
+                # upstream's fault in the same way a JSON-RPC error is.
+                return _Attempt(
+                    error_result(
+                        f"{link.url} answered {tool!r} with something that is not a tool "
+                        f"result: {_oneline(str(malformed))}"
+                    ),
+                    status_code=link.last_status,
+                    request_bytes=sent,
+                    failure=PROTOCOL_ERROR,
+                )
+            status = link.last_status
+    except EndpointError as unopened:
+        # The session could not be opened: reported in the words
+        # ``open_session`` chose, under the failure each of them amounts to.
+        return _Attempt(
+            error_result(str(unopened)),
+            status_code=unopened.status_code,
+            request_bytes=sent,
+            failure=_failure_of(unopened),
+        )
+
+    return _Attempt(
+        relay(result, limit=http.max_response_bytes),
+        status_code=status,
+        request_bytes=sent,
+        response_bytes=len(result.model_dump_json(by_alias=True, exclude_none=True)),
+        failure=TOOL_ERROR if result.is_error else None,
+    )
+
+
+def _upstream_failed(link: Link, failed: MCPError, *, sent: int, http: HttpSettings) -> _Attempt:
+    """A ``tools/call`` the SDK raised on, read for which layer it failed at.
+
+    Most specific first, as :func:`~mcp_gateway.mcpclient.connect._translate`
+    orders the same question about a handshake. A session that has died
+    underneath the call knows why, and *connection closed* is what the SDK
+    says about every way that can happen; a timeout is the transport's
+    silence; a status the endpoint refused the request with outranks the
+    stand-in error the SDK made of it; and only then is a JSON-RPC error read
+    as what it says. The session is kept only in that last case — an upstream
+    that answered an error is an upstream that is answering.
+    """
+    code, message = failed.error.code, failed.error.message
+    broken = link.failure
+    if broken is not None:
+        link.discard()
+        return _Attempt(
+            error_result(str(broken)),
+            status_code=broken.status_code,
+            request_bytes=sent,
+            failure=_failure_of(broken),
+        )
+    if code == CONNECTION_CLOSED:
+        link.discard()
+        return _Attempt(
+            error_result(f"Could not reach {link.url}: the session closed before it answered"),
+            request_bytes=sent,
+            failure=UNREACHABLE,
+        )
+    if code == REQUEST_TIMEOUT:
+        link.discard()
+        return _Attempt(
+            error_result(
+                f"Could not reach {link.url}: the request timed out after "
+                f"{http.timeout_seconds:g}s (http.timeout_seconds)"
+            ),
+            request_bytes=sent,
+            failure=UNREACHABLE,
+        )
+
+    status = link.last_status
+    received = json_size(failed.error.model_dump(by_alias=True, exclude_none=True, mode="json"))
+    if status is not None and status >= 400:
+        # The endpoint refused the request itself. Whatever the status, the
+        # session it was on is not one to keep: a 404 in particular is how a
+        # server says the session id is no longer its.
+        link.discard()
+        if status in STATUS_FIRST or status >= SERVER_ERROR_FLOOR:
+            return _Attempt(
+                error_result(f"{status_line(status)}{PARAGRAPH}{message}"),
+                status_code=status,
+                request_bytes=sent,
+                response_bytes=received,
+                failure=HTTP_ERROR,
+            )
+    return _Attempt(
+        error_result(f"{rpc_line(code)}{PARAGRAPH}{message}"),
+        status_code=status,
+        request_bytes=sent,
+        response_bytes=received,
+        failure=PROTOCOL_ERROR,
+    )
+
+
+def _failure_of(error: EndpointError) -> str:
+    """Which failure an :class:`EndpointError` counts as, for the health watch."""
+    if isinstance(error, EndpointNetworkError):
+        return UNREACHABLE
+    if isinstance(error, EndpointStatusError):
+        return HTTP_ERROR
+    return PROTOCOL_ERROR
+
+
+def mcp_tool_of(schema: Mapping[str, Any]) -> str | None:
+    """The upstream tool name, when the schema's extension says ``kind: mcp``.
+
+    ``None`` for every other row — an operation from a document, a built-in
+    tool, a row with no extension at all — which is what sends a call down the
+    HTTP branch. Read from the schema rather than from ``method``, because the
+    extension is what ingestion wrote to say where the arguments go (spec
+    §5b.2), and ``TOOL`` in the method column is a consequence of that.
+    """
+    extension = schema.get(EXTENSION)
+    if not isinstance(extension, Mapping) or extension.get("kind") != EXTENSION_KIND:
+        return None
+    tool = extension.get("tool")
+    return tool if isinstance(tool, str) and tool else None
+
+
+def json_size(value: Any) -> int:
+    """How many bytes ``value`` is as JSON on the wire (spec §7.2).
+
+    What an MCP call's bytes charts count: the arguments out, the result in,
+    each as the JSON the transport framed. An approximation of the framing
+    — the JSON-RPC envelope and the HTTP headers around it are not in the
+    number — stated as one in the spec, and enough to make *Sent* and
+    *Received* mean the same thing for both kinds of server.
+    """
+    return len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
 
 def _refuse(upstream: Upstream, row: ToolRow, server: Server) -> Refusal | None:
@@ -820,6 +1066,74 @@ def _charset(content_type: str | None) -> str | None:
     return None
 
 
+def rpc_line(code: int) -> str:
+    """``JSON-RPC error -32601``: the MCP counterpart of :func:`status_line`."""
+    return f"JSON-RPC error {code}"
+
+
+def relay(result: types.CallToolResult, *, limit: int) -> types.CallToolResult:
+    """An upstream tool's result as the model will read it (spec §6).
+
+    One text block, however many the upstream sent: text parts joined by a
+    blank line, which is how a model would read them if they arrived apart;
+    an image, a sound or a binary resource described rather than dumped, for
+    the reason :func:`render` gives about a non-text body; a resource's text
+    contributed as text; ``structuredContent`` appended pretty-printed, since
+    the upstream meant it to be read and the gateway's own endpoint does not
+    carry it forward. ``isError`` passes through: an upstream that says the
+    call failed said so to the model, and relaying is the job.
+    """
+    parts = [describe_content(block) for block in result.content]
+    if result.structured_content is not None:
+        parts.append(json.dumps(result.structured_content, indent=2, ensure_ascii=False))
+    text = PARAGRAPH.join(part for part in parts if part) or NO_CONTENT
+    return _result(capped(text, limit=limit), is_error=result.is_error)
+
+
+def describe_content(block: types.ContentBlock) -> str:
+    """One content block as text, or as a line saying what it was."""
+    match block:
+        case types.TextContent():
+            return block.text
+        case types.ImageContent() | types.AudioContent():
+            return f"(an {block.mime_type} of {describe_bytes(base64_size(block.data))})"
+        case types.EmbeddedResource():
+            resource = block.resource
+            if isinstance(resource, types.TextResourceContents):
+                return resource.text
+            kind = resource.mime_type or "unknown type"
+            size = describe_bytes(base64_size(resource.blob))
+            return f"(a resource at {resource.uri}, {kind}, {size})"
+        case types.ResourceLink():
+            kind = f", {block.mime_type}" if block.mime_type else ""
+            return f"(a link to {block.uri}{kind})"
+        case _:  # pragma: no cover - exhaustive over ContentBlock
+            assert_never(block)
+
+
+def capped(text: str, *, limit: int) -> str:
+    """``text`` cut at ``limit`` bytes, with the note an oversized body gets."""
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    kept = encoded[:limit].decode("utf-8", errors="ignore")
+    return kept + PARAGRAPH + TRUNCATED.format(limit=limit)
+
+
+def base64_size(data: str) -> int:
+    """How many bytes a base64 string decodes to, without decoding it."""
+    return len(data.rstrip("=")) * 3 // 4
+
+
+def describe_bytes(count: int) -> str:
+    """``48 KiB``, ``1.2 MiB``, ``512 B``: a size a model can compare."""
+    if count < 1024:
+        return f"{count} B"
+    if count < 1024 * 1024:
+        return f"{count / 1024:.0f} KiB"
+    return f"{count / (1024 * 1024):.1f} MiB"
+
+
 # --------------------------------------------------------------------------- #
 # Results
 # --------------------------------------------------------------------------- #
@@ -855,8 +1169,13 @@ __all__ = [
     "HTTP_ERROR",
     "INVALID_ARGUMENTS",
     "NO_BODY",
+    "NO_CONTENT",
     "PARAGRAPH",
+    "PROTOCOL_ERROR",
+    "SERVER_ERROR_FLOOR",
+    "STATUS_FIRST",
     "TEXTUAL",
+    "TOOL_ERROR",
     "TOO_MANY_REQUESTS",
     "TRUNCATED",
     "UNREACHABLE",
@@ -870,13 +1189,21 @@ __all__ = [
     "Upstream",
     "Wiring",
     "as_text",
+    "base64_size",
     "base_media_type",
     "build_request",
     "call_tool",
+    "capped",
+    "describe_bytes",
+    "describe_content",
     "error_result",
     "invalid_arguments",
+    "json_size",
+    "mcp_tool_of",
     "record_call",
+    "relay",
     "render",
+    "rpc_line",
     "serialize",
     "status_line",
     "target_url",

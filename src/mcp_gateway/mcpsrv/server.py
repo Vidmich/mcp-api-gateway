@@ -227,6 +227,11 @@ def app_upstreams(app: FastAPI) -> Upstreams:
                 # by an agent has to reach the clients holding a tool list.
                 locks=app.state.refresh_locks,
                 announce=app_announcer(app),
+                # The sessions on upstream MCP servers, held by the pool
+                # service for as long as the app runs (task 132). ``None``
+                # in an app that runs no such service, and then each call
+                # opens and closes a session of its own.
+                sessions=app.state.mcp_sessions,
             )
 
     return open_upstream

@@ -385,6 +385,8 @@ def test_an_empty_drain_says_so() -> None:
         (proxy.HTTP_ERROR, 401, "The upstream answered 401."),
         (proxy.HTTP_ERROR, 503, "The upstream answered 503."),
         (proxy.HTTP_ERROR, None, "The upstream answered with an error."),
+        (proxy.PROTOCOL_ERROR, 200, "The upstream answered with a protocol error."),
+        (proxy.TOOL_ERROR, 200, "The upstream's tool reported an error."),
         ("something_new", None, "The call failed (something_new)."),
     ],
 )
@@ -396,13 +398,16 @@ def test_a_failure_reads_as_what_kind_it_was(
 
 def test_every_failure_the_proxy_can_report_has_words_for_it() -> None:
     # A kind the proxy grows later still produces a readable row, but the point
-    # of this is that the four it has now are not falling through to the
-    # fallback.
+    # of this is that the ones it has now are not falling through to the
+    # fallback. ``gateway_error`` is left to it on purpose: its own sentence
+    # travels in the result, and the row is only ever about the kind.
     known = {
         proxy.INVALID_ARGUMENTS,
         proxy.CREDENTIAL_UNREADABLE,
         proxy.UNREACHABLE,
         proxy.HTTP_ERROR,
+        proxy.PROTOCOL_ERROR,
+        proxy.TOOL_ERROR,
     }
     assert known == set(metrics.FAILURE_TEXT)
 

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 import httpx2
@@ -141,6 +141,39 @@ class Connected:
     #: has nothing this gateway can publish, and asking it would be answered
     #: with *method not found*.
     has_tools: bool
+    #: The transport the session sends through, which is where the HTTP
+    #: status of each answer is remembered (see :class:`_Watched`).
+    watched: _Watched = field(repr=False)
+
+    @property
+    def last_status(self) -> int | None:
+        """The HTTP status of the last response the session received.
+
+        What the SDK's client keeps to itself: a ``401`` on a ``tools/call``
+        arrives as a JSON-RPC error that reads *Server returned an error
+        response*, and this is the one place the number survives. Read it
+        straight after the failure it explains — it is the last response on
+        the session, whichever request that answered.
+        """
+        return self.watched.last_status
+
+    @property
+    def broken(self) -> EndpointError | None:
+        """What has gone wrong underneath the session, or ``None`` while nothing has.
+
+        A transport error or an answer over the size cap ends the session,
+        and the SDK reports that to whoever was waiting as *connection
+        closed* — some time before the task holding the session has finished
+        unwinding and can say why. The transport saw it first, so this is
+        read off the transport: a caller holding *connection closed* asks
+        here and gets the ``EndpointError`` the session is about to end with.
+        """
+        watched = self.watched
+        if watched.oversized is not None:
+            return watched.oversized
+        if watched.transport_error is not None:
+            return EndpointNetworkError(self.url, reason=_reason(watched.transport_error))
+        return None
 
 
 @asynccontextmanager
@@ -208,6 +241,7 @@ async def open_session(
                 version=info.version or None,
                 protocol_version=initialized.protocol_version,
                 has_tools=initialized.capabilities.tools is not None,
+                watched=watched,
             )
     except BaseException as failure:
         # The SDK runs the transport in a task group, so what arrives here is
@@ -296,9 +330,19 @@ class _Watched(httpx2.AsyncBaseTransport):
         #: a streaming body into a JSON-RPC error of its own, so the caller
         #: reads this rather than the exception to learn what happened.
         self.oversized: EndpointTooLargeError | None = None
+        #: The first transport error — connection refused, a timeout, a reset
+        #: mid-body — kept for the same reason: by the time it reaches anybody
+        #: through the SDK it reads *connection closed*, and the caller wants
+        #: the sentence the network actually said.
+        self.transport_error: httpx2.TransportError | None = None
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
-        response = await self._inner.handle_async_request(request)
+        try:
+            response = await self._inner.handle_async_request(request)
+        except httpx2.TransportError as exc:
+            if self.transport_error is None:
+                self.transport_error = exc
+            raise
         self.last_status = response.status_code
         declared = response.headers.get("content-length")
         if declared is not None and declared.isdigit() and int(declared) > self._limit:
@@ -339,13 +383,20 @@ class _Capped(httpx2.AsyncByteStream):
         if not isinstance(self._inner, httpx2.AsyncByteStream):  # pragma: no cover
             raise TypeError("an async client's transport returned a sync body")
         total = 0
-        async for chunk in self._inner:
-            total += len(chunk)
-            if total > self._watched.limit:
-                # Raising leaves the read; closing the stream drops the
-                # connection, so the rest of the body is never transferred.
-                raise self._watched._too_large()
-            yield chunk
+        try:
+            async for chunk in self._inner:
+                total += len(chunk)
+                if total > self._watched.limit:
+                    # Raising leaves the read; closing the stream drops the
+                    # connection, so the rest of the body is never transferred.
+                    raise self._watched._too_large()
+                yield chunk
+        except httpx2.TransportError as exc:
+            # A connection reset halfway through a body, recorded for the
+            # same reason a refused connection is.
+            if self._watched.transport_error is None:
+                self._watched.transport_error = exc
+            raise
 
     async def aclose(self) -> None:
         if isinstance(self._inner, httpx2.AsyncByteStream):

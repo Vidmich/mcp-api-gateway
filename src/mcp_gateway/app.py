@@ -37,6 +37,7 @@ from mcp_gateway.export import ExportConfig, export_service
 from mcp_gateway.export import resolve as resolve_export
 from mcp_gateway.health import Watcher, health_service
 from mcp_gateway.limits import Limiter
+from mcp_gateway.mcpclient.pool import session_pool_service
 from mcp_gateway.mcpsrv.auth import McpAuth, configured, mcp_auth_service
 from mcp_gateway.mcpsrv.server import mcp_service, mount_mcp
 from mcp_gateway.metrics import Meter, metrics_service
@@ -249,6 +250,10 @@ def create_app(
     app.state.db = None
     #: The shared outbound client, set by ``outbound_service`` (spec §2).
     app.state.http_client = None
+    #: The sessions held open on upstream MCP servers, set by
+    #: ``session_pool_service`` (spec §6); ``None`` in an app that does not
+    #: run one, and then a call opens a session of its own and closes it.
+    app.state.mcp_sessions = None
     #: Encrypts stored upstream credentials; ``None`` without keys (spec §3.2).
     app.state.cipher = None if keys is None else CredentialCipher(keys.encryption_key)
     #: Set by the refresh service; ``None`` in an app that does not run one.
@@ -357,6 +362,12 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
     operations half-written (task 102). It has nothing to stop, and unwinds in
     its turn without doing anything.
 
+    The session pool for upstream MCP servers comes straight after the
+    outbound client and for the same reason: the endpoint that forwards calls
+    over its sessions cannot start before it exists, and it is closed straight
+    after the client is, once nothing is serving calls that could open a
+    session (task 132).
+
     The metrics writer goes *before* the MCP endpoint, which is the same as
     saying it is torn down after it: services unwind in reverse, so the last
     flush of the counters happens once nothing is serving calls that could still
@@ -380,6 +391,7 @@ def default_services(settings: Settings) -> tuple[Service, ...]:
         mcp_auth_service,
         builtin_service,
         outbound_service(settings.http),
+        session_pool_service,
         metrics_service,
         mcp_service,
         health_service,

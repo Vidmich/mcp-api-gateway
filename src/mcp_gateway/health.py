@@ -28,6 +28,18 @@ a share diluted by them is a share that means something else. They say this
 call was wrong, not that this upstream is down, and the validation ones never
 left the process.
 
+**An MCP upstream fails at three layers, and each is one of the above** (task
+132). A ``401``/``403`` from the endpoint arrives as the same ``http_error``
+with the same status, and counts on the streak; a connection that could not be
+made, a timeout, a ``5xx`` or a session that broke mid-call arrives as
+``unreachable`` or as a ``5xx``, and counts in the window; a JSON-RPC error is
+``protocol_error`` — the upstream is answering and not working — and counts in
+the window too. A result with ``isError: true`` is ``tool_error``: the
+upstream's ``4xx``, a working server refusing a call on its merits, and so
+ignored here exactly as a ``422`` is. The row a trip writes names which of
+those the last failure was, so an operator can tell *would not connect* from
+*answered with an error* without a log.
+
 **The write is not on the call path either.** A trip is handed to
 :class:`AutoDisabler`, which is a queue and a task: the call that tripped it
 returns to its client immediately, and the row is written a moment later, once.
@@ -70,9 +82,12 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.models import utcnow
 from mcp_gateway.db.repo import CallFailure
 from mcp_gateway.db.session import Database
+from mcp_gateway.mcpclient.pool import drop_session
 from mcp_gateway.mcpsrv.proxy import (
     CREDENTIAL_UNREADABLE,
     HTTP_ERROR,
+    PROTOCOL_ERROR,
+    TOOL_ERROR,
     UNREACHABLE,
     CallOutcome,
 )
@@ -107,6 +122,16 @@ RATE_TRIGGER: Final = "health.failure_threshold"
 #: a page, and read back out of ``call_errors``.
 AUTH_DETAIL: Final = "{count} authentication failure{s} in a row"
 RATE_DETAIL: Final = "{faults} of {calls} calls failed in the last {minutes} minute{s}"
+#: Appended to either, naming the layer the last failure was at. Built from
+#: the *kind* of failure and the status the gateway itself recorded, for the
+#: same reason the two above are.
+LAST_FAILURE: Final = "{detail} (last failure: {layer})"
+LAYER: Final[dict[str, str]] = {
+    CREDENTIAL_UNREADABLE: "the stored credentials could not be read",
+    UNREACHABLE: "the upstream could not be reached",
+    HTTP_ERROR: "the upstream answered HTTP {status}",
+    PROTOCOL_ERROR: "the upstream answered with a protocol error",
+}
 
 #: The reason the server list shows. One sentence, and it says who did it.
 DISABLED: Final = "Disabled by the gateway: {detail}."
@@ -145,12 +170,34 @@ def classify(outcome: CallOutcome) -> Verdict:
         return AUTH
     if outcome.failure == UNREACHABLE:
         return FAULT
+    if outcome.failure == PROTOCOL_ERROR:
+        # An MCP upstream that answered a JSON-RPC error, or something that
+        # was not a result at all: reachable, and not working (task 132).
+        return FAULT
+    if outcome.failure == TOOL_ERROR:
+        # ``isError: true`` from an MCP upstream's tool — the upstream's own
+        # 4xx, and read the way one is.
+        return IGNORED
     if outcome.failure == HTTP_ERROR and outcome.status_code is not None:
         if outcome.status_code in AUTH_STATUSES:
             return AUTH
         if outcome.status_code >= SERVER_ERROR_FLOOR:
             return FAULT
     return IGNORED
+
+
+def layer_of(failure: str, status_code: int | None) -> str | None:
+    """Which layer a failure was at, in the words :data:`LAST_FAILURE` takes.
+
+    ``None`` for a kind that has no layer to name — which, for the failures
+    that count toward a trip, is none of them.
+    """
+    words = LAYER.get(failure)
+    if words is None:
+        return None
+    if failure == HTTP_ERROR:
+        return words.format(status=status_code) if status_code is not None else None
+    return words
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +246,10 @@ class _State:
     calls: int = 0
     faults: int = 0
     buckets: deque[_Bucket] = field(default_factory=deque)
+    #: The layer of the last call that counted against the server, for the
+    #: row a trip writes. Remembered rather than read off the tripping call,
+    #: because the rate rule can trip on a success (see :meth:`Watcher.record`).
+    last_layer: str | None = None
 
 
 class Watcher:
@@ -258,6 +309,8 @@ class Watcher:
         at = self._now()
         state = self._states.setdefault(outcome.server_id, _State())
 
+        if verdict != OK:
+            state.last_layer = layer_of(outcome.failure or "", outcome.status_code)
         if verdict == AUTH:
             state.auth_failures += 1
             if state.auth_failures < self._health.auth_failures_before_disable:
@@ -319,7 +372,10 @@ class Watcher:
         second time — and even then the write is a no-op while the flag from the
         first one is still up.
         """
-        self._states.pop(outcome.server_id, None)
+        state = self._states.pop(outcome.server_id, None)
+        layer = None if state is None else state.last_layer
+        if layer is not None:
+            detail = LAST_FAILURE.format(detail=detail, layer=layer)
         return Trip(
             server_id=outcome.server_id,
             trigger=trigger,
@@ -400,6 +456,9 @@ class AutoDisabler:
             # again (spec §5.4). Sent after the commit, so the answer to that
             # ask is the world as it now is.
             await app_announcer(self.app)()
+            # And a session held open to the thing that just failed is closed
+            # rather than kept warm (task 132). A no-op for an API server.
+            await drop_session(self.app, trip.server_id)
         else:
             logger.warning(
                 "Server %r is failing: %s (%s); left enabled by health.auto_disable = false",
@@ -480,6 +539,8 @@ __all__ = [
     "FAULT",
     "FLAGGED",
     "IGNORED",
+    "LAST_FAILURE",
+    "LAYER",
     "OK",
     "QUEUE_LIMIT",
     "RATE_DETAIL",
@@ -492,5 +553,6 @@ __all__ = [
     "Watcher",
     "classify",
     "health_service",
+    "layer_of",
     "plural",
 ]

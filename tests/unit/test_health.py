@@ -279,7 +279,9 @@ def test_three_consecutive_auth_failures_trip_the_server() -> None:
     assert trip is not None
     assert trip.server_id == 1
     assert trip.trigger == AUTH_TRIGGER
-    assert trip.detail == "3 authentication failures in a row"
+    assert trip.detail == (
+        "3 authentication failures in a row (last failure: the upstream answered HTTP 401)"
+    )
 
 
 def test_a_second_server_is_untouched_by_the_first_one_failing() -> None:
@@ -337,7 +339,9 @@ def test_the_number_of_failures_it_waits_for_is_configurable() -> None:
 
     assert trip is not None
     # Singular, because a message with a 1 in it should read like English.
-    assert trip.detail == "1 authentication failure in a row"
+    assert trip.detail == (
+        "1 authentication failure in a row (last failure: the upstream answered HTTP 401)"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -403,7 +407,9 @@ def test_a_window_above_the_threshold_trips_the_server() -> None:
     last = trips[-1]
     assert last is not None
     assert last.trigger == RATE_TRIGGER
-    assert last.detail == "5 of 10 calls failed in the last 5 minutes"
+    assert last.detail == (
+        "5 of 10 calls failed in the last 5 minutes (last failure: the upstream answered HTTP 503)"
+    )
 
 
 def test_the_same_failures_spread_wider_than_the_window_trip_nothing() -> None:
@@ -457,7 +463,10 @@ def test_calls_that_never_reached_the_upstream_count_toward_the_rate() -> None:
         trip = watcher.record(a_call(failure=UNREACHABLE, status=None)) or trip
 
     assert trip is not None
-    assert trip.detail == "10 of 10 calls failed in the last 5 minutes"
+    assert trip.detail == (
+        "10 of 10 calls failed in the last 5 minutes "
+        "(last failure: the upstream could not be reached)"
+    )
 
 
 def test_a_success_can_be_the_call_that_makes_the_window_big_enough() -> None:
@@ -477,7 +486,9 @@ def test_a_success_can_be_the_call_that_makes_the_window_big_enough() -> None:
     trip = watcher.record(worked())
 
     assert trip is not None
-    assert trip.detail == "9 of 10 calls failed in the last 5 minutes"
+    assert trip.detail == (
+        "9 of 10 calls failed in the last 5 minutes (last failure: the upstream answered HTTP 503)"
+    )
 
 
 def test_the_window_is_measured_in_seconds_not_in_calls() -> None:
@@ -507,7 +518,9 @@ def test_the_thresholds_are_configurable() -> None:
         trip = watcher.record(broken() if index == 0 else worked()) or trip
 
     assert trip is not None
-    assert trip.detail == "1 of 4 calls failed in the last 1 minute"
+    assert trip.detail == (
+        "1 of 4 calls failed in the last 1 minute (last failure: the upstream answered HTTP 503)"
+    )
 
 
 def test_a_trip_starts_that_servers_counters_over() -> None:

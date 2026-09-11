@@ -119,17 +119,17 @@ has three layers where things go wrong, and each maps to one of those:
 
 ## Acceptance
 
-- [ ] A `tools/call` on a published MCP tool reaches the upstream with the upstream's tool name
+- [x] A `tools/call` on a published MCP tool reaches the upstream with the upstream's tool name
       and the arguments unchanged, and its result comes back as text with `isError` preserved.
-- [ ] A second call on the same server reuses the session; a transport failure drops it and the
+- [x] A second call on the same server reuses the session; a transport failure drops it and the
       following call reopens it; an edit to the server's endpoint or credential drops it.
-- [ ] Image, audio and resource content are described rather than dumped; `structuredContent` is
+- [x] Image, audio and resource content are described rather than dumped; `structuredContent` is
       appended; a result over the cap is truncated with the note.
-- [ ] Each row of the failure table has a test that produces it and asserts the auto-disable
+- [x] Each row of the failure table has a test that produces it and asserts the auto-disable
       outcome, including that `isError: true` alone never trips a server.
-- [ ] Rate limits, metrics buckets and bytes counting apply to MCP calls, and the Monitoring page
+- [x] Rate limits, metrics buckets and bytes counting apply to MCP calls, and the Monitoring page
       shows an MCP server's calls in the same graphs.
-- [ ] Sessions are closed on shutdown and on disable.
-- [ ] SPEC §6 describes the third branch, the session policy and the failure mapping.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] Sessions are closed on shutdown and on disable.
+- [x] SPEC §6 describes the third branch, the session policy and the failure mapping.
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where this task made them wrong.

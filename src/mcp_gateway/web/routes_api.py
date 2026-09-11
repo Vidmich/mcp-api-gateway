@@ -42,6 +42,7 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.models import Operation, OperationStatus, Server
 from mcp_gateway.db.session import CommittingRoute, request_session
 from mcp_gateway.limits import HALF_A_LIMIT, half_a_limit
+from mcp_gateway.mcpclient.pool import drop_session
 from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken
 from mcp_gateway.openapi.diagnostics import SpecError
@@ -251,14 +252,19 @@ def api_router() -> APIRouter:
         # disabling one, renaming a prefix — so a client holding a listing is
         # told, as it is when the page's own toggle does the same thing.
         await app_announcer(request.app)()
+        if not detail.enabled:
+            # And a server left out of service holds no session to its
+            # upstream (task 132), as the page's toggle sees to.
+            await drop_session(request.app, server_id)
         return detail
 
     @router.delete(SERVER_PATH, status_code=204, summary="Delete a server")
-    async def delete_server(server_id: int, session: Session) -> Response:
+    async def delete_server(request: Request, server_id: int, session: Session) -> Response:
         with answered():
             doomed = await repo.require_server(session, server_id)
             name = doomed.name
             await repo.delete_server(session, server_id)
+        await drop_session(request.app, server_id)
         logger.info("Deleted server %r through the API", name)
         return Response(status_code=204)
 

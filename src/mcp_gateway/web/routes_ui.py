@@ -96,6 +96,7 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.models import utcnow
 from mcp_gateway.db.repo import ServerSummary
 from mcp_gateway.db.session import CommittingRoute, request_session
+from mcp_gateway.mcpclient.pool import drop_session
 from mcp_gateway.mcpsrv.auth import McpAuth
 from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken, conflict_alerts
@@ -1320,6 +1321,11 @@ def ui_router() -> APIRouter:
             await repo.set_server_enabled(session, server_id, enabled=enabled)
         except repo.ServerNotFound:
             raise _gone(request, server_id) from None
+        if not enabled:
+            # A server out of service holds no connection to its upstream
+            # (task 132). Before the commit is fine: a session dropped for a
+            # toggle that then fails to land is reopened by the next call.
+            await drop_session(request.app, server_id)
         # Read back rather than dressing the row from the write's return value:
         # the row shows counts, and only a query knows those.
         row = to_row(await repo.server_detail(session, server_id))
@@ -1361,6 +1367,7 @@ def ui_router() -> APIRouter:
             # nothing on the page issues. Answered rather than crashed, and in
             # the repository's own words (task 102).
             raise HTTPException(status_code=409, detail=str(refused)) from None
+        await drop_session(request.app, server_id)
         logger.info(
             "Deleted server %r and its %s", doomed.name, plural(doomed.counts.total, "operation")
         )

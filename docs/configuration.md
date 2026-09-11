@@ -427,6 +427,13 @@ A `400`, `404`, `409` or `422`, and arguments that did not match the tool's
 schema, count toward neither trigger and are not in the window at all. They mean
 the call was wrong, not that the server is down.
 
+A server that is itself an MCP server is judged by the same two triggers. A
+`401` or `403` from its endpoint counts in a row; a connection that could not be
+made, a timeout, a `5xx`, a session that broke mid-call or a JSON-RPC error
+counts in the window; a tool that answers with `isError: true` is the upstream's
+own refusal — like a `422` — and counts toward neither. The reason written when
+a server is disabled says which of these the last failure was.
+
 **Nothing comes back on its own.** There are no probes and no cool-off: the
 usual cause is a credential, and no amount of retrying fixes one. Fix what is
 wrong and switch the server back on, which also clears the badge.

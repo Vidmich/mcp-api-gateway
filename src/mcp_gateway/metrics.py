@@ -65,6 +65,8 @@ from mcp_gateway.mcpsrv.proxy import (
     CREDENTIAL_UNREADABLE,
     HTTP_ERROR,
     INVALID_ARGUMENTS,
+    PROTOCOL_ERROR,
+    TOOL_ERROR,
     UNREACHABLE,
     CallOutcome,
 )
@@ -94,6 +96,10 @@ FAILURE_TEXT: Final[dict[str, str]] = {
     CREDENTIAL_UNREADABLE: "The stored credentials could not be read.",
     UNREACHABLE: "The upstream could not be reached.",
     HTTP_ERROR: "The upstream answered with an error.",
+    # The two an MCP upstream adds (task 132): the layer is the whole of
+    # what an operator needs from the row, so each layer has its own words.
+    PROTOCOL_ERROR: "The upstream answered with a protocol error.",
+    TOOL_ERROR: "The upstream's tool reported an error.",
 }
 
 #: Where a bucket's counters are kept until they are written: the start of the
