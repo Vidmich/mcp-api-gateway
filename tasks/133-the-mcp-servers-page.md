@@ -95,20 +95,20 @@ already the right name; what was missing was the other one.
 
 ## Acceptance
 
-- [ ] The navigation reads API Servers · MCP Servers · Monitoring · Configuration, and the front
+- [x] The navigation reads API Servers · MCP Servers · Monitoring · Configuration, and the front
       door still opens on API Servers.
-- [ ] `/ui/mcp-servers` lists MCP servers with name, endpoint, the status cell and the last tool
+- [x] `/ui/mcp-servers` lists MCP servers with name, endpoint, the status cell and the last tool
       list; Enable / Disable / Refresh / Delete work from it.
-- [ ] The add flow connects without saving, highlights the credential on `401`/`403`, shows the
+- [x] The add flow connects without saving, highlights the credential on `401`/`403`, shows the
       picker with the tool name in place of method and path, offers a prefix derived from the
       upstream's name, and saves the ticked tools under `<prefix>__<name>`.
-- [ ] The detail page shows the endpoint, says **Refresh tools**, omits the method column and the
+- [x] The detail page shows the endpoint, says **Refresh tools**, omits the method column and the
       spec-auth rows, and keeps every other control the API detail page has.
-- [ ] A server opened under the other section's path redirects to its own.
-- [ ] No page, flash or error shown for an MCP server says *spec*, *document* or *base URL*; every
+- [x] A server opened under the other section's path redirects to its own.
+- [x] No page, flash or error shown for an MCP server says *spec*, *document* or *base URL*; every
       API Servers page reads exactly as it did.
-- [ ] Monitoring links each server to the right section.
-- [ ] Looked at with a real MCP server behind it, at a wide window and a narrow one.
-- [ ] SPEC §7.1 describes the section, the flow and the shared detail page.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] Monitoring links each server to the right section.
+- [x] Looked at with a real MCP server behind it, at a wide window and a narrow one.
+- [x] SPEC §7.1 describes the section, the flow and the shared detail page.
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where this task made them wrong.

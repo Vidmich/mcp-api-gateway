@@ -463,6 +463,7 @@ def a_detail(rows: tuple[Seed, ...] = FLAGGED, *, flagged: bool = True) -> repo.
         id=7,
         name="Petstore",
         tool_prefix="petstore",
+        kind="openapi",
         spec_url=SPEC_URL,
         spec_format="openapi-3.0",
         base_url="https://api.petstore.example/v2",

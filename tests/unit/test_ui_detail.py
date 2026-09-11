@@ -384,6 +384,7 @@ def settings_form(**overrides: str) -> dict[str, str]:
     form = {
         "name": "Petstore",
         "tool_prefix": "petstore",
+        "kind": "openapi",
         "base_url": "https://petstore.example/api",
     }
     form.update(overrides)
@@ -465,6 +466,7 @@ def a_summary(**overrides: Any) -> repo.ServerSummary:
         "id": 7,
         "name": "Petstore",
         "tool_prefix": "petstore",
+        "kind": "openapi",
         "spec_url": "https://petstore.example/openapi.json",
         "spec_format": "openapi-3.1",
         "base_url": "https://petstore.example/api",

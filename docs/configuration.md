@@ -402,8 +402,9 @@ failure_threshold = 0.5
 ```
 
 When a registered server's calls stop working, the gateway takes it out of the
-tool list and badges it **Disabled by the gateway** on `/ui/servers`, with the
-counts that got it there. Every model calling through the gateway then stops
+tool list and badges it **Disabled by the gateway** on its section's page —
+`/ui/servers`, or `/ui/mcp-servers` for an MCP server — with the counts that
+got it there. Every model calling through the gateway then stops
 being offered tools that cannot work, which is the point: a tool that always
 fails is worse than a tool that is not there.
 
@@ -464,7 +465,7 @@ cannot take the gateway down with it.
 
 | Thing | Where it lives |
 |---|---|
-| Registered servers, their base URLs and credentials | the database, edited at `/ui/servers` |
+| Registered servers, their base URLs or endpoints, and credentials | the database, edited at `/ui/servers` and `/ui/mcp-servers` |
 | Which operations are exposed, and what each tool is called | the database, on a server's detail page |
 | Whether a server auto-refreshes | the database, per server |
 | How fast one server may be called | the database, on that server's detail page |
@@ -472,7 +473,7 @@ cannot take the gateway down with it.
 | The auto-refresh interval, once changed in the UI | the database, overriding `refresh.auto_refresh_interval_minutes` |
 | The admin account, once saved in the UI | the database, overriding `[admin]`; cleared with `--reset-admin` |
 | The metrics export, once saved in the UI | the database, overriding `[export]`; the key is stored encrypted |
-| Whether a server is enabled, including after the gateway disabled it | the database, toggled at `/ui/servers` |
+| Whether a server is enabled, including after the gateway disabled it | the database, toggled on its section's list |
 
 There is no reload: the file is read once, at startup, so changing it means
 restarting the process. Everything in the table above changes without one.

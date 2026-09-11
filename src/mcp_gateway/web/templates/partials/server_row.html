@@ -6,7 +6,11 @@
 
    Every action is a real form with a real ``action``, and htmx only intercepts
    it. Without the script the operator still gets a button posting to the same
-   route, which is also what makes the routes testable without a browser. #}
+   route, which is also what makes the routes testable without a browser.
+
+   Every path and every word that names the upstream comes off the row — its
+   ``section``, read from the stored kind — so this one partial serves both
+   lists and a row always links to and posts under its own section (task 133). #}
 {% from "partials/status_badge.html" import status_badge %}
 {% from "partials/confirm.html" import confirm %}
 {% from "partials/tool_counts.html" import tool_counts %}
@@ -20,7 +24,9 @@
        cell says what it does instead, rather than showing an empty box the
        operator would read as a broken row (task 102) — and says the whole of
        it here, including that it cannot be deleted, so that the Actions
-       column holds nothing but buttons (task 106). #}
+       column holds nothing but buttons (task 106). For an MCP server the
+       column is headed Endpoint and this is it: the row stores it in both
+       URL columns (spec §4). #}
     {% if row.origin_note %}
     <span class="cell-note">{{ row.origin_note }}</span>
     {% else %}
@@ -78,7 +84,7 @@
     {% if row.refreshable %}
     <form class="toggle" method="post" action="{{ row.refresh_path }}">
       <input type="hidden" name="back" value="list" />
-      <button class="button" type="submit">Refresh Spec</button>
+      <button class="button" type="submit">{{ row.refresh_label }}</button>
     </form>
     {% endif %}
     {# No Delete for the gateway's own server, and nothing in its place: the

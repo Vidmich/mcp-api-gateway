@@ -1,9 +1,9 @@
 """The UI shell: the page every other page is rendered into (spec §7.1).
 
 Tasks 020 to 023 add the pages; this adds what they render *into*. One Jinja
-environment with autoescaping on, one layout with the API Servers / Monitoring /
-Configuration navigation, one stylesheet, one copy of htmx, and the error pages a
-request lands on when there is no page to show it.
+environment with autoescaping on, one layout with the API Servers / MCP Servers /
+Monitoring / Configuration navigation, one stylesheet, one copy of htmx, and the
+error pages a request lands on when there is no page to show it.
 
 Everything the browser loads is served from this package. There is no CDN
 reference anywhere in the templates, because a gateway in front of an internal
@@ -66,6 +66,11 @@ STATIC_DIR: Final = Path(__file__).parent / "static"
 #: login page needs the stylesheet before there is a session (spec §3.3).
 STATIC_PREFIX: Final = "/static"
 
+#: The second list of upstreams: the ones that speak MCP (task 133). Beside
+#: :data:`~mcp_gateway.web.auth.HOME_PATH` rather than under it, because the
+#: two sections are two rooms and the masthead lights one at a time.
+MCP_SERVERS_PATH: Final = f"{UI_PREFIX}/mcp-servers"
+
 MONITORING_PATH: Final = f"{UI_PREFIX}/monitoring"
 
 #: The gateway's own settings, as opposed to any one server's (task 104).
@@ -127,11 +132,14 @@ class NavItem:
 
 #: The sections, in the order they are read. "API Servers" rather than
 #: "Configuration" because it is what the page lists, and because the word
-#: belongs to the page holding the gateway's own settings (task 104). That page
-#: comes last: it is the one an operator opens least often, and the two before
-#: it are what they came here to look at.
+#: belongs to the page holding the gateway's own settings (task 104). The two
+#: lists come first because they are what the gateway is made of, MCP second
+#: because it is the addition (task 133); the front door still opens on the
+#: first. Configuration comes last: it is the one an operator opens least
+#: often, and the pages before it are what they came here to look at.
 NAV: Final = (
     NavItem("API Servers", HOME_PATH, f"{UI_PREFIX}/servers"),
+    NavItem("MCP Servers", MCP_SERVERS_PATH, MCP_SERVERS_PATH),
     NavItem("Monitoring", MONITORING_PATH, MONITORING_PATH),
     NavItem("Configuration", CONFIGURATION_PATH, CONFIGURATION_PATH),
 )
@@ -233,6 +241,7 @@ class Shell:
             version=__version__,
             ui_prefix=UI_PREFIX,
             home_path=HOME_PATH,
+            mcp_servers_path=MCP_SERVERS_PATH,
             monitoring_path=MONITORING_PATH,
             configuration_path=CONFIGURATION_PATH,
             login_path=f"{UI_PREFIX}/login",
@@ -395,6 +404,7 @@ __all__ = [
     "FLASH_MAX_AGE",
     "MAX_FLASHES",
     "MAX_FLASH_CHARS",
+    "MCP_SERVERS_PATH",
     "MONITORING_PATH",
     "NAV",
     "NO_STORE",

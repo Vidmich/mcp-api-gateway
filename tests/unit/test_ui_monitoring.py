@@ -221,6 +221,7 @@ def a_summary(
         name=name,
         prefix=name.lower(),
         tool_prefix=name.lower(),
+        kind="openapi",
         spec_url=f"https://{name.lower()}.example/openapi.json",
         spec_format="openapi-3.1",
         base_url=f"https://{name.lower()}.example/api",
@@ -630,32 +631,33 @@ def test_a_quiet_server_is_not_marked_as_failing() -> None:
 
 
 def test_a_failure_names_its_server_and_links_to_it() -> None:
-    (row,) = failures_for([a_failure(1, server_id=4)], {4: "Petstore"}, START)
+    (row,) = failures_for([a_failure(1, server_id=4)], [a_summary(4, "Petstore")], START)
 
     assert (row.server, row.server_path) == ("Petstore", f"{SERVERS_PATH}/4")
 
 
 def test_a_failure_of_a_deleted_server_is_labelled_the_way_its_band_is() -> None:
-    (row,) = failures_for([a_failure(1, server_id=9)], {}, START)
+    (row,) = failures_for([a_failure(1, server_id=9)], [], START)
 
     assert row.server == "Server 9 (deleted)"
     assert row.server_path is None
 
 
 def test_a_failure_with_no_server_does_not_invent_one() -> None:
-    (row,) = failures_for([a_failure(1, server_id=None)], {}, START)
+    (row,) = failures_for([a_failure(1, server_id=None)], [], START)
 
     assert (row.server, row.server_path) == (NOT_RECORDED, None)
 
 
 def test_a_failure_that_never_reached_a_status_says_that() -> None:
-    (row,) = failures_for([a_failure(1, status_code=None)], {1: "Petstore"}, START)
+    (row,) = failures_for([a_failure(1, status_code=None)], [a_summary(1, "Petstore")], START)
 
     assert row.status == NO_STATUS
 
 
 def test_a_failure_carries_the_moment_as_well_as_the_age() -> None:
-    (row,) = failures_for([a_failure(1)], {1: "Petstore"}, START + dt.timedelta(minutes=2))
+    later = START + dt.timedelta(minutes=2)
+    (row,) = failures_for([a_failure(1)], [a_summary(1, "Petstore")], later)
 
     assert row.when == "2 minutes ago"
     assert row.at == "2026-03-02 00:00:00 UTC"

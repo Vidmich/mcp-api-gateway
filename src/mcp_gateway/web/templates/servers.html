@@ -1,16 +1,19 @@
-{# The API Servers page, and where the UI starts (spec §7.1).
+{# One section's list: API Servers, where the UI starts, or MCP Servers
+   (spec §7.1, task 133).
 
    Almost nothing of its own: the table is a partial because htmx swaps it in
    after a delete, and a fragment that is also part of a page is the only way
-   the two can be guaranteed to look the same. #}
+   the two can be guaranteed to look the same. Which section this is — its
+   heading, its Add button, the words its columns use — is ``section``, which
+   ``routes_ui._list_context`` puts in the context. #}
 {% extends "base.html" %}
 
-{% block title %}API Servers · mcp-api-gateway{% endblock %}
+{% block title %}{{ section.label }} · mcp-api-gateway{% endblock %}
 
 {% block content %}
 <div class="toolbar">
-  <h1 class="toolbar__title">API Servers</h1>
-  <a class="button button--primary" href="{{ new_server_path }}">Add a server</a>
+  <h1 class="toolbar__title">{{ section.label }}</h1>
+  <a class="button button--primary" href="{{ new_server_path }}">{{ section.add_label }}</a>
 </div>
 {% include "partials/server_list.html" %}
 {% endblock %}

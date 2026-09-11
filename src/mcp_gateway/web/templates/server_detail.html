@@ -16,7 +16,14 @@
 
    Neither credential is ever rendered. What is shown is ``Set`` or ``Not set``
    and a box to tick; with the box unticked the route does not read the
-   credential fields at all (spec §7.3). #}
+   credential fields at all (spec §7.3).
+
+   The same page for an MCP server, with the kind read off the row (task 133).
+   ``settings.mcp`` and ``operations.mcp`` decide the places the two kinds
+   differ in structure: the summary and the settings card show the endpoint
+   where an API server's show its spec URL and base URL and have no spec-auth
+   rows, and the table has no method column or filter. ``section`` supplies
+   the words — Refresh tools, Last tool list — and every path. #}
 {% extends "base.html" %}
 {% from "partials/field.html" import field, choice, switch %}
 {% from "partials/credential_fields.html" import credential_fields %}
@@ -44,7 +51,7 @@
      gateway's own server, which has no document to re-read (task 102). #}
   {% if settings.editable %}
   <form method="post" action="{{ refresh_path }}">
-    <button class="button" type="submit">Refresh Spec</button>
+    <button class="button" type="submit">{{ section.refresh_label }}</button>
   </form>
   {% endif %}
   {# The switch, where the operator is already looking (task 112). The same
@@ -75,6 +82,20 @@
 {% endif %}
 
 <dl class="summary">
+  {% if settings.mcp %}
+  {# One URL and a protocol version, where an API server has a document and
+     its dialect. The endpoint is also in the settings card below, as the
+     base URL is for an API server: here as where the tools came from, there
+     as the thing an operator can change. #}
+  <div class="summary__pair">
+    <dt class="summary__term">Endpoint</dt>
+    <dd class="summary__value"><code>{{ settings.server.spec_url }}</code></dd>
+  </div>
+  <div class="summary__pair">
+    <dt class="summary__term">Protocol</dt>
+    <dd class="summary__value">{{ settings.server.spec_format }}</dd>
+  </div>
+  {% else %}
   <div class="summary__pair">
     <dt class="summary__term">Spec URL</dt>
     <dd class="summary__value"><code>{{ settings.server.spec_url }}</code></dd>
@@ -83,8 +104,9 @@
     <dt class="summary__term">Format</dt>
     <dd class="summary__value">{{ settings.server.spec_format }}</dd>
   </div>
+  {% endif %}
   <div class="summary__pair">
-    <dt class="summary__term">Last spec download</dt>
+    <dt class="summary__term">{{ section.read_heading }}</dt>
     <dd class="summary__value">
       {{ status_badge(overview.state, label=overview.refreshed, title=overview.refresh_title) }}
     </dd>
@@ -142,7 +164,7 @@
       <dd class="summary__value"><code>{{ settings.server.tool_prefix }}</code></dd>
     </div>
     <div class="summary__pair">
-      <dt class="summary__term">Base URL</dt>
+      <dt class="summary__term">{{ section.url_heading }}</dt>
       <dd class="summary__value"><code>{{ settings.server.base_url }}</code></dd>
     </div>
     <div class="summary__pair">
@@ -154,7 +176,7 @@
       <dd class="summary__value">{{ settings.rate_limit_note }}</dd>
     </div>
     <div class="summary__pair">
-      <dt class="summary__term">API authentication</dt>
+      <dt class="summary__term">{{ "Authentication" if settings.mcp else "API authentication" }}</dt>
       <dd class="summary__value">
         <strong>{{ settings.credential.label }}</strong>
         {% if settings.credential.auth_type %}
@@ -163,6 +185,10 @@
         <span class="cell-note">{{ settings.credential.note }}</span>
       </dd>
     </div>
+    {# Not for an MCP server: an endpoint is one thing with one credential,
+       and the two rows would be describing a second one that cannot exist
+       (spec §4, task 133). #}
+    {% if not settings.mcp %}
     <div class="summary__pair">
       <dt class="summary__term">Spec download</dt>
       <dd class="summary__value">{{ mode_labels[settings.server.spec_auth_mode] }}</dd>
@@ -176,6 +202,7 @@
         {% endif %}
       </dd>
     </div>
+    {% endif %}
   </dl>
 </div>
 
@@ -222,15 +249,23 @@
   </label>
   {% include "partials/rename_preview.html" %}
 
-  {{ field("base_url", "Base URL", value=settings.fields.base_url, required=true,
-           hint="Where every tool call this server exposes goes.",
+  {# The same box under the section's own name: a base URL on an API server,
+     the endpoint on an MCP one. Saving a new endpoint closes the session the
+     gateway holds to the server, which the flash says (tasks 132 and 133). #}
+  {{ field("base_url", section.url_heading, value=settings.fields.base_url, required=true,
+           hint=section.url_hint,
            error=settings.errors.get("base_url")) }}
 
   {# No Enabled switch here. It is the button in the toolbar, which writes on
      the press; a copy on this form would write again on Save, and pressing
      Enable and then saving would turn the server straight back off (task 112). #}
+  {% if settings.mcp %}
+  {% set refresh_hint = "List the tools again on the gateway's schedule. Changes are flagged, never applied." %}
+  {% else %}
+  {% set refresh_hint = "Re-read the spec on the gateway's schedule. Changes are flagged, never applied." %}
+  {% endif %}
   {{ switch("auto_refresh", "Refresh automatically", checked=settings.auto_refresh,
-            hint="Re-read the spec on the gateway's schedule. Changes are flagged, never applied.") }}
+            hint=refresh_hint) }}
 
   {# Two boxes and one setting: both empty is no limit. The note above them
      describes the stored row rather than what is in the boxes, so a rejected
@@ -249,8 +284,14 @@
   </fieldset>
 
   <fieldset class="fieldset">
-    <legend class="fieldset__legend">API authentication</legend>
-    <p class="fieldset__note">How the gateway authenticates the tool calls it proxies.</p>
+    <legend class="fieldset__legend">{{ "Authentication" if settings.mcp else "API authentication" }}</legend>
+    <p class="fieldset__note">
+      {% if settings.mcp %}
+      How the gateway authenticates to this server, on every request it makes to it.
+      {% else %}
+      How the gateway authenticates the tool calls it proxies.
+      {% endif %}
+    </p>
     <dl class="summary summary--inline">
       <div class="summary__pair">
         <dt class="summary__term">Credential</dt>
@@ -263,7 +304,8 @@
         </dd>
       </div>
     </dl>
-    {{ switch("replace_credential", "Replace the API credential",
+    {{ switch("replace_credential",
+              "Replace the credential" if settings.mcp else "Replace the API credential",
               checked=settings.replacing_credential, reveal="api_replace",
               hint="Leave this alone and the stored credential is not touched.") }}
     <div class="reveal" data-reveal-for="api_replace" data-reveal-when="on">
@@ -273,6 +315,9 @@
     </div>
   </fieldset>
 
+  {# No spec-download half for an MCP server: the route does not read it for
+     one either, however the form was posted (task 133). #}
+  {% if not settings.mcp %}
   <fieldset class="fieldset">
     <legend class="fieldset__legend">Spec download</legend>
     <p class="fieldset__note">How the document itself is fetched on every refresh.</p>
@@ -304,6 +349,7 @@
       </div>
     </div>
   </fieldset>
+  {% endif %}
 
   <p class="form__note">
     A stored credential is never shown again, so the boxes above come back empty
@@ -380,6 +426,9 @@
     </select>
   </label>
 
+  {# No method filter for a tool list: every row would say the same thing
+     (task 133). #}
+  {% if not operations.mcp %}
   <label class="field">
     <span class="field__label">Method</span>
     <select
@@ -399,6 +448,7 @@
       {% endfor %}
     </select>
   </label>
+  {% endif %}
 </form>
 
 {% endif %}

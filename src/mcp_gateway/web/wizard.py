@@ -28,6 +28,16 @@ the browser without rendering them. So a successful preview is held in
 :class:`PreviewStore` under an unguessable token, in this process only, for half
 an hour. A *failed* one is not held at all: a store of rejected credentials is a
 store of secrets nobody asked us to keep.
+
+**An MCP server's step 1 is the same form with fewer questions** (task 133).
+An endpoint is one thing with one credential (spec §4), so the form asks for
+the endpoint, a display name, and how to authenticate to it — no base URL
+override, no separate spec credential, because those are questions with no
+answer here. :func:`parse_mcp_form` reads it into the same :class:`WizardForm`
+the API form produces, with the endpoint in ``spec_url`` and the mode already
+``same_as_api``, which is what lets step 2 and the save be one piece of code
+for both kinds. A ``401`` or ``403`` on connecting lands beside the
+authentication selector, as the spec URL's does beside the spec-auth one.
 """
 
 from __future__ import annotations
@@ -51,6 +61,7 @@ from mcp_gateway.crypto import (
 )
 from mcp_gateway.db.models import AuthType, SpecAuthMode
 from mcp_gateway.db.repo import KIND_MCP, KIND_OPENAPI
+from mcp_gateway.mcpclient.connect import EndpointError, EndpointStatusError
 from mcp_gateway.mcpclient.preview import EndpointPreview
 from mcp_gateway.openapi.diagnostics import SpecError, SpecWarning
 from mcp_gateway.openapi.fetch import SpecStatusError
@@ -75,6 +86,12 @@ SPEC_AUTH_MODES: Final[tuple[SpecAuthMode, ...]] = ("none", "same_as_api", "cust
 #: Named rather than derived, so adding a field does not silently add it here.
 KEPT: Final = ("spec_url", "name", "base_url", "auth_type", "spec_auth_mode", "spec_auth_type")
 
+#: The MCP section's step 1 (task 133): its URL box, and the two fields it
+#: shares with the API form. The same rule as :data:`KEPT`, for the same
+#: reason — a list of names, none of them a credential.
+ENDPOINT_FIELD: Final = "endpoint"
+MCP_KEPT: Final = (ENDPOINT_FIELD, "name", "auth_type")
+
 #: The only two schemes a spec URL or a base URL may use. ``file://`` is refused
 #: at the form rather than at the transport so the operator is told why.
 SCHEMES: Final = ("http://", "https://")
@@ -93,6 +110,11 @@ HEADER_LINE: Final = "Write one header per line, as 'Name: value'."
 #: Added to the message when the spec URL itself refused the request, which is
 #: the whole reason this form has a second credential on it.
 SPEC_AUTH_HINT: Final = "The spec URL needs credentials of its own to be downloaded."
+
+ENDPOINT_REQUIRED: Final = "Enter the URL of the MCP endpoint."
+#: Added to the message when the endpoint refused the connection, beside the
+#: one selector on the form that can fix it (task 133).
+ENDPOINT_AUTH_HINT: Final = "This server needs a credential the form did not give it."
 
 #: Said beside a display name the operator did not type. Step 1 promised the
 #: document would supply one, and step 2 is where that promise is kept or not,
@@ -250,6 +272,23 @@ def kept_fields(fields: Mapping[str, str]) -> dict[str, str]:
     return {name: str(fields.get(name, "")).strip() for name in KEPT}
 
 
+def mcp_kept_fields(fields: Mapping[str, str]) -> dict[str, str]:
+    """The same chokepoint for the MCP section's step 1 (task 133)."""
+    return {name: str(fields.get(name, "")).strip() for name in MCP_KEPT}
+
+
+def mcp_form_fields(form: WizardForm) -> dict[str, str]:
+    """A parsed MCP step-1 form back as the mapping its template takes.
+
+    What **Back** on step 2 needs, as :func:`form_fields` is for the API form.
+    The endpoint lives in ``spec_url`` on the form and in the ``endpoint`` box
+    on the page, so this is where the one is put back into the other.
+    """
+    return mcp_kept_fields(
+        {ENDPOINT_FIELD: form.spec_url, "name": form.name, "auth_type": form.auth_type}
+    )
+
+
 def form_fields(form: WizardForm) -> dict[str, str]:
     """A parsed step-1 form back as the mapping its template takes.
 
@@ -323,6 +362,40 @@ def parse_form(fields: Mapping[str, str]) -> WizardForm:
     )
 
 
+def parse_mcp_form(fields: Mapping[str, str]) -> WizardForm:
+    """Read the MCP section's step 1, or raise with every fault it has (task 133).
+
+    The result is a :class:`WizardForm` like the API form's, because step 2
+    and the save read one shape: the endpoint is ``spec_url`` — it is where
+    the tools are listed from, which is what that column means (spec §4) —
+    there is no base URL override, and the spec-auth mode is ``same_as_api``,
+    which is the one credential applied to everything.
+    """
+    errors: dict[str, str] = {}
+
+    endpoint = _clean(fields.get(ENDPOINT_FIELD))
+    if not endpoint:
+        errors[ENDPOINT_FIELD] = ENDPOINT_REQUIRED
+    elif not endpoint.lower().startswith(SCHEMES):
+        errors[ENDPOINT_FIELD] = URL_SCHEME
+
+    auth_type = _one_of(fields.get("auth_type"), AUTH_TYPES, "none")
+    if auth_type is None:
+        errors["auth_type"] = "Choose one of the authentication types offered."
+        auth_type = "none"
+    credential = read_credential(fields, auth_type, prefix="", errors=errors)
+
+    if errors:
+        raise FormInvalid(errors)
+    return WizardForm(
+        spec_url=endpoint,
+        name=_clean(fields.get("name")),
+        auth_type=auth_type,
+        spec_auth_mode="same_as_api",
+        credential=credential,
+    )
+
+
 def parse_headers(text: str) -> dict[str, str]:
     """``Name: value`` per line, for the credential that is a header map.
 
@@ -360,6 +433,27 @@ def failure_message(error: SpecError) -> str:
     message = str(error)
     if failure_field(error) == "spec_auth_mode":
         return f"{message} {SPEC_AUTH_HINT}"
+    return message
+
+
+def endpoint_failure_field(error: EndpointError) -> str:
+    """Which field a failed connection belongs beside (task 133).
+
+    A ``401`` or a ``403`` from the endpoint is a missing or wrong credential,
+    and the selector that chooses one is where the operator fixes it; every
+    other failure — could not connect, not an MCP server, refused the
+    listing — is about the URL.
+    """
+    if isinstance(error, EndpointStatusError) and error.needs_credentials:
+        return "auth_type"
+    return ENDPOINT_FIELD
+
+
+def endpoint_failure_message(error: EndpointError) -> str:
+    """What to say about a failed connection, upstream status and all."""
+    message = str(error)
+    if endpoint_failure_field(error) == "auth_type":
+        return f"{message} {ENDPOINT_AUTH_HINT}"
     return message
 
 
@@ -537,9 +631,13 @@ __all__ = [
     "AUTH_TYPES",
     "BASE_URL_SCHEME",
     "CREDENTIAL_TYPES",
+    "ENDPOINT_AUTH_HINT",
+    "ENDPOINT_FIELD",
+    "ENDPOINT_REQUIRED",
     "HEADER_LINE",
     "KEPT",
     "MAX_PENDING",
+    "MCP_KEPT",
     "MODE_LABELS",
     "NAME_FROM_DOCUMENT",
     "NAME_FROM_ENDPOINT",
@@ -555,12 +653,17 @@ __all__ = [
     "PendingServer",
     "PreviewStore",
     "WizardForm",
+    "endpoint_failure_field",
+    "endpoint_failure_message",
     "failure_field",
     "failure_message",
     "form_fields",
     "kept_fields",
+    "mcp_form_fields",
+    "mcp_kept_fields",
     "options",
     "parse_form",
     "parse_headers",
+    "parse_mcp_form",
     "read_credential",
 ]

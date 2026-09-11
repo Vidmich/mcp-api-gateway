@@ -3,8 +3,13 @@
    An ordinary template rather than a macro, unlike the partials in this folder
    that are only ever included: this one is also returned on its own, as the
    answer to a delete, and a macro rendered as a response would produce an empty
-   body. Its context is ``rows``, ``new_server_path``, ``list_id`` and
-   ``list_target``, which is what ``routes_ui._list_context`` exists to build.
+   body. Its context is ``rows``, ``section``, ``new_server_path``,
+   ``no_servers``, ``list_id`` and ``list_target``, which is what
+   ``routes_ui._list_context`` exists to build.
+
+   The same table for both sections, with the two headings that name the thing
+   behind the row taken from ``section``: Base URL and Last spec download on
+   one, Endpoint and Last tool list on the other (task 133).
 
    Both halves live inside ``list_target`` on purpose. Deleting the last server
    has to turn the table into the empty state, and swapping the region rather
@@ -16,12 +21,12 @@
     <thead>
       <tr>
         <th scope="col">Name</th>
-        <th scope="col">Base URL</th>
+        <th scope="col">{{ section.url_heading }}</th>
         {# Counts and flags together: what the server is doing, in one cell
            rather than spread across a badge, a pair of numbers and a name
            (task 106). #}
         <th scope="col">Status</th>
-        <th scope="col">Last spec download</th>
+        <th scope="col">{{ section.read_heading }}</th>
         <th scope="col">Actions</th>
       </tr>
     </thead>
@@ -33,9 +38,9 @@
   </table>
   {% else %}
   {{ empty_state(
-       "No servers yet",
-       "Register an OpenAPI or Swagger service and its endpoints become MCP tools.",
+       no_servers,
+       section.empty_message,
        href=new_server_path,
-       action="Add a server") }}
+       action=section.add_label) }}
   {% endif %}
 </div>

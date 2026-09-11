@@ -10,12 +10,18 @@
    and saves. Every control carries a ``formaction`` as well as its htmx
    attributes, so a browser with no JavaScript does the same thing a page at a
    time — and the controls only that browser needs, Apply and the two bulk
-   buttons, are the ones inside ``<noscript>`` (task 115). #}
+   buttons, are the ones inside ``<noscript>`` (task 115).
+
+   The same page for an MCP server's tool list (task 133). ``picker.mcp``
+   decides the two places the kinds differ in structure rather than in words:
+   the summary above the table says endpoint, server and protocol where it
+   says spec URL, format and base URL, and there is no method filter, since a
+   tool has no method. ``section`` supplies the words. #}
 {% extends "base.html" %}
 {% from "partials/empty_state.html" import empty_state %}
 {% from "partials/field.html" import field %}
 
-{% block title %}{{ picker.name }} &middot; Add a server{% endblock %}
+{% block title %}{{ picker.name }} &middot; {{ section.add_label }}{% endblock %}
 
 {% block scripts %}
 {# The header tick box, which ships hidden and is unhidden here. The same file
@@ -30,7 +36,7 @@
    states and labels — which is the whole reason that row exists (task 115).
    Kept because a page with no h1 is a page a screen reader cannot summarise,
    and worded like the title: the name, and what is being done with it. #}
-<h1 class="visually-hidden">Add a server: {{ picker.name }}</h1>
+<h1 class="visually-hidden">{{ section.add_label }}: {{ picker.name }}</h1>
 
 {% if picker.alerts %}
 <ul class="flashes" role="alert">
@@ -70,6 +76,26 @@
       {% if picker.name_note %}<span class="cell-note">{{ picker.name_note }}</span>{% endif %}
     </dd>
   </div>
+  {% if picker.mcp %}
+  {# What ``initialize`` said: where, who, and which protocol. The version is
+     shown and never acted on, for the reason the document's is. #}
+  <div class="summary__pair">
+    <dt class="summary__term">Endpoint</dt>
+    <dd class="summary__value"><code>{{ preview.url }}</code></dd>
+  </div>
+  {% if preview.name %}
+  <div class="summary__pair">
+    <dt class="summary__term">Server</dt>
+    <dd class="summary__value">
+      {{ preview.name }}{% if preview.version %}, version {{ preview.version }}{% endif %}
+    </dd>
+  </div>
+  {% endif %}
+  <div class="summary__pair">
+    <dt class="summary__term">Protocol</dt>
+    <dd class="summary__value">MCP {{ preview.protocol_version }}</dd>
+  </div>
+  {% else %}
   <div class="summary__pair">
     <dt class="summary__term">Spec URL</dt>
     <dd class="summary__value"><code>{{ preview.requested_url }}</code></dd>
@@ -92,13 +118,20 @@
       {% if picker.base_url %}<code>{{ picker.base_url }}</code>{% else %}Not set{% endif %}
     </dd>
   </div>
+  {% endif %}
 </dl>
 
 {% if picker.rows %}
 <form method="post" action="{{ save_path }}">
+  {% if picker.mcp %}
+  {% set prefix_hint = "Leads every tool name below. It is what keeps two servers that
+                        both publish search apart." %}
+  {% else %}
+  {% set prefix_hint = "Leads every tool name below. It is what keeps two services that
+                        both publish getUser apart." %}
+  {% endif %}
   {{ field("tool_prefix", "Tool prefix", value=picker.prefix,
-           hint="Leads every tool name below. It is what keeps two services that
-                 both publish getUser apart.",
+           hint=prefix_hint,
            error=picker.errors.get("tool_prefix"),
            required=true) }}
 
@@ -144,6 +177,10 @@
       >Select none</button>
     </noscript>
 
+    {# No method filter for a tool list: every row would say the same thing
+       (task 133). The tag filter is already absent for one, since a tool
+       carries no tags. #}
+    {% if not picker.mcp %}
     <label class="field">
       <span class="field__label">Method</span>
       <select
@@ -162,6 +199,7 @@
         {% endfor %}
       </select>
     </label>
+    {% endif %}
 
     {% if picker.tags %}
     <label class="field">
@@ -196,6 +234,12 @@
     <button class="button button--primary" type="submit">Save the server</button>
   </div>
 </form>
+{% elif picker.mcp %}
+{{ empty_state(
+     "Nothing to expose",
+     "The server answered, but it lists no tools for the gateway to expose.",
+     href=new_server_path,
+     action="Try another server") }}
 {% else %}
 {{ empty_state(
      "Nothing to expose",

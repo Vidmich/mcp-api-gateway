@@ -56,6 +56,7 @@ from mcp_gateway.db.models import (
     Operation,
     OperationStatus,
     Server,
+    ServerKind,
     Setting,
     SpecAuthMode,
     SpecFormat,
@@ -181,6 +182,11 @@ class ServerSummary(BaseModel):
     id: int
     name: str
     tool_prefix: str
+    #: ``openapi``, ``mcp`` or ``gateway`` (spec §4). What decides which
+    #: section of the UI a row belongs to and which words its pages use for
+    #: the thing behind it (task 133); a client reading it knows whether
+    #: ``spec_url`` is a document or an endpoint.
+    kind: ServerKind
     spec_url: str
     spec_format: str
     base_url: str
@@ -813,6 +819,12 @@ async def update_server(
     ):
         if field in provided:
             setattr(server, field, provided[field])
+    if server.kind == KIND_MCP and provided.keys() & {"spec_url", "base_url"}:
+        # An endpoint is one URL in two columns (spec §4): a listing and a call
+        # go to the same place, so a patch to either column is a patch to
+        # both. ``base_url`` wins when a caller sets the two differently,
+        # since it is the column the settings form writes.
+        server.spec_url = server.base_url = provided.get("base_url", server.spec_url)
     # After the loop rather than against the patch: a patch may set one half
     # of a limit the row already holds the other half of, so what has to be
     # coherent is the row it would leave behind.
@@ -1006,6 +1018,7 @@ def _summary_fields(server: Server, counts: OperationCounts) -> dict[str, Any]:
         "id": server.id,
         "name": server.name,
         "tool_prefix": server.tool_prefix,
+        "kind": server.kind,
         "spec_url": server.spec_url,
         "spec_format": server.spec_format,
         "base_url": server.base_url,
@@ -1059,9 +1072,18 @@ def to_view(operation: Operation) -> OperationView:
     )
 
 
-async def list_servers(session: AsyncSession) -> list[ServerSummary]:
-    """Every server, with its operation tallies, ordered for display."""
-    servers = list(await session.scalars(select(Server).order_by(func.lower(Server.name))))
+async def list_servers(
+    session: AsyncSession, *, kinds: Iterable[str] | None = None
+) -> list[ServerSummary]:
+    """Every server, with its operation tallies, ordered for display.
+
+    ``kinds`` narrows the list to rows of those kinds — the two sections of
+    the UI each list one (task 133). ``None`` is every server.
+    """
+    statement = select(Server).order_by(func.lower(Server.name))
+    if kinds is not None:
+        statement = statement.where(Server.kind.in_(list(kinds)))
+    servers = list(await session.scalars(statement))
     counts = await _counts_by_server(session, [server.id for server in servers])
     return [to_summary(server, counts.get(server.id)) for server in servers]
 

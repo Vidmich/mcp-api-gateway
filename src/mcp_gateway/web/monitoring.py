@@ -55,7 +55,7 @@ Times are UTC and labelled as such, for the reason
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Final
 
@@ -89,7 +89,7 @@ from mcp_gateway.web.formatting import (
     refresh_state,
     time_ago,
 )
-from mcp_gateway.web.routes_ui import SERVERS_PATH
+from mcp_gateway.web.sections import section_of
 from mcp_gateway.web.shell import MONITORING_PATH, Shell
 
 #: The region htmx swaps: the charts, the strip and the failures, together.
@@ -377,11 +377,20 @@ class ServerUsage:
     state: str = "unknown"
     refreshed: str = ""
     refreshed_at: str | None = None
+    #: Which kind of server, for which section's page the name links to
+    #: (task 133). Meaningless on a deleted row, which links nowhere.
+    kind: str = repo.KIND_OPENAPI
 
     @property
     def detail_path(self) -> str | None:
-        """Where the name links, or ``None`` when there is nothing to link to."""
-        return None if self.deleted or self.id is None else f"{SERVERS_PATH}/{self.id}"
+        """Where the name links, or ``None`` when there is nothing to link to.
+
+        Its own section's detail page: an operator following the link lands
+        under the heading that matches what they are looking at (task 133).
+        """
+        if self.deleted or self.id is None:
+            return None
+        return section_of(self.kind).detail_path(self.id)
 
     @property
     def calls(self) -> str:
@@ -621,6 +630,7 @@ def strip_for(
             state=refresh_state(server.last_refresh_status),
             refreshed=time_ago(server.last_refresh_at, now),
             refreshed_at=exact_time(server.last_refresh_at),
+            kind=server.kind,
         )
         for server in servers
     ]
@@ -641,31 +651,37 @@ def strip_for(
 
 
 def failures_for(
-    errors: Sequence[CallErrorView], names: Mapping[int, str], now: dt.datetime | None = None
+    errors: Sequence[CallErrorView],
+    servers: Sequence[ServerSummary],
+    now: dt.datetime | None = None,
 ) -> tuple[Failure, ...]:
-    """The recent-failures list, newest first, with its servers named.
+    """The recent-failures list, newest first, with its servers named and linked.
 
     A failure whose server has since been deleted is labelled the way its chart
     band is, so the two can be read together. One whose server was never
     recorded — the failure happened before the call was attributed — says so
-    rather than pretending to a name.
+    rather than pretending to a name. A server that exists links to its own
+    section's page (task 133).
     """
+    known = {server.id: server for server in servers}
     rows: list[Failure] = []
     for error in errors:
-        name = names.get(error.server_id) if error.server_id is not None else None
+        server = known.get(error.server_id) if error.server_id is not None else None
         if error.server_id is None:
             label = NOT_RECORDED
-        elif name is None:
+        elif server is None:
             label = DELETED_LABEL.format(server_id=error.server_id)
         else:
-            label = name
+            label = server.name
         rows.append(
             Failure(
                 id=error.id,
                 when=time_ago(error.occurred_at, now),
                 at=exact_time(error.occurred_at),
                 server=label,
-                server_path=None if name is None else f"{SERVERS_PATH}/{error.server_id}",
+                server_path=(
+                    None if server is None else section_of(server.kind).detail_path(server.id)
+                ),
                 tool=error.tool_name or NOT_RECORDED,
                 status=str(error.status_code) if error.status_code else NO_STATUS,
                 message=error.message or NOT_RECORDED,
@@ -760,7 +776,6 @@ async def build(
     )
     servers = await repo.list_servers(session)
     errors = await repo.recent_call_errors(session, since=report.start)
-    names = {server.id: server.name for server in servers}
     return Monitoring(
         range=range_,
         options=tuple(
@@ -770,7 +785,7 @@ async def build(
         report=report,
         charts=charts_for(report),
         servers=strip_for(servers, report, now),
-        failures=failures_for(errors, names, now),
+        failures=failures_for(errors, servers, now),
         poll_seconds=POLL_SECONDS[range_],
     )
 

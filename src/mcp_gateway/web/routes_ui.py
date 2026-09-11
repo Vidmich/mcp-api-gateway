@@ -75,6 +75,18 @@ What each decision means is :mod:`mcp_gateway.web.review`.
 one number for the whole gateway, so it belongs to the page that holds the
 gateway's own settings rather than under a table of servers it says nothing
 about in particular (:mod:`mcp_gateway.web.configuration`, task 104).
+
+**Two sections, one set of routes each** (task 133). ``/ui/mcp-servers`` lists
+the upstreams that speak MCP, with an **Add** flow of its own and the same
+detail page underneath; what the two sections are and which words each uses is
+:mod:`mcp_gateway.web.sections`. Every route below the list — the detail page,
+its table, the toggle, the refresh, the delete — is registered once per
+section from one function, and reads the server's section off the row rather
+than off the URL: a server opened under the other section's path is redirected
+to its own, and an action posted there answers with its own section's paths.
+Only step 1 of the wizard is a route of its own per kind, because it asks
+different questions; step 2 and the save are one piece of code registered
+twice, with the token deciding what kind of thing is being added.
 """
 
 from __future__ import annotations
@@ -96,14 +108,16 @@ from mcp_gateway.db import repo
 from mcp_gateway.db.models import utcnow
 from mcp_gateway.db.repo import ServerSummary
 from mcp_gateway.db.session import CommittingRoute, request_session
+from mcp_gateway.mcpclient.connect import EndpointError
 from mcp_gateway.mcpclient.pool import drop_session
+from mcp_gateway.mcpclient.preview import preview_endpoint
 from mcp_gateway.mcpsrv.auth import McpAuth
 from mcp_gateway.mcpsrv.server import app_announcer
 from mcp_gateway.naming import NamesTaken, conflict_alerts
 from mcp_gateway.openapi.diagnostics import SpecError
 from mcp_gateway.openapi.ingest import preview_spec
 from mcp_gateway.refresh import RefreshLocks, RefreshReport, refresh_server
-from mcp_gateway.web.auth import HTMX_REQUEST, UI_PREFIX, require_session
+from mcp_gateway.web.auth import HTMX_REQUEST, require_session
 from mcp_gateway.web.detail import (
     OP_ID_FIELD,
     Operations,
@@ -139,6 +153,16 @@ from mcp_gateway.web.review import (
     drop_operation,
     review_operation,
 )
+from mcp_gateway.web.sections import (
+    API,
+    MCP,
+    NEVER_DOWNLOADED,
+    NO_SERVERS,
+    PREVIEW_GONE,
+    SECTIONS,
+    Section,
+    section_of,
+)
 from mcp_gateway.web.shell import FlashLevel, Shell
 from mcp_gateway.web.wizard import (
     AUTH_LABELS,
@@ -149,27 +173,40 @@ from mcp_gateway.web.wizard import (
     FormInvalid,
     PendingServer,
     PreviewStore,
+    endpoint_failure_field,
+    endpoint_failure_message,
     failure_field,
     failure_message,
     form_fields,
     kept_fields,
+    mcp_form_fields,
+    mcp_kept_fields,
     options,
     parse_form,
+    parse_mcp_form,
 )
 
 logger = logging.getLogger(__name__)
 
-SERVERS_PATH: Final = f"{UI_PREFIX}/servers"
+#: The API section's addresses, which are the addresses every page had before
+#: there was a second section (task 133). Spelled out here as well as derived
+#: from :data:`~mcp_gateway.web.sections.API`, because the startup banner, the
+#: docs and every operator's bookmarks hold the first of them.
+SERVERS_PATH: Final = API.path
 #: Step 1 of the wizard: the form, and the submission that previews it.
-NEW_SERVER_PATH: Final = f"{SERVERS_PATH}/new"
+NEW_SERVER_PATH: Final = API.new_path
 #: Step 2's page, named by the token that holds the preview. Registered above
 #: task 023's ``/ui/servers/{server_id}``, because the first route to match a
 #: path wins and ``new`` would otherwise be read as a server id.
-PREVIEW_PATH: Final = f"{NEW_SERVER_PATH}/{{token}}"
+PREVIEW_PATH: Final = API.preview_path("{token}")
 #: The picker's own table, re-rendered as the operator filters and ticks. A
 #: route of its own so that the fragment htmx swaps and the page a browser
 #: without it reloads are the same answer built the same way.
-PICKER_PATH: Final = f"{PREVIEW_PATH}/operations"
+PICKER_PATH: Final = API.picker_path("{token}")
+#: The MCP section's list and its step 1 (task 133). Everything below the list
+#: is the API section's routes registered again under this prefix.
+MCP_SERVERS_PATH: Final = MCP.path
+NEW_MCP_SERVER_PATH: Final = MCP.new_path
 #: How step 2's **Back** names the preview it is coming from, so step 1 can be
 #: rendered from the form that preview is holding rather than blank (task 115).
 #: A query parameter rather than a path of its own: it is the same step 1, and
@@ -179,7 +216,7 @@ FROM_PREVIEW: Final = "from"
 #: One registered server, and everything about it that can be changed.
 #: Registered *after* every ``new`` route, since the first route to match a path
 #: wins and ``new`` would otherwise be read as a server id.
-DETAIL_PATH: Final = f"{SERVERS_PATH}/{{server_id}}"
+DETAIL_PATH: Final = API.detail_path("{server_id}")
 #: Its operation table: re-rendered as the operator filters it, and written by
 #: the one button below it (task 114).
 OPERATIONS_PATH: Final = f"{DETAIL_PATH}/operations"
@@ -199,6 +236,9 @@ ACKNOWLEDGE_PATH: Final = f"{DETAIL_PATH}/acknowledge"
 
 SERVERS_TEMPLATE: Final = "servers.html"
 NEW_SERVER_TEMPLATE: Final = "server_new.html"
+#: The MCP section's step 1: fewer questions, so a page of its own (task 133).
+#: Step 2 is the same template for both kinds, with the token deciding.
+NEW_MCP_SERVER_TEMPLATE: Final = "mcp_server_new.html"
 PREVIEW_TEMPLATE: Final = "server_preview.html"
 #: The operation table and everything that counts it, on its own.
 PICKER_TEMPLATE: Final = "partials/operation_picker.html"
@@ -216,11 +256,6 @@ ROW_TEMPLATE: Final = "partials/server_row.html"
 #: macro that takes a selector.
 LIST_ID: Final = "server-list"
 LIST_TARGET: Final = f"#{LIST_ID}"
-
-#: The tooltip on a row with no download behind it. Rare, now that registering
-#: a server stamps the read it did (task 103): a row gets here by predating that,
-#: or by being the built-in server, which has no document at all.
-NEVER_DOWNLOADED: Final = "This server's spec has never been downloaded."
 
 #: What the flag means when a refresh diff put it up.
 UNREVIEWED_TITLE: Final = "A refresh found changes nobody has reviewed yet."
@@ -258,11 +293,6 @@ BUILTIN_NO_SPEC: Final = "Internal"
 #: An upstream's error text can be a whole HTML page. The tooltip gets the start
 #: of it; the detail page (task 023) is where the whole thing belongs.
 MAX_ERROR_IN_TITLE: Final = 200
-
-#: What the operator is told when the token in the URL names nothing any more.
-PREVIEW_GONE: Final = (
-    "That preview is no longer held. Fetch the spec again to carry on adding the server."
-)
 
 #: A save with no cipher to encrypt credentials with (spec §3.2). Only reachable
 #: in an app built without keys, which is a test or a half-built process.
@@ -371,13 +401,24 @@ class ServerRow:
     state: str
 
     @property
+    def section(self) -> Section:
+        """Which section this row belongs to, read off its kind (task 133).
+
+        Every path below comes from here, so a row rendered on any page links
+        to its own section's detail page and posts to its own section's
+        routes — and the words the row uses for its upstream are that
+        section's.
+        """
+        return section_of(self.server.kind)
+
+    @property
     def detail_path(self) -> str:
         """Task 023's page. The name links there, and so does the Edit action."""
-        return f"{SERVERS_PATH}/{self.server.id}"
+        return self.section.detail_path(self.server.id)
 
     @property
     def toggle_path(self) -> str:
-        return f"{SERVERS_PATH}/{self.server.id}/enabled"
+        return self.section.toggle_path(self.server.id)
 
     @property
     def counts(self) -> ToolCounts:
@@ -405,7 +446,7 @@ class ServerRow:
 
     @property
     def delete_path(self) -> str:
-        return f"{SERVERS_PATH}/{self.server.id}"
+        return self.section.detail_path(self.server.id)
 
     @property
     def refreshable(self) -> bool:
@@ -443,7 +484,13 @@ class ServerRow:
 
     @property
     def refresh_path(self) -> str:
-        return f"{SERVERS_PATH}/{self.server.id}/refresh"
+        return self.section.refresh_path(self.server.id)
+
+    @property
+    def refresh_label(self) -> str:
+        """What the button that reads the upstream again says: **Refresh
+        Spec** for a document, **Refresh tools** for a tool list (task 133)."""
+        return self.section.refresh_label
 
     @property
     def flagged_by_gateway(self) -> bool:
@@ -481,9 +528,9 @@ class ServerRow:
 
     @property
     def refresh_title(self) -> str:
-        """What the spec-download badge says when the pointer rests on it."""
+        """What the last-reading badge says when the pointer rests on it."""
         if self.refreshed_at is None:
-            return NEVER_DOWNLOADED
+            return self.section.never_read
         error = self.server.last_refresh_error
         if error:
             return f"{self.refreshed_at}: {error[:MAX_ERROR_IN_TITLE]}"
@@ -526,17 +573,21 @@ def _shell(request: Request) -> Shell:
     return shell
 
 
-async def _list_context(session: AsyncSession) -> dict[str, object]:
+async def _list_context(session: AsyncSession, section: Section) -> dict[str, object]:
     """What both the whole page and the swapped-in fragment need.
 
     The same mapping either way: the page is the table plus a heading, and a
     fragment that had to be built differently from the page it is part of is a
-    fragment that will one day disagree with it.
+    fragment that will one day disagree with it. ``section`` says which rows,
+    and in which words (task 133).
     """
     now = utcnow()
+    servers = await repo.list_servers(session, kinds=section.kinds)
     return {
-        "rows": [to_row(server, now) for server in await repo.list_servers(session)],
-        "new_server_path": NEW_SERVER_PATH,
+        "rows": [to_row(server, now) for server in servers],
+        "section": section,
+        "new_server_path": section.new_path,
+        "no_servers": NO_SERVERS,
         "list_id": LIST_ID,
         "list_target": LIST_TARGET,
     }
@@ -584,13 +635,13 @@ def _open_to_anyone(request: Request, row: ServerRow) -> str | None:
     return None if auth.required else OPEN_TO_ANYONE.format(path=settings.mcp.path)
 
 
-def _back_to_the_list(request: Request, message: str) -> Response:
+def _back_to_the_list(request: Request, section: Section, message: str) -> Response:
     """Answer a non-htmx action the way a form submission expects to be answered.
 
     303 so the browser follows with a GET and a reload cannot repeat the change,
     and a flash because a redirect leaves nothing else behind to say it worked.
     """
-    response = RedirectResponse(SERVERS_PATH, status_code=303)
+    response = RedirectResponse(section.path, status_code=303)
     _shell(request).flash(request, response, message, level="success")
     return response
 
@@ -633,8 +684,28 @@ def _wizard_context(
         "auth_options": options(AUTH_TYPES, AUTH_LABELS),
         "spec_auth_options": options(CREDENTIAL_TYPES, AUTH_LABELS),
         "mode_options": options(SPEC_AUTH_MODES, MODE_LABELS),
+        "section": API,
         "servers_path": SERVERS_PATH,
         "new_server_path": NEW_SERVER_PATH,
+    }
+
+
+def _mcp_wizard_context(
+    fields: Mapping[str, str], errors: Mapping[str, str] | None = None
+) -> dict[str, object]:
+    """The MCP section's step 1, as it will be rendered (task 133).
+
+    Through :func:`~mcp_gateway.web.wizard.mcp_kept_fields` on the way in, for
+    the reason :func:`_wizard_context` gives: what reaches the template is only
+    what may be shown.
+    """
+    return {
+        "fields": mcp_kept_fields(fields),
+        "errors": dict(errors or {}),
+        "auth_options": options(AUTH_TYPES, AUTH_LABELS),
+        "section": MCP,
+        "servers_path": MCP_SERVERS_PATH,
+        "new_server_path": NEW_MCP_SERVER_PATH,
     }
 
 
@@ -656,23 +727,29 @@ def _picker_context(picker: Picker) -> dict[str, object]:
 
     One context for both, so that the table an operator filters is built by the
     code that built the table they arrived at.
+
+    Every path is the section's the preview belongs to — read off what was
+    previewed, not off the URL the page was asked for — so a step 2 opened
+    under the other section still saves and goes back under its own
+    (task 133).
     """
-    preview_path = f"{NEW_SERVER_PATH}/{picker.token}"
+    section = section_of(picker.pending.kind)
     return {
         "picker": picker,
         "preview": picker.pending.preview,
         "warnings": picker.pending.warnings,
         "picker_id": PICKER_ID,
         "picker_target": PICKER_TARGET,
+        "section": section,
         # Where the save posts.
-        "save_path": preview_path,
+        "save_path": section.preview_path(picker.token),
         # Where filtering and the bulk buttons post.
-        "picker_path": f"{preview_path}/operations",
+        "picker_path": section.picker_path(picker.token),
         # Back to step 1 as it was submitted. The token is what makes that
         # possible: the preview it names is holding the form.
-        "back_path": f"{NEW_SERVER_PATH}?{FROM_PREVIEW}={picker.token}",
-        "servers_path": SERVERS_PATH,
-        "new_server_path": NEW_SERVER_PATH,
+        "back_path": section.back_path(picker.token),
+        "servers_path": section.path,
+        "new_server_path": section.new_path,
     }
 
 
@@ -683,11 +760,31 @@ def _rejected(request: Request, fields: Mapping[str, str], errors: Mapping[str, 
     )
 
 
-def _start_again(request: Request, message: str) -> Response:
-    """Back to an empty step 1, with a reason for being there."""
-    response = RedirectResponse(NEW_SERVER_PATH, status_code=303)
+def _mcp_rejected(
+    request: Request, fields: Mapping[str, str], errors: Mapping[str, str]
+) -> Response:
+    """The MCP section's step 1 again, marked (task 133)."""
+    return _shell(request).render(
+        request, NEW_MCP_SERVER_TEMPLATE, _mcp_wizard_context(fields, errors), status_code=422
+    )
+
+
+def _start_again(request: Request, section: Section, message: str) -> Response:
+    """Back to an empty step 1 of ``section``, with a reason for being there."""
+    response = RedirectResponse(section.new_path, status_code=303)
     _shell(request).flash(request, response, message, level="warning")
     return response
+
+
+def _elsewhere(request: Request, path: str) -> Response:
+    """A page asked for under the other section's path, sent to its own.
+
+    303 like every other redirect here, and the query string kept: a table
+    filter or an ``edit=1`` an operator carried in from a bookmark is still
+    what they asked for, under the heading that matches it (task 133).
+    """
+    query = request.url.query
+    return RedirectResponse(f"{path}?{query}" if query else path, status_code=303)
 
 
 def _refused(request: Request, picker: Picker, *, status_code: int) -> Response:
@@ -730,13 +827,19 @@ def _operations_context(operations: Operations) -> dict[str, object]:
 def _detail_context(
     server: repo.ServerDetail, settings: SettingsView, operations: Operations
 ) -> dict[str, object]:
-    """The whole detail page: the summary, the settings card, and the table."""
-    path = f"{SERVERS_PATH}/{server.id}"
+    """The whole detail page: the summary, the settings card, and the table.
+
+    Under the server's own section, read off the row: every path on the page
+    is that section's, whichever section's route rendered it (task 133).
+    """
+    section = section_of(server.kind)
+    path = section.detail_path(server.id)
     query = operations.filter.query
     return {
         **_operations_context(operations),
         "overview": to_row(server),
         "settings": settings,
+        "section": section,
         # An empty preview, so the region htmx replaces is already there and the
         # template is not reading an undefined name to find that out.
         "rename": Rename(prefix=""),
@@ -747,11 +850,11 @@ def _detail_context(
         "settings_id": SETTINGS_ID,
         "edit_path": mode_path(path, query, editing=True, fragment=SETTINGS_FRAGMENT),
         "view_path": mode_path(path, query, editing=False, fragment=SETTINGS_FRAGMENT),
-        "prefix_path": f"{path}/prefix",
-        "refresh_path": f"{path}/refresh",
+        "prefix_path": section.prefix_path(server.id),
+        "refresh_path": section.refresh_path(server.id),
         "rename_id": RENAME_ID,
         "rename_target": RENAME_TARGET,
-        "servers_path": SERVERS_PATH,
+        "servers_path": section.path,
         "auth_options": options(AUTH_TYPES, AUTH_LABELS),
         "spec_auth_options": options(CREDENTIAL_TYPES, AUTH_LABELS),
         "mode_options": options(SPEC_AUTH_MODES, MODE_LABELS),
@@ -784,7 +887,8 @@ def _operations_of(
     server: repo.ServerDetail, params: Mapping[str, str], **extra: Any
 ) -> Operations:
     """This server's operations, narrowed by whatever the URL asked for."""
-    return build_operations(server, params, path=f"{SERVERS_PATH}/{server.id}", **extra)
+    path = section_of(server.kind).detail_path(server.id)
+    return build_operations(server, params, path=path, **extra)
 
 
 def _region(request: Request, operations: Operations, *, status_code: int = 200) -> Response:
@@ -869,7 +973,13 @@ def _locks(request: Request) -> RefreshLocks:
 
 
 def ui_router() -> APIRouter:
-    """The configuration pages, every one of them behind a session."""
+    """The configuration pages, every one of them behind a session.
+
+    The two wizards' first steps are routes of their own; everything else is
+    registered once per section, in an order that matters within each: the
+    ``new`` routes before ``{server_id}``, because the first route to match a
+    path wins and ``new`` would otherwise be read as a server id (task 133).
+    """
     router = APIRouter(
         tags=["ui"],
         include_in_schema=False,
@@ -880,11 +990,27 @@ def ui_router() -> APIRouter:
         # then redirects to a page that has to show what it wrote (task 110).
         route_class=CommittingRoute,
     )
+    _api_wizard(router)
+    _mcp_wizard(router)
+    for section in SECTIONS:
+        _list_routes(router, section)
+        _step_two_routes(router, section)
+        _server_routes(router, section)
+    return router
 
-    @router.get(SERVERS_PATH)
+
+def _list_routes(router: APIRouter, section: Section) -> None:
+    @router.get(section.path)
     async def server_list(request: Request, session: Session) -> Response:
-        """The API Servers page, and where the UI starts (spec §7.1)."""
-        return _shell(request).render(request, SERVERS_TEMPLATE, await _list_context(session))
+        """One section's list: API Servers, where the UI starts, or MCP
+        Servers (spec §7.1)."""
+        return _shell(request).render(
+            request, SERVERS_TEMPLATE, await _list_context(session, section)
+        )
+
+
+def _api_wizard(router: APIRouter) -> None:
+    """Step 1 of adding an API server: a document to fetch, and two credentials."""
 
     @router.get(NEW_SERVER_PATH)
     async def new_server_form(
@@ -906,7 +1032,11 @@ def ui_router() -> APIRouter:
             return _shell(request).render(request, NEW_SERVER_TEMPLATE, _wizard_context({}))
         pending = _previews(request).get(token)
         if pending is None:
-            return _start_again(request, PREVIEW_GONE)
+            return _start_again(request, API, PREVIEW_GONE)
+        if not API.lists(pending.kind):
+            # The other wizard's preview: its step 1 is a different form,
+            # and the token goes along so it can still be filled in.
+            return RedirectResponse(section_of(pending.kind).back_path(token), status_code=303)
         return _shell(request).render(
             request, NEW_SERVER_TEMPLATE, _wizard_context(form_fields(pending.form))
         )
@@ -945,9 +1075,77 @@ def ui_router() -> APIRouter:
         token = _previews(request).put(PendingServer(form=form, preview=preview))
         # 303 so the preview has a URL of its own: a reload must not repeat the
         # fetch, and step 2 is a page an operator can spend a while on.
-        return RedirectResponse(f"{NEW_SERVER_PATH}/{token}", status_code=303)
+        return RedirectResponse(API.preview_path(token), status_code=303)
 
-    @router.get(PREVIEW_PATH)
+
+def _mcp_wizard(router: APIRouter) -> None:
+    """Step 1 of adding an MCP server: an endpoint and one credential (task 133).
+
+    The same three requests as the API wizard's, and the same promise: the
+    form is a GET, submitting it connects and lists and stores nothing, and
+    what comes back is a redirect to the picker. Fewer questions, because an
+    endpoint is one thing with one credential (spec §4).
+    """
+
+    @router.get(NEW_MCP_SERVER_PATH)
+    async def new_mcp_server_form(
+        request: Request, token: str = Query("", alias=FROM_PREVIEW)
+    ) -> Response:
+        """Step 1: blank, or as it was submitted when step 2's **Back** sent them."""
+        if not token:
+            return _shell(request).render(request, NEW_MCP_SERVER_TEMPLATE, _mcp_wizard_context({}))
+        pending = _previews(request).get(token)
+        if pending is None:
+            return _start_again(request, MCP, MCP.preview_gone)
+        if not MCP.lists(pending.kind):
+            return RedirectResponse(section_of(pending.kind).back_path(token), status_code=303)
+        return _shell(request).render(
+            request, NEW_MCP_SERVER_TEMPLATE, _mcp_wizard_context(mcp_form_fields(pending.form))
+        )
+
+    @router.post(NEW_MCP_SERVER_PATH)
+    async def preview_new_mcp_server(request: Request) -> Response:
+        """Connect to the endpoint and list its tools. Nothing is written (spec §5b).
+
+        Every way this can fail — a field left out, a host that does not
+        answer, something that is not an MCP server, a 401 from an endpoint
+        that wants credentials the operator has not given it — lands back on
+        the form with the message beside the field that can fix it.
+        """
+        fields = await _submitted(request)
+        try:
+            form = parse_mcp_form(fields)
+        except FormInvalid as invalid:
+            return _mcp_rejected(request, fields, invalid.errors)
+
+        settings: Settings = request.app.state.settings
+        try:
+            preview = await preview_endpoint(
+                form.spec_url, credential=form.credential, http=settings.http
+            )
+        except EndpointError as failure:
+            logger.info("Preview of %s failed: %s", form.spec_url, failure)
+            return _mcp_rejected(
+                request,
+                fields,
+                {endpoint_failure_field(failure): endpoint_failure_message(failure)},
+            )
+
+        token = _previews(request).put(PendingServer(form=form, preview=preview))
+        return RedirectResponse(MCP.preview_path(token), status_code=303)
+
+
+def _step_two_routes(router: APIRouter, section: Section) -> None:
+    """The picker and the save, under one section's ``new`` path.
+
+    One piece of code for both kinds: the token names a preview, the preview
+    knows what kind of thing it is, and every path on the page is that kind's
+    section's. What this section's copy of the routes adds is an address —
+    and, for the page, a redirect to the right one when a token is opened
+    under the wrong prefix (task 133).
+    """
+
+    @router.get(section.preview_path("{token}"))
     async def preview_page(request: Request, token: str) -> Response:
         """Step 2: everything the document turned out to contain, ready to pick.
 
@@ -958,12 +1156,14 @@ def ui_router() -> APIRouter:
         """
         pending = _previews(request).get(token)
         if pending is None:
-            return _start_again(request, PREVIEW_GONE)
+            return _start_again(request, section, section.preview_gone)
+        if not section.lists(pending.kind):
+            return _elsewhere(request, section_of(pending.kind).preview_path(token))
         return _shell(request).render(
             request, PREVIEW_TEMPLATE, _picker_context(build_picker(token, pending))
         )
 
-    @router.post(PICKER_PATH)
+    @router.post(section.picker_path("{token}"))
     async def filter_operations(request: Request, token: str) -> Response:
         """The table again, narrowed or ticked. Nothing is written here either.
 
@@ -973,14 +1173,14 @@ def ui_router() -> APIRouter:
         """
         pending = _previews(request).get(token)
         if pending is None:
-            return _start_again(request, PREVIEW_GONE)
+            return _start_again(request, section, section.preview_gone)
         fields, picked = await _step_two(request)
         context = _picker_context(build_picker(token, pending, fields, picked))
         if HTMX_REQUEST not in request.headers:
             return _shell(request).render(request, PREVIEW_TEMPLATE, context)
         return _shell(request).render(request, PICKER_TEMPLATE, context)
 
-    @router.post(PREVIEW_PATH)
+    @router.post(section.preview_path("{token}"))
     async def save_server(request: Request, token: str, session: Session) -> Response:
         """Create the server and everything that belongs to it, or none of it.
 
@@ -991,7 +1191,7 @@ def ui_router() -> APIRouter:
         """
         pending = _previews(request).get(token)
         if pending is None:
-            return _start_again(request, PREVIEW_GONE)
+            return _start_again(request, section, section.preview_gone)
         cipher = _cipher(request)
         fields, picked = await _step_two(request)
         picker = build_picker(token, pending, fields, picked)
@@ -1040,10 +1240,23 @@ def ui_router() -> APIRouter:
         _previews(request).pop(token)
         return _back_to_the_list(
             request,
+            section_of(pending.kind),
             SAVED.format(name=server.name, selected=len(picker.selected), total=picker.total),
         )
 
-    @router.get(DETAIL_PATH)
+
+def _server_routes(router: APIRouter, section: Section) -> None:
+    """One registered server and everything that can be done to it, under
+    one section's path.
+
+    Registered for both sections from this one function (task 133). The
+    section a handler answers in is the server's own, read off the row, so
+    the only thing ``section`` itself decides is the page: a server opened
+    under the other section's path is sent to its own, and an action posted
+    there is simply done, answering with its own section's paths.
+    """
+
+    @router.get(section.detail_path("{server_id}"))
     async def server_page(request: Request, server_id: int, session: Session) -> Response:
         """One server: what it is, what can be changed, and every operation it has.
 
@@ -1052,6 +1265,10 @@ def ui_router() -> APIRouter:
         query string and every row's Save carries it back (task 113).
         """
         server = await _server(request, session, server_id)
+        if not section.lists(server.kind):
+            # An operator following a link from before this server's section
+            # existed, or a bookmark: the same page, under the right heading.
+            return _elsewhere(request, section_of(server.kind).detail_path(server_id))
         return _detail_page(
             request,
             server,
@@ -1059,7 +1276,7 @@ def ui_router() -> APIRouter:
             _operations_of(server, request.query_params),
         )
 
-    @router.post(DETAIL_PATH)
+    @router.post(section.detail_path("{server_id}"))
     async def save_settings_form(request: Request, server_id: int, session: Session) -> Response:
         """Apply the settings form, all of it or none of it.
 
@@ -1071,6 +1288,10 @@ def ui_router() -> APIRouter:
         (task 113). The save that works does the opposite, and redirects to a
         page with no ``edit`` on it — the operator has finished, and the flash
         lands over a card now showing what it says was saved.
+
+        A save that changed how the gateway reaches an MCP server — its
+        endpoint or its credential — closes the session held to it, and the
+        flash says the next call reconnects (tasks 132 and 133).
         """
         server = await _server(request, session, server_id)
         cipher = _cipher(request)
@@ -1102,9 +1323,12 @@ def ui_router() -> APIRouter:
                 _operations_of(server, request.query_params),
                 status_code=409,
             )
-        return _back_to_the_page(request, f"{SERVERS_PATH}/{server_id}", saved.message)
+        if saved.reconnects:
+            await drop_session(request.app, server_id)
+        where = section_of(server.kind).detail_path(server_id)
+        return _back_to_the_page(request, where, saved.message)
 
-    @router.get(PREFIX_PATH)
+    @router.get(section.prefix_path("{server_id}"))
     async def prefix_preview(request: Request, server_id: int, session: Session) -> Response:
         """What a new tool prefix would do. A GET, because it does nothing.
 
@@ -1122,7 +1346,7 @@ def ui_router() -> APIRouter:
             request, RENAME_TEMPLATE, {"rename": rename, "rename_id": RENAME_ID}
         )
 
-    @router.get(OPERATIONS_PATH)
+    @router.get(section.operations_path("{server_id}"))
     async def filter_stored_operations(
         request: Request, server_id: int, session: Session
     ) -> Response:
@@ -1138,7 +1362,7 @@ def ui_router() -> APIRouter:
             return _detail_page(request, server, settings_view(server), operations)
         return _region(request, operations)
 
-    @router.post(OPERATIONS_PATH)
+    @router.post(section.operations_path("{server_id}"))
     async def save_operations_table(request: Request, server_id: int, session: Session) -> Response:
         """The whole table in one press: every tick and every name (task 114).
 
@@ -1194,7 +1418,7 @@ def ui_router() -> APIRouter:
         )
         return _detail_page(request, server, settings_view(server), operations, status_code=status)
 
-    @router.post(REVIEW_PATH)
+    @router.post(f"{section.operations_path('{server_id}')}/{{operation_id}}/review")
     async def review_operation_row(
         request: Request,
         server_id: int,
@@ -1219,7 +1443,7 @@ def ui_router() -> APIRouter:
             return await _refused_review(request, session, server_id, refused)
         return await _reviewed(request, session, server_id, reviewed.flash)
 
-    @router.delete(OPERATION_PATH)
+    @router.delete(f"{section.operations_path('{server_id}')}/{{operation_id}}")
     async def delete_operation_row(
         request: Request, server_id: int, operation_id: int, session: Session
     ) -> Response:
@@ -1238,7 +1462,7 @@ def ui_router() -> APIRouter:
             return await _refused_review(request, session, server_id, refused)
         return await _reviewed(request, session, server_id, dropped.flash)
 
-    @router.post(ACKNOWLEDGE_PATH)
+    @router.post(section.acknowledge_path("{server_id}"))
     async def acknowledge_server(request: Request, server_id: int, session: Session) -> Response:
         """Mark everything on this server reviewed, and take the flag off.
 
@@ -1250,7 +1474,7 @@ def ui_router() -> APIRouter:
         settled = await acknowledge(session, server_id)
         return await _reviewed(request, session, server_id, settled.flash)
 
-    @router.post(REFRESH_PATH)
+    @router.post(section.refresh_path("{server_id}"))
     async def refresh_now(
         request: Request,
         server_id: int,
@@ -1294,12 +1518,15 @@ def ui_router() -> APIRouter:
             # words, and with the code the API gives it (task 102).
             raise HTTPException(status_code=409, detail=str(refused)) from None
 
-        where = SERVERS_PATH if back == BACK_TO_LIST else f"{SERVERS_PATH}/{server_id}"
+        # The section the button was pressed in, which every page renders as
+        # the server's own. The report says what happened, not to what kind of
+        # server, and a detail page under the other prefix redirects anyway.
+        where = section.path if back == BACK_TO_LIST else section.detail_path(server_id)
         response = RedirectResponse(where, status_code=303)
         _shell(request).flash(request, response, report.summary, level=report_level(report))
         return response
 
-    @router.post(f"{SERVERS_PATH}/{{server_id}}/enabled")
+    @router.post(section.toggle_path("{server_id}"))
     async def set_enabled(
         request: Request,
         server_id: int,
@@ -1339,7 +1566,7 @@ def ui_router() -> APIRouter:
 
         if HTMX_REQUEST not in request.headers:
             state = "enabled" if enabled else "disabled"
-            where = SERVERS_PATH if back == BACK_TO_LIST else f"{SERVERS_PATH}/{server_id}"
+            where = row.section.path if back == BACK_TO_LIST else row.detail_path
             response = _back_to_the_page(request, where, f"{row.server.name} is now {state}.")
             if warning is not None:
                 _shell(request).flash(request, response, warning, level="warning")
@@ -1354,7 +1581,7 @@ def ui_router() -> APIRouter:
             _shell(request).flash(request, rendered, warning, level="warning")
         return rendered
 
-    @router.delete(f"{SERVERS_PATH}/{{server_id}}")
+    @router.delete(section.detail_path("{server_id}"))
     async def remove_server(request: Request, server_id: int, session: Session) -> Response:
         try:
             # Read first: after the delete there is nothing left to name it by.
@@ -1372,15 +1599,14 @@ def ui_router() -> APIRouter:
             "Deleted server %r and its %s", doomed.name, plural(doomed.counts.total, "operation")
         )
 
+        own = section_of(doomed.kind)
         if HTMX_REQUEST not in request.headers:
             return _back_to_the_list(
-                request, f"{doomed.name} was deleted. Its recorded usage was kept."
+                request, own, f"{doomed.name} was deleted. Its recorded usage was kept."
             )
         # The whole region, not the row: the table may have just become empty,
         # and the empty state is not something a row-shaped answer can produce.
-        return _shell(request).render(request, LIST_TEMPLATE, await _list_context(session))
-
-    return router
+        return _shell(request).render(request, LIST_TEMPLATE, await _list_context(session, own))
 
 
 def mount_ui(app: FastAPI) -> None:
@@ -1411,7 +1637,10 @@ __all__ = [
     "LIST_ID",
     "LIST_TARGET",
     "LIST_TEMPLATE",
+    "MCP_SERVERS_PATH",
     "NEVER_DOWNLOADED",
+    "NEW_MCP_SERVER_PATH",
+    "NEW_MCP_SERVER_TEMPLATE",
     "NEW_SERVER_PATH",
     "NEW_SERVER_TEMPLATE",
     "NO_CIPHER",

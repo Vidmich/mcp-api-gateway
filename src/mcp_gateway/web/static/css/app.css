@@ -84,8 +84,12 @@ pre {
 
 .masthead {
   display: flex;
+  /* Four sections do not fit beside the brand on a phone (task 133). The
+   * items wrap onto a second line as whole items rather than breaking
+   * "API Servers" across two. */
+  flex-wrap: wrap;
   align-items: center;
-  gap: 1.5rem;
+  gap: 0 1.5rem;
   padding: 0 1.5rem;
   background: var(--surface);
   border-bottom: 1px solid var(--line);
@@ -103,6 +107,7 @@ pre {
 
 .nav {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.25rem;
 }
 
@@ -110,6 +115,7 @@ pre {
   padding: 0.9rem 0.75rem;
   color: var(--ink-soft);
   text-decoration: none;
+  white-space: nowrap;
   /* Reserved whether or not the item is current, so nothing shifts on hover
    * or when the section changes. */
   border-bottom: 2px solid transparent;

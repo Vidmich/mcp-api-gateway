@@ -1,0 +1,72 @@
+{# Add an MCP server, step 1 (spec §7.1, task 133): an endpoint, a name, and
+   one credential.
+
+   The API wizard's step 1 with the questions that have no answer here taken
+   off it. An endpoint is one thing with one credential (spec §4): there is no
+   base URL to override, because the tools are called where they are listed,
+   and no separate spec-fetch credential, because there is no document. A form
+   that offered either would be asking the operator to decide something the
+   gateway has already decided.
+
+   Submitting this connects, initialises, lists the tools and stores nothing
+   at all. The operator sees what they are about to register on the next page,
+   and only then does anything reach the database.
+
+   An ordinary form with an ordinary POST, as the API wizard's is: a submission
+   here makes a network call to somebody else's server, and the honest way to
+   show that is a page that navigates. #}
+{% extends "base.html" %}
+{% from "partials/field.html" import field, choice %}
+{% from "partials/credential_fields.html" import credential_fields %}
+
+{% block title %}{{ section.add_label }} &middot; mcp-api-gateway{% endblock %}
+
+{% block scripts %}
+<script src="{{ static_url('js/forms.js') }}" defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="toolbar">
+  <h1 class="toolbar__title">{{ section.add_label }}</h1>
+</div>
+
+<form class="card form" method="post" action="{{ new_server_path }}">
+  <p class="form__lead">
+    The gateway connects to the endpoint, lists the tools it offers, and shows
+    you what it found. Nothing is saved until you say so.
+  </p>
+
+  {{ field("endpoint", "Endpoint", value=fields.endpoint, required=true,
+           hint="Where the server speaks MCP over Streamable HTTP. The gateway lists its
+                 tools here and calls them here.",
+           error=errors.get("endpoint")) }}
+
+  {{ field("name", "Display name", value=fields.name,
+           hint="Optional. Defaults to the name the server gives itself.",
+           error=errors.get("name")) }}
+
+  {# One credential, applied to every request the gateway makes to this
+     server: the listing now, the calls later, the refreshes in between. Named
+     Authentication rather than API authentication, because there is no other
+     kind on this form to tell it from. #}
+  <fieldset class="fieldset">
+    <legend class="fieldset__legend">Authentication</legend>
+    <p class="fieldset__note">
+      How the gateway authenticates to this server, on every request it makes to it.
+    </p>
+    {{ choice("auth_type", "Type", auth_options, fields.auth_type, reveal="api",
+              error=errors.get("auth_type")) }}
+    {{ credential_fields("api", errors=errors) }}
+  </fieldset>
+
+  <p class="form__note">
+    Credentials are never shown again once submitted, so a form that comes back
+    with a correction has its credential boxes empty. Fill in the ones you need.
+  </p>
+
+  <div class="form-actions">
+    <a class="button" href="{{ servers_path }}">Cancel</a>
+    <button class="button button--primary" type="submit">Connect and list tools</button>
+  </div>
+</form>
+{% endblock %}

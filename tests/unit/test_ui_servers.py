@@ -180,6 +180,7 @@ def a_row(**overrides: Any) -> ServerRow:
         "id": 7,
         "name": "Petstore",
         "tool_prefix": "petstore",
+        "kind": "openapi",
         "spec_url": "https://petstore.example/openapi.json",
         "spec_format": "openapi-3.1",
         "base_url": "https://petstore.example/api",

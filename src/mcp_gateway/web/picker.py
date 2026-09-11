@@ -45,7 +45,9 @@ operations (spec §5b.2), so the table, the filter, the name boxes and the plan
 are the same code; :func:`register` writes the row's ``kind`` and the columns
 that mean something different for an endpoint, and that is the whole of the
 difference. Which columns the table prints for each kind is the template's
-decision (task 133).
+decision, made on :attr:`Picker.mcp`: a tool has a name where an operation
+has a method and a path, and its description stands where the summary does,
+since a tool list carries no summaries (task 133).
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway.crypto import CredentialCipher
 from mcp_gateway.db import repo
+from mcp_gateway.mcpclient.operations import is_tool
 from mcp_gateway.naming import (
     MAX_CONFLICTS_SHOWN,
     MAX_TOOL_NAME,
@@ -163,6 +166,12 @@ class Filter:
         something a filter box gets to insist on. Not in the tool name: it is
         built out of the ``operationId`` and the prefix, and the prefix is the
         same on every row, so searching it would match everything.
+
+        An upstream tool's description is searched as well, because it is the
+        sentence the row shows: a tool list has no summaries, and the
+        description is what an operator has read (task 133). An API
+        operation's is not — it can be a page long, and the row does not
+        show it.
         """
         if self.method and operation.method != self.method:
             return False
@@ -171,10 +180,7 @@ class Filter:
         if not self.text:
             return True
         wanted = self.text.casefold()
-        return any(
-            wanted in text.casefold()
-            for text in (operation.path, operation.summary or "", operation.operation_id or "")
-        )
+        return any(wanted in text.casefold() for text in _searchable(operation))
 
     @classmethod
     def from_fields(cls, fields: Mapping[str, str]) -> Filter:
@@ -204,6 +210,10 @@ class OperationRow:
     tags: tuple[str, ...]
     #: The name this operation would be published under.
     tool_name: str
+    #: The line under the path: the summary, or for an upstream tool — which
+    #: has none — its description, since that is the sentence the upstream
+    #: wrote about it and the only one there is (task 133).
+    note: str
     #: :attr:`tool_name` with the server's prefix taken off the front, so the
     #: cell can print the prefix as the slot it is rather than as it stood when
     #: the page last rendered. ``None`` wherever that would be a lie — see
@@ -277,6 +287,17 @@ class Picker:
     @property
     def name(self) -> str:
         return self.pending.name
+
+    @property
+    def mcp(self) -> bool:
+        """Whether this is an MCP server's tool list rather than a document.
+
+        The one flag the template branches on: a tool has a name where an
+        operation has a method and a path, so the table prints one column
+        where it printed two, and the method filter — one value on every
+        row — is not offered (task 133).
+        """
+        return self.pending.kind == repo.KIND_MCP
 
     @property
     def invalid(self) -> bool:
@@ -624,6 +645,7 @@ def _row(
         operation_id=operation.operation_id,
         tags=operation.tags,
         tool_name=name,
+        note=_note(operation),
         stem=stem,
         # Sliced only where the cell prints a slot to slice it against, so that
         # the placeholder and whatever is printed beside it always read together
@@ -659,6 +681,23 @@ def _stem(name: str, lead: str) -> str | None:
     if not lead or not name.startswith(lead) or len(name) >= MAX_TOOL_NAME:
         return None
     return name[len(lead) :]
+
+
+def _note(operation: NormalizedOperation) -> str:
+    """The sentence under the path: the summary, or a tool's description."""
+    if operation.summary:
+        return operation.summary
+    if is_tool(operation.method):
+        return operation.description or ""
+    return ""
+
+
+def _searchable(operation: NormalizedOperation) -> tuple[str, ...]:
+    """Every text the free-text filter looks in, for one row."""
+    texts = (operation.path, operation.summary or "", operation.operation_id or "")
+    if is_tool(operation.method):
+        return (*texts, operation.description or "")
+    return texts
 
 
 def _bulk(ticked: frozenset[str], visible: set[str], pressed: str) -> frozenset[str]:

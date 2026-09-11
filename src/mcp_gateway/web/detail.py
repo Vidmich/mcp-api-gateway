@@ -35,6 +35,17 @@ and every name in it is checked against every other before anything is written,
 which is what lets two rows exchange names in one press. Clearing a tool-name
 box restores the generated default, which the box shows as its placeholder — so
 what "cleared" means is on screen rather than in a help page.
+
+**An MCP server is the same page with the kind read off the row** (task 133).
+The settings card shows the endpoint where an API server's shows its spec URL
+and base URL, and has no spec-auth rows: an endpoint is one thing with one
+credential (spec §4), and the form does not read that half of itself for such
+a row however it was posted. The table drops the method column and prints the
+upstream tool name where the path goes — which is what ``path`` holds for a
+tool row (§5b.2) — and its description under it, since a tool list has no
+summaries. Editing the endpoint or replacing the credential closes the session
+the gateway holds to the server (task 132); :attr:`Saved.reconnects` is how
+the route finds out, and the flash says the next call reconnects.
 """
 
 from __future__ import annotations
@@ -51,6 +62,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mcp_gateway.crypto import Credential, CredentialCipher, CredentialState
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import Operation, Server
+from mcp_gateway.db.repo import KIND_MCP
 from mcp_gateway.limits import (
     HALF_A_LIMIT,
     MAX_RATE_CALLS,
@@ -58,6 +70,7 @@ from mcp_gateway.limits import (
     Limit,
     half_a_limit,
 )
+from mcp_gateway.mcpclient.operations import is_tool
 from mcp_gateway.naming import (
     MAX_SLUG,
     PREFIX_REQUIRED,
@@ -72,9 +85,9 @@ from mcp_gateway.naming import (
     rename_server as recompute_names,
 )
 from mcp_gateway.web.review import Decision, decisions_for
+from mcp_gateway.web.sections import BASE_URL_REQUIRED, NO_OPERATIONS, Section, section_of
 from mcp_gateway.web.wizard import (
     AUTH_TYPES,
-    BASE_URL_SCHEME,
     CREDENTIAL_TYPES,
     NOTHING_TO_REUSE,
     SCHEMES,
@@ -184,9 +197,6 @@ MAX_NAME: Final = 200
 NAME_REQUIRED: Final = "A display name is needed. It is what this server is called everywhere else."
 NAME_TOO_LONG: Final = f"A display name may be at most {MAX_NAME} characters."
 PREFIX_TAKEN: Final = "Another server already uses the tool prefix {prefix!r}."
-BASE_URL_REQUIRED: Final = (
-    "A base URL is needed. It is where every tool call this server exposes goes."
-)
 CHOOSE_AUTH: Final = "Choose one of the authentication types offered."
 CHOOSE_MODE: Final = "Choose one of the spec authentication modes offered."
 CUSTOM_NEEDS_CREDENTIAL: Final = (
@@ -216,6 +226,10 @@ NAME_UNPREFIXED: Final = "Not built on {lead} — saving this row as it stands k
 SAVED: Final = "{name} was saved."
 SAVED_RENAMED: Final = "{name} was saved, and {count} tool names changed."
 SAVED_RENAMED_ONE: Final = "{name} was saved, and one tool name changed."
+#: Added when the save changed how the gateway reaches an MCP server. The
+#: session it held was opened with the old endpoint or the old credential,
+#: and is closed rather than kept warm (task 132).
+RECONNECTS: Final = "Its open session was closed; the next call reconnects."
 
 #: What one press of the table's Save did. Rows first, because that is what was
 #: pressed. Names second and in a sentence of their own, because a published
@@ -252,7 +266,6 @@ MORE_RENAMES: Final = "…and {count} more."
 #: than one, because "nothing here" means very different things when the filter
 #: is narrow and when the server has never been read.
 NOTHING_MATCHES: Final = "Nothing here matches the filter. Everything else is untouched."
-NO_OPERATIONS: Final = "This server has no stored tools. Refresh it to read its spec again."
 
 #: What the browser asks before a ``removed`` row is retired. It names the tool
 #: name that comes free, since reusing it is very often the reason.
@@ -394,6 +407,17 @@ class SettingsView:
     #: settings are read until somebody presses Edit (task 113). A refusal
     #: comes back True, because what was typed has to be somewhere to correct.
     editing: bool = False
+
+    @property
+    def section(self) -> Section:
+        """Which section's words this card uses, read off the row (task 133)."""
+        return section_of(self.server.kind)
+
+    @property
+    def mcp(self) -> bool:
+        """Whether the card is an MCP server's: one URL, one credential, no
+        spec-auth rows. The flag the template branches on."""
+        return self.server.kind == KIND_MCP
 
     @property
     def editable(self) -> bool:
@@ -590,11 +614,15 @@ def parse_settings(fields: Mapping[str, str], server: Server) -> repo.ServerPatc
     else:
         values["tool_prefix"] = prefix[:MAX_SLUG]
 
+    # In the section's words: the box is a base URL on an API server and the
+    # endpoint on an MCP one, and a message about the other is a message
+    # about a box the operator cannot see (task 133).
+    section = section_of(server.kind)
     base_url = _clean(fields.get(BASE_URL_FIELD))
     if not base_url:
-        errors[BASE_URL_FIELD] = BASE_URL_REQUIRED
+        errors[BASE_URL_FIELD] = section.url_required
     elif not base_url.lower().startswith(SCHEMES):
-        errors[BASE_URL_FIELD] = BASE_URL_SCHEME
+        errors[BASE_URL_FIELD] = section.url_scheme
     else:
         values["base_url"] = base_url
 
@@ -607,7 +635,10 @@ def parse_settings(fields: Mapping[str, str], server: Server) -> repo.ServerPatc
     replacing_api = _ticked(fields, REPLACE_API_FIELD)
     if replacing_api:
         values["credential"] = _new_credential(fields, errors)
-    if _ticked(fields, REPLACE_SPEC_FIELD):
+    # Not read for an MCP server, whatever was posted: the card renders no
+    # spec-auth half for one, and the row's mode is held to ``same_as_api``
+    # by the repository (spec §4).
+    if not section.mcp and _ticked(fields, REPLACE_SPEC_FIELD):
         _spec_auth(fields, values, errors, has_api=_has_api(values, server, replacing_api))
 
     if errors:
@@ -728,14 +759,21 @@ class Saved:
     server: Server
     #: How many tools this save renamed. Nearly always zero or all of them.
     renamed: int = 0
+    #: Whether the save changed how the gateway reaches an MCP server — its
+    #: endpoint or its credential — so that the session it holds is stale and
+    #: the route closes it (task 132). Never true of an API server, which
+    #: holds no session.
+    reconnects: bool = False
 
     @property
     def message(self) -> str:
         if self.renamed == 1:
-            return SAVED_RENAMED_ONE.format(name=self.server.name)
-        if self.renamed:
-            return SAVED_RENAMED.format(name=self.server.name, count=self.renamed)
-        return SAVED.format(name=self.server.name)
+            saved = SAVED_RENAMED_ONE.format(name=self.server.name)
+        elif self.renamed:
+            saved = SAVED_RENAMED.format(name=self.server.name, count=self.renamed)
+        else:
+            saved = SAVED.format(name=self.server.name)
+        return f"{saved} {RECONNECTS}" if self.reconnects else saved
 
 
 async def save_settings(
@@ -766,6 +804,8 @@ async def apply_patch(
     """
     server_id = server.id
     await _prefix_is_free(session, patch, server_id)
+    # Decided before the write, against the row as it still is.
+    reconnects = _reconnects(server, patch)
 
     prefix = patch.tool_prefix
     moving = prefix is not None and prefix != server.tool_prefix
@@ -783,7 +823,24 @@ async def apply_patch(
         applied = await recompute_names(session, server_id, prefix=prefix)
         renamed = len(applied.changes)
     logger.info("Saved server %r; %d tool names changed", server.name, renamed)
-    return Saved(server=server, renamed=renamed)
+    return Saved(server=server, renamed=renamed, reconnects=reconnects)
+
+
+def _reconnects(server: Server, patch: repo.ServerPatch) -> bool:
+    """Whether ``patch`` changes how the gateway reaches an MCP server.
+
+    A new endpoint, or a credential replaced — with anything, including
+    ``none``: the session was opened with the old one. A patch that repeats
+    the stored endpoint is not a change.
+    """
+    if server.kind != KIND_MCP:
+        return False
+    given = patch.model_fields_set
+    moved = any(
+        name in given and getattr(patch, name) != getattr(server, name)
+        for name in ("base_url", "spec_url")
+    )
+    return moved or "credential" in given
 
 
 async def _prefix_is_free(session: AsyncSession, patch: repo.ServerPatch, server_id: int) -> None:
@@ -1059,8 +1116,16 @@ class OperationRow:
         spec's summary only when there is none. A page showing the summary
         while the tool ships something else would be telling the operator the
         wrong thing about their own gateway (task 116).
+
+        An upstream tool has no summary, and its description is the sentence
+        the upstream wrote about it, so that stands here for such a row — the
+        same fallback :func:`mcp_gateway.mcpsrv.tools.describe` makes when it
+        builds the tool the model sees (task 133).
         """
-        return self.operation.description_override or self.operation.summary or ""
+        operation = self.operation
+        if operation.description_override or operation.summary:
+            return operation.description_override or operation.summary or ""
+        return operation.description or "" if is_tool(operation.method) else ""
 
     @property
     def badge(self) -> str:
@@ -1202,9 +1267,20 @@ class Operations:
         )
 
     @property
+    def section(self) -> Section:
+        """Which section's words this table uses, read off the row (task 133)."""
+        return section_of(self.server.kind)
+
+    @property
+    def mcp(self) -> bool:
+        """Whether these are an MCP server's tools: no method column, the
+        upstream tool name where the path goes, no method filter."""
+        return self.server.kind == KIND_MCP
+
+    @property
     def nothing_here(self) -> str:
         """What stands in for the rows when there are none to show."""
-        return NOTHING_MATCHES if self.rows else NO_OPERATIONS
+        return NOTHING_MATCHES if self.rows else self.section.no_operations
 
     @property
     def flagged(self) -> bool:
@@ -1650,6 +1726,7 @@ __all__ = [
     "RATE_CALLS_RANGE",
     "RATE_SECONDS_FIELD",
     "RATE_SECONDS_RANGE",
+    "RECONNECTS",
     "REPLACE_API_FIELD",
     "REPLACE_SPEC_FIELD",
     "REVIEW_SETTLED",

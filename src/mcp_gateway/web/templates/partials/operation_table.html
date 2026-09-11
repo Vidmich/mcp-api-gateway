@@ -26,7 +26,13 @@
    A filtered-out row is hidden rather than dropped, so that nothing an operator
    cannot see is quietly left out of the page they are working on. With one
    button that stops being a courtesy: it is what keeps the filter from
-   unselecting what it hid. #}
+   unselecting what it hid.
+
+   For an MCP server the table has one column where it has two: a tool has a
+   name and no method or path, so ``operations.mcp`` prints the upstream name
+   — which is what ``path`` holds for such a row (spec §5b.2) — under a
+   heading that says so, as the picker does (task 133). Everything else on
+   the row is the same control. #}
 {% from "partials/status_badge.html" import status_badge %}
 {% from "partials/confirm.html" import confirm %}
 <div id="{{ operations_id }}">
@@ -91,8 +97,12 @@
             Expose every operation the filter is showing
           </label>
         </th>
+        {% if operations.mcp %}
+        <th scope="col">Tool</th>
+        {% else %}
         <th scope="col">Method</th>
         <th scope="col">Path</th>
+        {% endif %}
         {# Not "Tool name". The column now prints the Tool prefix in front of
            every box in it, and two headings a card apart reading "Tool prefix"
            and "Tool name" describe two settings rather than one name built out
@@ -124,7 +134,9 @@
             Expose {{ row.operation.op_key }} as a tool
           </label>
         </td>
+        {% if not operations.mcp %}
         <td><code>{{ row.operation.method }}</code></td>
+        {% endif %}
         <td>
           {# The badge the Status column used to hold, where the picker already
              puts a row's badges. The fact stays: the review strip's counts are
@@ -222,7 +234,7 @@
       {% endfor %}
       {% if not operations.shown %}
       <tr>
-        <td colspan="5">{{ operations.nothing_here }}</td>
+        <td colspan="{{ 4 if operations.mcp else 5 }}">{{ operations.nothing_here }}</td>
       </tr>
       {% endif %}
     </tbody>

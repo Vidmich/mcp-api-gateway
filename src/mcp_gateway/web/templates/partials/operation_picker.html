@@ -11,7 +11,13 @@
 
    A filtered-out row is hidden, not dropped. Its checkbox is still in the form
    and still carries what was ticked, so narrowing the table can never quietly
-   unselect anything. #}
+   unselect anything.
+
+   For an MCP server's tool list the table has one column where it has two: a
+   tool has a name and no method or path, so ``picker.mcp`` prints the
+   upstream name — which is what ``path`` holds for such a row (spec §5b.2) —
+   under a heading that says so, and the description the upstream wrote under
+   it, where an operation's summary goes (task 133). #}
 {% from "partials/status_badge.html" import status_badge %}
 <div id="{{ picker_id }}">
   {# The sentence, and the sentence with its count still a slot. The header box
@@ -42,8 +48,12 @@
             Expose every operation the filter is showing
           </label>
         </th>
+        {% if picker.mcp %}
+        <th scope="col">Tool</th>
+        {% else %}
         <th scope="col">Method</th>
         <th scope="col">Path</th>
+        {% endif %}
         {# No Summary column. The cell beside it is a box now, and a column of
            prose next to a control makes the control the narrowest thing on the
            row — which is why the detail page lost its Description column at
@@ -72,18 +82,21 @@
             Expose {{ row.op_key }} as a tool
           </label>
         </td>
+        {% if not picker.mcp %}
         <td><code>{{ row.method }}</code></td>
+        {% endif %}
         <td>
           <code>{{ row.path }}</code>
           {% for tag in row.tags %}
           <span class="badge badge--tag">{{ tag }}</span>
           {% endfor %}
-          {# What the document says this endpoint does, where the detail page
-             puts the same sentence. No fallback to the ``operationId``: the box
-             in the next cell is showing it, since sanitising only takes out
-             what a tool name may not contain (task 118). #}
-          {% if row.summary %}
-          <span class="cell-note">{{ row.summary }}</span>
+          {# What the upstream says this does, where the detail page puts the
+             same sentence: the document's summary, or a tool's description.
+             No fallback to the ``operationId``: the box in the next cell is
+             showing it, since sanitising only takes out what a tool name may
+             not contain (task 118). #}
+          {% if row.note %}
+          <span class="cell-note">{{ row.note }}</span>
           {% endif %}
         </td>
         <td>
@@ -124,7 +137,9 @@
       {% endfor %}
       {% if not picker.shown %}
       <tr>
-        <td colspan="4">Nothing here matches the filter. Everything ticked is still ticked.</td>
+        <td colspan="{{ 3 if picker.mcp else 4 }}">
+          Nothing here matches the filter. Everything ticked is still ticked.
+        </td>
       </tr>
       {% endif %}
     </tbody>
