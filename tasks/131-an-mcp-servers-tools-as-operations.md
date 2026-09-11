@@ -98,18 +98,18 @@ having no method and no path.
 
 ## Acceptance
 
-- [ ] Registering an MCP server produces one `operations` row per upstream tool, with `op_key`,
+- [x] Registering an MCP server produces one `operations` row per upstream tool, with `op_key`,
       `method`, `path`, `description` and `input_schema` as the table above says, and the vendor
       extension naming the upstream tool.
-- [ ] Published names follow `<prefix>__<name>` with the same correction rules as `operationId`,
+- [x] Published names follow `<prefix>__<name>` with the same correction rules as `operationId`,
       and two servers sharing an upstream tool name coexist.
-- [ ] A refresh against an endpoint whose tools were added to, changed and removed yields the same
+- [x] A refresh against an endpoint whose tools were added to, changed and removed yields the same
       `new` / `changed` / `removed` statuses, the same `Needs Attention`, and the same review flow as
       a document that changed the same way; a refresh against an unchanged endpoint is a no-op by
       hash.
-- [ ] Auto-refresh re-lists an MCP server on the global interval.
-- [ ] No message, flash or log line calls an MCP server's tool list a spec.
-- [ ] SPEC §5b describes the mapping, the naming and the refresh; §5.4's diff section says it
+- [x] Auto-refresh re-lists an MCP server on the global interval.
+- [x] No message, flash or log line calls an MCP server's tool list a spec.
+- [x] SPEC §5b describes the mapping, the naming and the refresh; §5.4's diff section says it
       applies to both kinds.
-- [ ] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
+- [x] `ruff check`, `ruff format --check` and `mypy src` pass, and the suite passes with assertions
       changed only where this task made them wrong.

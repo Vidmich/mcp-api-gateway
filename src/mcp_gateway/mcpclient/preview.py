@@ -28,7 +28,8 @@ from mcp_gateway.mcpclient.connect import (
     EndpointProtocolError,
     open_session,
 )
-from mcp_gateway.openapi.schema import schema_hash
+from mcp_gateway.mcpclient.operations import operations_of
+from mcp_gateway.openapi.schema import NormalizedOperation, schema_hash
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +63,9 @@ class EndpointNoToolsError(EndpointError):
 class UpstreamTool:
     """One tool as the upstream described it, before anything is made of it.
 
-    Turning this into an ``operations`` row — the naming, the schema pass, the
-    vendor extension — is task 131's. ``output_schema`` and ``annotations``
-    ride along for the snapshot; the gateway publishes neither.
+    What :mod:`mcp_gateway.mcpclient.operations` turns into an ``operations``
+    row. ``output_schema`` and ``annotations`` ride along for the snapshot; the
+    gateway publishes neither.
     """
 
     name: str
@@ -82,7 +83,10 @@ class EndpointPreview:
     The fields line up with the columns a server row would get (spec §4), as
     ``SpecPreview``'s do: ``url`` is both ``spec_url`` and ``base_url``,
     :attr:`spec_format` is the protocol version, ``spec_hash`` and
-    ``document`` are what the row stores to diff against next time.
+    ``document`` are what the row stores to diff against next time, and
+    :attr:`operations` are the rows its tools become — the same record the
+    OpenAPI path produces, which is what lets the picker and the refresh take
+    either preview (spec §5b.2).
     """
 
     url: str
@@ -94,6 +98,8 @@ class EndpointPreview:
     version: str | None
     protocol_version: str
     tools: tuple[UpstreamTool, ...]
+    #: :attr:`tools`, each as the ``operations`` row it would be stored as.
+    operations: tuple[NormalizedOperation, ...]
     #: sha256 of :attr:`document`; what a refresh compares.
     spec_hash: str
     #: The tool list as the upstream sent it, under the server's identity,
@@ -112,6 +118,11 @@ class EndpointPreview:
     @property
     def tool_count(self) -> int:
         return len(self.tools)
+
+    @property
+    def operation_count(self) -> int:
+        """The same number under ``SpecPreview``'s name for it."""
+        return len(self.operations)
 
 
 async def preview_endpoint(
@@ -160,6 +171,7 @@ async def _every_tool(session: ClientSession, *, url: str) -> list[Tool]:
 
 
 def _preview(link: Connected, listed: list[Tool]) -> EndpointPreview:
+    _each_named_once(listed, url=link.url)
     tools = tuple(_tool(tool) for tool in listed)
     document = {
         "mcp": {
@@ -175,9 +187,25 @@ def _preview(link: Connected, listed: list[Tool]) -> EndpointPreview:
         version=link.version,
         protocol_version=link.protocol_version,
         tools=tools,
+        operations=operations_of(tools),
         spec_hash=schema_hash(document),
         document=document,
     )
+
+
+def _each_named_once(listed: list[Tool], *, url: str) -> None:
+    """Refuse a listing that names one tool twice.
+
+    The protocol requires tool names to be unique, and the rows they become
+    are keyed by that name: a listing with two ``search`` tools would have to
+    lose one of them somewhere between here and the table, silently. Said
+    instead, as the protocol fault it is.
+    """
+    seen: set[str] = set()
+    for tool in listed:
+        if tool.name in seen:
+            raise EndpointProtocolError(url, reason=f"its tool list names {tool.name!r} twice")
+        seen.add(tool.name)
 
 
 def _tool(tool: Tool) -> UpstreamTool:

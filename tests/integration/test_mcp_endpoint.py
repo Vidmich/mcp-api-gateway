@@ -47,7 +47,9 @@ from mcp_gateway.mcpsrv.auth import ENDPOINT_OPEN_TO_ANYONE
 from mcp_gateway.mcpsrv.server import SERVER_NAME, app_announcer
 from mcp_gateway.openapi.schema import EXTENSION
 from mcp_gateway.refresh import refresh_server
+from mcp_gateway.web import picker
 from mcp_gateway.web.account import PAGES_OPEN_TO_ANYONE
+from mcp_gateway.web.wizard import PendingServer, WizardForm
 
 #: Uvicorn's note for a connection torn down while its response was still
 #: streaming. ``sse-starlette`` drains open SSE streams when the server starts
@@ -623,3 +625,60 @@ async def test_reading_a_token_protected_mcp_server_takes_the_token(tmp_path: Pa
     assert (refused.value.status_code, refused.value.needs_credentials) == (401, True)
     assert token not in str(refused.value)
     assert found.name == SERVER_NAME
+
+
+async def test_an_mcp_server_s_tools_become_operations_and_refresh_over_a_real_socket(
+    tmp_path: Path,
+) -> None:
+    """Task 131 end to end, with the gateway as its own upstream.
+
+    The gateway's ``/mcp`` is registered *as an MCP server* in the gateway's
+    own database, through the wizard's save; its tools land as ``operations``
+    rows; a refresh over TCP is a no-op by hash; and once the gateway's own
+    tool list grows, the next refresh finds the new tool ``new`` and unselected,
+    exactly as a document that grew an endpoint would (spec §5b.2).
+
+    Nothing of the mirror is ticked, on purpose: a mirror publishing a tool
+    would grow the very list it mirrors, and the first refresh would find its
+    own reflection.
+    """
+    async with running_gateway(tmp_path) as gateway:
+        async with gateway.session() as db:
+            petstore = await register(
+                db,
+                "petstore",
+                ("GET /pets", "List pets"),
+                ("POST /pets", "Add a pet"),
+                selected=["GET /pets"],
+            )
+            await db.commit()
+
+        found = await preview_endpoint(gateway.url)
+        async with gateway.session() as db:
+            mirror = await picker.register(
+                db,
+                PendingServer(form=WizardForm(spec_url=gateway.url, name="Mirror"), preview=found),
+                prefix="mirror",
+                selection=[],
+                cipher=gateway.app.state.cipher,
+            )
+            await db.commit()
+            mirror_id, first_hash = mirror.id, mirror.spec_hash
+            unchanged = await refresh_server(db, mirror_id, cipher=gateway.app.state.cipher)
+
+            # The gateway's own list grows, so the mirror's upstream has.
+            await repo.set_selected(db, petstore, ["POST /pets"], selected=True)
+            await db.commit()
+            updated = await refresh_server(db, mirror_id, cipher=gateway.app.state.cipher)
+            rows = {
+                row.op_key: (row.status, row.selected, row.method)
+                for row in await repo.list_operations(db, mirror_id)
+            }
+
+    assert (mirror.kind, mirror.spec_url, mirror.base_url) == ("mcp", gateway.url, gateway.url)
+    assert (unchanged.outcome, unchanged.spec_hash) == ("unchanged", first_hash)
+    assert updated.outcome == "updated"
+    assert rows == {
+        "tool petstore__get_pets": ("active", False, "TOOL"),
+        "tool petstore__post_pets": ("new", False, "TOOL"),
+    }

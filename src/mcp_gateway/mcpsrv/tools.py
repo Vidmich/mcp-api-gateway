@@ -15,7 +15,10 @@ precisely because the spec's own wording was not good enough.
 The gateway's own tools get a different origin line, because the usual one
 would be a lie: they make no HTTP request at all (task 102). Saying so is worth
 the branch — a model that has been told a tool reconfigures the gateway it is
-talking to knows something about it that no method and path could convey.
+talking to knows something about it that no method and path could convey. A
+tool of an upstream MCP server gets a third, for the same reason: its row's
+``method`` is the literal ``TOOL`` (spec §5b.2), and ``HTTP TOOL`` is not a
+request anybody makes.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mcp_gateway.db import repo
 from mcp_gateway.db.repo import ToolRow
+from mcp_gateway.mcpclient.operations import is_tool
 
 #: Between the prose and the origin line, and between summary and description.
 PARAGRAPH: Final = "\n\n"
@@ -50,6 +54,10 @@ def origin(row: ToolRow) -> str:
     """Where this tool goes when it is called, in one line."""
     if row.builtin:
         return BUILTIN_ORIGIN
+    if is_tool(row.method):
+        # ``path`` holds the upstream's own name for the tool, which is what
+        # the call is forwarded as (task 132).
+        return f"(MCP tool {row.path} on {row.server_name})"
     return f"(HTTP {row.method} {row.path} on {row.server_name})"
 
 

@@ -37,7 +37,7 @@ import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final, TypeVar
+from typing import Final, Literal, TypeVar
 
 import httpx
 
@@ -50,7 +50,9 @@ from mcp_gateway.crypto import (
     HeadersCredential,
 )
 from mcp_gateway.db.models import AuthType, SpecAuthMode
-from mcp_gateway.openapi.diagnostics import SpecError
+from mcp_gateway.db.repo import KIND_MCP, KIND_OPENAPI
+from mcp_gateway.mcpclient.preview import EndpointPreview
+from mcp_gateway.openapi.diagnostics import SpecError, SpecWarning
 from mcp_gateway.openapi.fetch import SpecStatusError
 from mcp_gateway.openapi.ingest import SpecPreview
 from mcp_gateway.openapi.schema import NormalizedOperation
@@ -97,6 +99,11 @@ SPEC_AUTH_HINT: Final = "The spec URL needs credentials of its own to be downloa
 #: so the page that shows the name says which of the two it got (task 115).
 NAME_FROM_DOCUMENT: Final = "From the document"
 NAME_FROM_URL: Final = "From the spec URL"
+#: The same two for an MCP server, whose name comes from ``initialize`` when
+#: the operator did not type one, and from the endpoint's host when the
+#: upstream did not say either (spec §5b.2).
+NAME_FROM_SERVER: Final = "From the server itself"
+NAME_FROM_ENDPOINT: Final = "From the endpoint URL"
 
 #: How long a previewed spec waits for the operator to work through step 2.
 #: Long enough to read a hundred operations and decide; short enough that a
@@ -162,25 +169,41 @@ class WizardForm:
 
 @dataclass(frozen=True, slots=True)
 class PendingServer:
-    """A previewed spec and the form it came from, waiting for step 2.
+    """A previewed upstream and the form it came from, waiting for step 2.
 
     The properties are the defaults step 1 promised: an operator who left the
-    name or the base URL blank was told the document would supply them, and this
-    is where that is decided — once, so the preview page and the save cannot
-    show and store different things.
+    name or the base URL blank was told the upstream would supply them, and
+    this is where that is decided — once, so the preview page and the save
+    cannot show and store different things.
+
+    The preview is of either kind (spec §5b.2). Everything step 2 does — the
+    table, the names, the save — works off :attr:`operations`, which both
+    previews produce in the same record, and off the four answers below, which
+    are the only places the two kinds are told apart.
     """
 
     form: WizardForm
-    preview: SpecPreview
+    preview: SpecPreview | EndpointPreview
+
+    @property
+    def kind(self) -> Literal["openapi", "mcp"]:
+        """What kind of row the save will write: decided by what was read."""
+        return KIND_MCP if isinstance(self.preview, EndpointPreview) else KIND_OPENAPI
 
     @property
     def name(self) -> str:
-        """What the server will be called: the operator, then the document."""
-        return self.form.name or self.preview.title or _host_of(self.form.spec_url)
+        """What the server will be called: the operator, then the upstream."""
+        return self.form.name or self._offered_name or _host_of(self.form.spec_url)
 
     @property
     def base_url(self) -> str | None:
-        """Where tool calls will go, or ``None`` if nobody has said yet."""
+        """Where tool calls will go, or ``None`` if nobody has said yet.
+
+        For an MCP server, always the endpoint: a listing and a call go to
+        one place, and the form has no box to say otherwise (spec §4).
+        """
+        if isinstance(self.preview, EndpointPreview):
+            return self.preview.url
         return self.form.base_url or self.preview.base_url
 
     @property
@@ -194,11 +217,27 @@ class PendingServer:
         """
         if self.form.name:
             return None
-        return NAME_FROM_DOCUMENT if self.preview.title else NAME_FROM_URL
+        if isinstance(self.preview, EndpointPreview):
+            return NAME_FROM_SERVER if self._offered_name else NAME_FROM_ENDPOINT
+        return NAME_FROM_DOCUMENT if self._offered_name else NAME_FROM_URL
 
     @property
     def operations(self) -> tuple[NormalizedOperation, ...]:
         return self.preview.operations
+
+    @property
+    def warnings(self) -> tuple[SpecWarning, ...]:
+        """What ingestion had to degrade. Nothing, for a tool list taken as sent."""
+        if isinstance(self.preview, EndpointPreview):
+            return ()
+        return self.preview.warnings
+
+    @property
+    def _offered_name(self) -> str | None:
+        """The name the upstream gave itself: ``info.title``, or ``serverInfo``."""
+        if isinstance(self.preview, EndpointPreview):
+            return self.preview.display_name
+        return self.preview.title
 
 
 def kept_fields(fields: Mapping[str, str]) -> dict[str, str]:
@@ -463,7 +502,7 @@ def _one_of(value: object, allowed: tuple[Choice, ...], default: Choice) -> Choi
 
 
 def _host_of(url: str) -> str:
-    """The host of a spec URL, as the last resort for a display name."""
+    """The host of a spec or endpoint URL, as the last resort for a display name."""
     try:
         return httpx.URL(url).host or url
     except httpx.InvalidURL:  # pragma: no cover - the form has already checked
@@ -503,6 +542,8 @@ __all__ = [
     "MAX_PENDING",
     "MODE_LABELS",
     "NAME_FROM_DOCUMENT",
+    "NAME_FROM_ENDPOINT",
+    "NAME_FROM_SERVER",
     "NAME_FROM_URL",
     "NOTHING_TO_REUSE",
     "PREVIEW_TTL",

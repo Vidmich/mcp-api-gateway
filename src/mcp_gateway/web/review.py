@@ -110,10 +110,12 @@ NOT_A_DECISION: Final = (
     "That is not a decision this operation is waiting for. Reload the page to see it as it is."
 )
 
-#: Refused rather than allowed, for the reason in the module docstring.
+#: Refused rather than allowed, for the reason in the module docstring. Worded
+#: for both kinds of upstream: a document still declaring the operation and an
+#: MCP server still listing the tool are the same refusal (spec §5b.2).
 STILL_IN_THE_SPEC: Final = (
-    "Only an operation the upstream has dropped can be deleted. This one is still in the spec — "
-    "untick it instead to stop exposing it."
+    "Only an operation the upstream has dropped can be deleted. The upstream still offers "
+    "this one — untick it instead to stop exposing it."
 )
 
 

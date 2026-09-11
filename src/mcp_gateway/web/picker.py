@@ -39,6 +39,13 @@ failed to write is a row that lists nothing and refreshes into confusion. Every
 operation is stored, ticked or not, so enabling one later is a checkbox rather
 than a refresh — and the whole set is marked reviewed on the way out, since the
 operator has just been looking at it.
+
+**The same page and the same save for an MCP server.** Its tools arrive as
+operations (spec §5b.2), so the table, the filter, the name boxes and the plan
+are the same code; :func:`register` writes the row's ``kind`` and the columns
+that mean something different for an endpoint, and that is the whole of the
+difference. Which columns the table prints for each kind is the template's
+decision (task 133).
 """
 
 from __future__ import annotations
@@ -455,6 +462,10 @@ async def register(
     still leaves nothing behind: the transaction is committed on the way out of
     the request or not at all.
 
+    For an MCP server the row says so in ``kind``, both URL columns are the
+    endpoint, and the spec-auth columns are held to the one credential the
+    endpoint has (spec §4); every other line here is the same for both kinds.
+
     ``overrides`` is what the operator typed into the table's name boxes, by
     ``op_key``. It has to be the mapping the page was rendered from: planning
     here against different inputs is how a table that showed no clash saves a
@@ -471,18 +482,21 @@ async def register(
         raise NamesTaken(plan.conflicts)
 
     preview = pending.preview
+    endpoint = pending.kind == repo.KIND_MCP
     server = await repo.create_server(
         session,
         repo.NewServer(
             name=pending.name,
             tool_prefix=prefix,
-            kind=repo.KIND_OPENAPI,
-            spec_url=pending.form.spec_url,
+            kind=pending.kind,
+            # An endpoint is read from where it is called, so the URL that
+            # answered is written to both columns (spec §4).
+            spec_url=base_url if endpoint else pending.form.spec_url,
             spec_format=preview.spec_format,
             base_url=base_url,
             credential=pending.form.credential,
-            spec_auth_mode=pending.form.spec_auth_mode,
-            spec_credential=pending.form.spec_credential,
+            spec_auth_mode="same_as_api" if endpoint else pending.form.spec_auth_mode,
+            spec_credential=None if endpoint else pending.form.spec_credential,
             spec_hash=preview.spec_hash,
             spec_snapshot=preview.document,
         ),
@@ -495,17 +509,18 @@ async def register(
     # wearing "Needs attention" (spec §5.4).
     await repo.acknowledge_server(session, server.id)
     logger.info(
-        "Registered server %r from %s: %d of %d operations selected",
+        "Registered server %r from %s: %d of %d %s selected",
         server.name,
-        pending.form.spec_url,
+        server.spec_url,
         selected,
         len(pending.operations),
+        "tools" if endpoint else "operations",
     )
     return server
 
 
 def operation_inputs(pending: PendingServer, plan: NamePlan) -> list[repo.OperationInput]:
-    """Every operation the document declared, named by ``plan``.
+    """Every operation the upstream declared, named by ``plan``.
 
     All of them, ticked or not: an operation nobody wanted today is a checkbox
     tomorrow rather than a refresh, and its selection is applied separately

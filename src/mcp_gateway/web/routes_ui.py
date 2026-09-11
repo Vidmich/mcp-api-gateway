@@ -660,7 +660,7 @@ def _picker_context(picker: Picker) -> dict[str, object]:
     return {
         "picker": picker,
         "preview": picker.pending.preview,
-        "warnings": picker.pending.preview.warnings,
+        "warnings": picker.pending.warnings,
         "picker_id": PICKER_ID,
         "picker_target": PICKER_TARGET,
         # Where the save posts.

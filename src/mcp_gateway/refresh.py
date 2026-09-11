@@ -1,4 +1,4 @@
-"""Re-reading a spec, and what the gateway does about what changed (spec §5.4).
+"""Re-reading an upstream, and what the gateway does about what changed (spec §5.4).
 
 A refresh is the one thing in the gateway that changes an operator's tool list
 without an operator. That is the whole difficulty, and everything here follows
@@ -6,9 +6,16 @@ from it: an upstream that quietly grows an endpoint must not quietly grow the
 gateway's attack surface, and an upstream that quietly changes one must not
 quietly break the prompts that were written against it.
 
+What is re-read depends on the kind of server (spec §4): an API server's
+document, or an MCP server's tool list. The two are read by different code and
+become the same thing — a set of ``operations`` rows keyed by ``op_key`` — and
+that is where the kinds stop mattering. Only :func:`_read` branches on it;
+everything from the hash comparison to the announcement runs over the rows and
+never asks where they came from (spec §5b.2).
+
 So a refresh is arranged around four promises.
 
-**Nothing new is exposed.** An operation the document has grown since the last
+**Nothing new is exposed.** An operation the upstream has grown since the last
 reading arrives ``new`` and unselected. It is stored — so that turning it on is
 a checkbox rather than another refresh — and it is invisible to ``tools/list``
 until somebody ticks it. The rule itself lives in
@@ -22,9 +29,10 @@ is reported for review instead. An operation that vanished upstream is marked
 disappears for an afternoon.
 
 **A failure changes nothing but the record of it.** Every way a refresh can go
-wrong — the document could not be fetched, it could not be parsed, its
-credential could not be decrypted, a name it wants belongs to somebody else —
-happens before the first operation is written. What lands in the database is
+wrong — the document could not be fetched or the endpoint could not be reached,
+what came back could not be read, the credential could not be decrypted, a name
+it wants belongs to somebody else — happens before the first operation is
+written. What lands in the database is
 ``last_refresh_status``, ``last_refresh_error`` and the time; the operations,
 the snapshot and the hash are exactly as they were, which is what makes a
 gateway whose upstream is down still a working gateway.
@@ -43,7 +51,7 @@ new list is already there, and a client that refetched on hearing it and found
 the old one would have no reason to ask again.
 
 **Two refreshes of one server never overlap.** A refresh reads the stored hash,
-diffs the document against it, and writes a new one; two running at once both
+diffs the new reading against it, and writes a new one; two running at once both
 read the old hash and both apply the same diff, so a ``changed`` the operator
 has already acknowledged comes back, and the second one announces a tool list
 that did not move. :class:`RefreshLocks` is what stops it — held by the manual
@@ -60,9 +68,10 @@ from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 import httpx
+import httpx2
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -70,6 +79,8 @@ from mcp_gateway.config import HttpSettings
 from mcp_gateway.crypto import CredentialCipher, CredentialUnreadable
 from mcp_gateway.db import repo
 from mcp_gateway.db.models import Operation, Server
+from mcp_gateway.mcpclient.connect import EndpointError
+from mcp_gateway.mcpclient.preview import preview_endpoint
 from mcp_gateway.naming import (
     NameConflict,
     NamedOperation,
@@ -80,8 +91,8 @@ from mcp_gateway.naming import (
     plan_names,
 )
 from mcp_gateway.openapi.diagnostics import SpecError, SpecWarning
-from mcp_gateway.openapi.ingest import SpecPreview, preview_spec
-from mcp_gateway.openapi.schema import schema_hash
+from mcp_gateway.openapi.ingest import preview_spec
+from mcp_gateway.openapi.schema import NormalizedOperation, schema_hash
 
 logger = logging.getLogger(__name__)
 
@@ -145,8 +156,8 @@ class RefreshReport:
     server_name: str
     outcome: Outcome
     at: dt.datetime
-    #: The hash of the document as it was just read; ``None`` when it was never
-    #: read, which is every failure.
+    #: The hash of what was just read — the document, or the tool list;
+    #: ``None`` when it was never read, which is every failure.
     spec_hash: str | None = None
     #: The hash the server was carrying before. Equal to :attr:`spec_hash`
     #: exactly when the outcome is ``unchanged``.
@@ -163,7 +174,8 @@ class RefreshReport:
     needs_attention: bool = False
     #: Everything ingestion had to degrade while reading the document. Reported
     #: on a success too, because a spec that now parses less well than it did is
-    #: worth seeing before its tools start behaving oddly.
+    #: worth seeing before its tools start behaving oddly. Always empty for an
+    #: MCP server: a tool list is taken as sent, and there is nothing to degrade.
     warnings: tuple[SpecWarning, ...] = field(default=())
 
     @property
@@ -187,6 +199,24 @@ class RefreshReport:
             return f"{self.server_name} is unchanged."
         counted = ", ".join(f"{count} {status}" for status, count in self.counts.items() if count)
         return f"{self.server_name}: {counted or 'nothing to review'}."
+
+
+@dataclass(frozen=True, slots=True)
+class Reading:
+    """What one reading of an upstream came to, whichever kind it is.
+
+    The part of a ``SpecPreview`` or an ``EndpointPreview`` that a refresh
+    goes on to use, in one shape, so that everything after :func:`_read` is
+    written once. The fields are the columns the server row gets and the rows
+    its operations become; the two previews carry more, and none of it is a
+    refresh's business.
+    """
+
+    spec_format: str
+    spec_hash: str
+    document: dict[str, Any]
+    operations: tuple[NormalizedOperation, ...]
+    warnings: tuple[SpecWarning, ...] = ()
 
 
 class RefreshLocks:
@@ -268,13 +298,19 @@ async def refresh_server(
     cipher: CredentialCipher,
     http: HttpSettings | None = None,
     client: httpx.AsyncClient | None = None,
+    transport: httpx2.AsyncBaseTransport | None = None,
     announce: Announce | None = None,
     at: dt.datetime | None = None,
 ) -> RefreshReport:
-    """Read this server's spec again and reconcile it with what is stored.
+    """Read this server's upstream again and reconcile it with what is stored.
 
-    The five steps of spec §5.4, in order: fetch, compare hashes, diff by
-    ``op_key``, flag, announce. Raises only
+    The five steps of spec §5.4, in order: read, compare hashes, diff by
+    ``op_key``, flag, announce. The read is the one step that knows which kind
+    of server this is — a document fetched and parsed, or an endpoint connected
+    to and listed (spec §5b.2) — and ``client`` and ``transport`` are the two
+    seams for it: the HTTP pool a spec fetch shares, and the transport an MCP
+    session is opened over, which is ``None`` for a real one and an ASGI
+    transport in a test. Raises only
     :class:`~mcp_gateway.db.repo.ServerNotFound` — a URL naming nothing is not a
     refresh that failed, it is a caller asking about a server that is not there.
     Everything else that can go wrong comes back as a report whose outcome is
@@ -303,12 +339,12 @@ async def refresh_server(
     before = await tool_signature(session)
 
     try:
-        preview = await _read(server, cipher=cipher, http=http, client=client)
-    except (SpecError, CredentialUnreadable) as failure:
+        preview = await _read(server, cipher=cipher, http=http, client=client, transport=transport)
+    except (SpecError, EndpointError, CredentialUnreadable) as failure:
         return await _failed(session, server, str(failure), at=moment)
 
     if server.spec_hash and preview.spec_hash == server.spec_hash:
-        # Step 1's short circuit. Nothing about the document moved, so nothing
+        # Step 1's short circuit. Nothing about what was read moved, so nothing
         # about the operations can have, and the only honest write is the time.
         await repo.record_refresh(session, server.id, status=OK, error=None, at=moment)
         await session.commit()
@@ -332,10 +368,11 @@ async def refresh_server(
 
     previous_hash = server.spec_hash
     sync = await repo.upsert_operations(session, server.id, _inputs(stored, preview, plan))
-    # The format is a fact about the document, like the hash, and an upstream
-    # that has moved from Swagger 2 to OpenAPI 3 has changed it. The base URL is
-    # deliberately not touched: the operator may have overridden it, and a
-    # refresh is not an argument with that (spec §4).
+    # The format is a fact about what was read, like the hash, and an upstream
+    # that has moved from Swagger 2 to OpenAPI 3 — or negotiated a newer
+    # protocol version — has changed it. The base URL is deliberately not
+    # touched: the operator may have overridden it, and a refresh is not an
+    # argument with that (spec §4).
     server.spec_format = preview.spec_format
     await repo.record_refresh(
         session,
@@ -411,19 +448,42 @@ async def _read(
     cipher: CredentialCipher,
     http: HttpSettings | None,
     client: httpx.AsyncClient | None,
-) -> SpecPreview:
-    """Fetch and parse the document this server was registered from.
+    transport: httpx2.AsyncBaseTransport | None,
+) -> Reading:
+    """Read this server's upstream again: its document, or its tool list.
 
-    With the server's *stored* spec credentials, whichever of the three modes it
-    is in — which is the difference between a refresh and the wizard's preview,
-    where the operator has just typed them.
+    The one place a refresh branches on the kind of server (spec §5b.2). With
+    the server's *stored* credentials — for a document, whichever of the three
+    spec-auth modes it is in; for an endpoint, the one credential it has —
+    which is the difference between a refresh and the wizard's preview, where
+    the operator has just typed them.
     """
-    return await preview_spec(
+    if server.kind == repo.KIND_MCP:
+        listed = await preview_endpoint(
+            server.spec_url,
+            credential=repo.credential_for(server, cipher),
+            http=http,
+            transport=transport,
+        )
+        return Reading(
+            spec_format=listed.spec_format,
+            spec_hash=listed.spec_hash,
+            document=listed.document,
+            operations=listed.operations,
+        )
+    fetched = await preview_spec(
         server.spec_url,
         spec_credential=repo.spec_credential_for(server, cipher),
         api_credential=repo.credential_for(server, cipher),
         http=http,
         client=client,
+    )
+    return Reading(
+        spec_format=fetched.spec_format,
+        spec_hash=fetched.spec_hash,
+        document=fetched.document,
+        operations=fetched.operations,
+        warnings=fetched.warnings,
     )
 
 
@@ -437,9 +497,9 @@ async def _plan(
     session: AsyncSession,
     server: Server,
     stored: Mapping[str, Operation],
-    preview: SpecPreview,
+    preview: Reading,
 ) -> NamePlan:
-    """Name the operations this document has that the database does not.
+    """Name the operations this reading has that the database does not.
 
     Only those. A stored operation keeps the name it has — a refresh that
     renamed a tool would break every prompt calling it, to no purpose — so the
@@ -447,7 +507,7 @@ async def _plan(
     them is whether anything already holds one.
 
     Raises :class:`~mcp_gateway.naming.NamesTaken` if anything does, which the
-    caller records as a failed refresh: half a document is not a state worth
+    caller records as a failed refresh: half an upstream is not a state worth
     storing, and the message names both sides so the operator can settle it.
     """
     arriving = [
@@ -498,9 +558,9 @@ def _against_siblings(
 
 
 def _inputs(
-    stored: Mapping[str, Operation], preview: SpecPreview, plan: NamePlan
+    stored: Mapping[str, Operation], preview: Reading, plan: NamePlan
 ) -> list[repo.OperationInput]:
-    """Every operation the document declares, ready for the upsert.
+    """Every operation the upstream declares, ready for the upsert.
 
     A stored operation carries the name it already has, which the upsert ignores
     for a row that exists; passing it anyway is what keeps the field meaning one
@@ -533,7 +593,7 @@ async def _changes(
     """The rows the sync moved, read back as they now stand.
 
     Read back rather than assembled from what went in, because ``selected`` and
-    the effective name belong to the row and not to the document — and those two
+    the effective name belong to the row and not to the upstream — and those two
     are most of what a review screen is for.
     """
     labelled = {
@@ -571,7 +631,7 @@ async def _failed(
     Reached only from before the first operation write, which is what makes "a
     failed refresh never mutates operations" a property of where this is called
     from rather than of what it remembers not to do. The hash and the snapshot
-    are left alone too: the last document that *did* read is still the one a
+    are left alone too: the last reading that *did* succeed is still the one a
     later refresh has to diff against.
     """
     await repo.record_refresh(session, server.id, status=ERROR, error=message, at=at)
@@ -599,6 +659,7 @@ __all__ = [
     "Announce",
     "OperationChange",
     "Outcome",
+    "Reading",
     "RefreshLocks",
     "RefreshReport",
     "refresh_server",

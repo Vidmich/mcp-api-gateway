@@ -185,10 +185,10 @@ SQLite via SQLAlchemy 2.0 async + aiosqlite, migrations by Alembic.
 |---|---|
 | `id` | pk |
 | `server_id` | fk, cascade delete |
-| `op_key` | stable identity: `"<METHOD> <path>"`; unique per server |
-| `operation_id` | from the spec, may be null → synthesized |
-| `method`, `path`, `summary`, `description` | |
-| `input_schema` | generated JSON Schema, stored as JSON |
+| `op_key` | stable identity: `"<METHOD> <path>"`; for an upstream MCP tool, `"tool <name>"` (§5b.2); unique per server |
+| `operation_id` | from the spec, may be null → synthesized; for an MCP tool, the upstream tool name |
+| `method`, `path`, `summary`, `description` | for an MCP tool: the literal `TOOL`, the upstream tool name, null, the tool's description |
+| `input_schema` | generated JSON Schema, stored as JSON; for an MCP tool, its `inputSchema` normalised |
 | `input_schema_hash` | used to detect `changed` on refresh |
 | `selected` | is this operation exposed as a tool |
 | `status` | `active` / `new` / `changed` / `removed` |
@@ -264,14 +264,16 @@ Everything is converted to one internal representation before anything else touc
 
 Triggered by the per-server **Refresh Spec** button, or by the scheduler for servers with `auto_refresh = true` once `refresh.auto_refresh_interval_minutes` has elapsed since `last_refresh_at`.
 
-1. Fetch + normalize. If `spec_hash` is unchanged, record the timestamp and stop.
+1. Read + normalize: fetch the document, or connect to the endpoint and list its tools (§5b.2). If `spec_hash` is unchanged, record the timestamp and stop.
 2. Diff by `op_key`:
-   - present in spec, absent in DB → insert with `status = new`, **`selected = false`**
+   - present upstream, absent in DB → insert with `status = new`, **`selected = false`**
    - present in both, `input_schema_hash` differs → `status = changed`, `selected` **unchanged**
-   - present in DB, absent from spec → `status = removed`, dropped from the tool list
+   - present in DB, absent upstream → `status = removed`, dropped from the tool list
    - otherwise → `status = active`
 3. If anything landed in `new`, `changed`, or `removed`, set `needs_attention = true`.
 4. Emit `notifications/tools/list_changed` if the effective tool list changed.
+
+**Both kinds, one diff.** Step 1 is the only step that knows what kind of server it is reading; from the hash comparison on, a refresh works on the `operations` rows the reading produced and never on where they came from. The statuses, the flag, the review flow, the locks, `last_refresh_*`, the announcement and the scheduler are one piece of code for a document and for a tool list, which is the point of §5b.2's mapping. The words differ where they name the thing read — a message or a log line that would say *spec* of an API server says *tool list* of an MCP server, or says neither — and nothing else does.
 
 The operator clears **Needs Attention** by reviewing the server: `New` rows can be selected or dismissed, `Changed` rows acknowledged, `Removed` rows deleted. Acknowledging is what resets the flag — never a refresh on its own.
 
@@ -300,7 +302,32 @@ The counterpart of §5 for the second kind of upstream (task 130): an endpoint s
 
 The SDK's transport folds an HTTP status into a JSON-RPC error that no longer says which status it was; the gateway watches the transport it hands the SDK, remembers the status of the last response, and reports that. The SDK's own log lines for these failures — a session id at INFO on every connect, a stack trace at ERROR when the endpoint serves HTML — are quieted, because every one of them is also raised, and the gateway reports the raised one.
 
-The mapping of an upstream's tools onto `operations`, the naming, the refresh and the diff are §5b.2 (task 131); forwarding a call is §6 (task 132). Upstream `resources` and `prompts` are out, as §2 says for the gateway's own endpoint, and so is listening for an upstream's `list_changed`: the gateway learns that an endpoint's tools changed the way it learns that a document did, by a refresh, manual or scheduled.
+Forwarding a call is §6 (task 132). Upstream `resources` and `prompts` are out, as §2 says for the gateway's own endpoint, and so is listening for an upstream's `list_changed`: the gateway learns that an endpoint's tools changed the way it learns that a document did, by a refresh, manual or scheduled.
+
+### 5b.2 Tools as operations
+
+Everything downstream of ingestion — the picker, the detail page, the tool list, refresh and its diff, `new` / `changed` / `removed`, name overrides, prefixes, the uniqueness of `effective_tool_name` across the whole gateway — works on `operations` rows and never on the document. That is the seam an MCP server's tools go through (task 131): **each upstream tool is an operation**, produced by `mcpclient/operations.py` in the same record the OpenAPI extractor produces, and once it is one, nothing that reads the table has to know where it came from. The alternative — a second table, a second picker, a second refresh — would double the surface for a row that differs from an operation in having no method and no path.
+
+| `operations` column | an OpenAPI operation | an upstream MCP tool |
+|---|---|---|
+| `op_key` | `"<METHOD> <path>"` | `"tool <name>"` |
+| `operation_id` | from the document, or synthesised | the upstream tool name |
+| `method` | `GET` … | `TOOL` |
+| `path` | `/pets/{id}` | the upstream tool name |
+| `summary` | from the document | null |
+| `description` | from the document | the tool's `description` |
+| `input_schema` | generated from the parameters and body | the tool's `inputSchema`, normalised |
+| `input_schema_hash` | over the schema | over the normalised schema |
+
+**`method` is the literal `TOOL` rather than null**, because the column is non-null and forty places print it; a value that is obviously not an HTTP method is better than a nullable column every template has to test, and whether a page prints it is the page's decision (§7.1, task 133). The origin line a tool's description ends in (§5.3) says `(MCP tool <name> on <server>)` for such a row, since `HTTP TOOL` is not a request anybody makes.
+
+**The vendor extension carries the wiring.** Every stored schema has `x-mcp-api-gateway` at its root, which the proxy reads back to decide what is a path parameter, what is a query parameter and what is the body. For an MCP tool it says `{"kind": "mcp", "tool": "<name>"}` and nothing else: the arguments are passed through whole (§6, task 132).
+
+**Normalisation is the schema pass the OpenAPI path already runs** (§5.2), applied to `inputSchema`: `$ref`s that point inside the schema are left as they are — MCP allows them and the validator resolves them — deprecated keywords are rewritten, and the hash is taken over the result, so two upstreams that describe one tool differently in spelling do not read as `changed`. Beyond that, a tool's schema is **anything `inputSchema` is allowed to be**, which the protocol constrains to a JSON Schema object. An upstream publishing `type: object` with no properties produces a tool that takes anything; that is the upstream's decision, republished faithfully, and in particular nothing closes the object the way the OpenAPI path does, since there is no request to build and so nothing an argument could be dropped from. `outputSchema` and the annotations (`readOnlyHint`, `destructiveHint`, …) are stored in the snapshot, in no column, and are not republished: the gateway's own endpoint advertises neither, and starting to for one kind of upstream would be a feature on this side wearing the costume of a passthrough. A listing that names one tool twice is refused as the protocol fault it is, rather than having one of the two lost on the way to the table.
+
+**Naming** is the §5.3 rule with the upstream name where `operationId` stands: `<prefix>__<name>`. An upstream whose names are already `snake_case` produces tools that look exactly like the gateway's own; a name that does not survive the rule is corrected the way an `operationId` is — the same characters replaced, the same length cap — and the correction is shown on the picker, because a model calling `search__list_files` needs the published name and not the upstream's. Two upstreams with the same tool name are not a collision: the prefix is what keeps `effective_tool_name` unique across servers, and it already does this for two APIs that both have `listPets`.
+
+**Registration and refresh are the existing ones.** The wizard's step 2 and its save take a pending server of either kind — the preview differs, the operations do not — and write the row with its `kind`, both URL columns holding the endpoint and `spec_auth_mode` held to `same_as_api` (§4). A refresh branches on `kind` at the read step alone, `preview_endpoint()` where an API server has `preview_spec()`, and everything after it runs unchanged over the rows (§5.4). Auto-refresh applies: `auto_refresh` and the global interval mean the same thing for an endpoint — re-list on the schedule, flag what moved, never auto-enable a new tool — and an MCP server can change its tools far more casually than an API changes its document, which is an argument for auto-refresh being more useful here, not less.
 
 ---
 
@@ -399,7 +426,7 @@ src/mcp_gateway/
   crypto.py  outbound.py  naming.py  metrics.py  scheduler.py
   db/            models.py  session.py  repo.py  migrate.py  migrations/
   openapi/       diagnostics.py  fetch.py  normalize.py  swagger2.py  refs.py  schema.py  diff.py
-  mcpclient/     connect.py  preview.py
+  mcpclient/     connect.py  preview.py  operations.py
   mcpsrv/        server.py  tools.py  proxy.py  auth.py
   builtin/       catalog.py  tools.py  seed.py
   web/           routes_ui.py  routes_api.py  auth.py  templates/  static/
@@ -417,7 +444,7 @@ docs/            install.md  service-setup.md  configuration.md  security.md
 
 ## 10. Testing
 
-- **Unit** — Swagger 2.0 conversion, `$ref` resolution including cycles, schema generation, tool-name generation and collision handling, the refresh diff (all four transitions), credential encryption round-trip, config precedence, and spec-fetch auth: each of the three modes sends the right headers, and a cross-origin redirect strips them. Reading an MCP endpoint (§5b) against a fake upstream behind an ASGI transport: the preview, each credential type arriving on every request, and each failure class reported as itself; then the same reader over a real socket against the gateway's own `/mcp`, with and without its bearer token.
+- **Unit** — Swagger 2.0 conversion, `$ref` resolution including cycles, schema generation, tool-name generation and collision handling, the refresh diff (all four transitions), credential encryption round-trip, config precedence, and spec-fetch auth: each of the three modes sends the right headers, and a cross-origin redirect strips them. Reading an MCP endpoint (§5b) against a fake upstream behind an ASGI transport: the preview, each credential type arriving on every request, and each failure class reported as itself; then the same reader over a real socket against the gateway's own `/mcp`, with and without its bearer token. An MCP server's tools as operations (§5b.2): the mapping column by column, the naming and its corrections, two servers sharing a tool name, registration through the wizard's save, and the refresh diff's four transitions, the no-op by hash, the failures and the scheduled re-listing — against the same fake upstream with its tool list changed between readings, and once more over the socket with the gateway as its own upstream.
 - **Integration** — a stub upstream served by `respx`: register a spec, select operations, list tools over `/mcp`, call one, assert the outbound request shape and the recorded metrics. Then mutate the spec, refresh, and assert `new` operations arrive unselected with the server flagged. A second pass covers a spec URL that `401`s without credentials and succeeds with them, including on a later auto-refresh.
 - **Fixtures** — specs checked into `tests/fixtures/specs/`: a Swagger 2.0 spec, a 3.0 spec with deep `$ref`s, a 3.1 spec, and one deliberately malformed spec.
 
